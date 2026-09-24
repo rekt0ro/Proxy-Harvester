@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let exe = env::current_exe()?;
     let root = exe
         .parent()
