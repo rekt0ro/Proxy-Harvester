@@ -24,19 +24,6 @@ jobs:
           curl -fsS --max-time 10 https://www.gstatic.com/generate_204 -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
-      - name: Install sing-box
-        run: |
-          curl -fsSL -o /tmp/sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.12.4/sing-box-1.12.4-linux-amd64.tar.gz
-          tar -xzf /tmp/sing-box.tar.gz -C /tmp
-          sudo install -m 755 /tmp/sing-box-1.12.4-linux-amd64/sing-box /usr/local/bin/sing-box
-          sing-box version
-
-      - name: Install sb2p
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/sb2p" --version
-
       - name: Build
         run: cargo build --release
 
