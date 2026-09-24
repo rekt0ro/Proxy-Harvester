@@ -1,4 +1,4 @@
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use regex::Regex;
@@ -84,6 +84,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("[INFO] Collected {} unique configs.", configs.len());
 
+    if configs.is_empty() {
+        return Err("no proxy configurations were collected".into());
+    }
+
     let working_path = output_dir.join(".working.txt");
     let all_path = output_dir.join("all.txt");
     let light_path = output_dir.join("light.txt");
@@ -102,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let semaphore = semaphore.clone();
             async move {
                 let _permit = semaphore.acquire_owned().await?;
-                test_chunk(index, chunk).await
+                test_chunk(index, format!("{index}"), chunk).await
             }
         })
         .buffer_unordered(TEST_CONCURRENCY)
@@ -125,6 +129,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     all_output.flush().await?;
     drop(all_output);
+
+    if working_count == 0 {
+        let _ = fs::remove_file(&working_path).await;
+        return Err("zero working configs; refusing to replace existing subscriptions".into());
+    }
 
     let all_contents = fs::read_to_string(&working_path).await?;
     let mut light_output = String::new();
@@ -170,7 +179,7 @@ async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
 
 fn extract_configs(text: &str) -> Vec<String> {
     let pattern = Regex::new(
-        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2)://[^s<>"']+|(?:https?)://[^/s<>"']+:d+[^s<>"']*"#,
+        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2)://[^\s<>"']+|(?:https?)://[^/\s<>"']+:\d+[^\s<>"']*"#,
     )
     .unwrap();
 
@@ -180,21 +189,14 @@ fn extract_configs(text: &str) -> Vec<String> {
         found.push(trim_config(capture.as_str()));
     }
 
-    if found.is_empty() {
-        if let Some(decoded) = decode_base64(text) {
-            for capture in pattern.find_iter(&decoded) {
-                found.push(trim_config(capture.as_str()));
-            }
-        }
-    } else {
-        let decoded = decode_base64(text);
-        if let Some(decoded) = decoded {
-            for capture in pattern.find_iter(&decoded) {
-                found.push(trim_config(capture.as_str()));
-            }
+    if let Some(decoded) = decode_base64(text) {
+        for capture in pattern.find_iter(&decoded) {
+            found.push(trim_config(capture.as_str()));
         }
     }
 
+    found.sort_unstable();
+    found.dedup();
     found
 }
 
@@ -211,15 +213,34 @@ fn decode_base64(text: &str) -> Option<String> {
         return None;
     }
 
+    for decoder in [
+        STANDARD.decode(&compact),
+        URL_SAFE.decode(&compact),
+        URL_SAFE_NO_PAD.decode(&compact),
+    ] {
+        if let Ok(bytes) = decoder {
+            let decoded = String::from_utf8_lossy(&bytes).to_string();
+            if decoded.contains("://") {
+                return Some(decoded);
+            }
+        }
+    }
+
     let mut padded = compact.clone();
     while padded.len() % 4 != 0 {
         padded.push('=');
     }
 
-    if let Ok(bytes) = STANDARD.decode(&padded) {
-        let decoded = String::from_utf8_lossy(&bytes).to_string();
-        if decoded.contains("://") {
-            return Some(decoded);
+    for decoder in [
+        STANDARD.decode(&padded),
+        URL_SAFE.decode(&padded),
+        URL_SAFE_NO_PAD.decode(&padded),
+    ] {
+        if let Ok(bytes) = decoder {
+            let decoded = String::from_utf8_lossy(&bytes).to_string();
+            if decoded.contains("://") {
+                return Some(decoded);
+            }
         }
     }
 
@@ -228,6 +249,7 @@ fn decode_base64(text: &str) -> Option<String> {
 
 async fn test_chunk(
     index: usize,
+    label: String,
     configs: Vec<String>,
 ) -> Result<(usize, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
     if configs.is_empty() {
@@ -237,24 +259,24 @@ async fn test_chunk(
     let temp = std::env::temp_dir().join(format!(
         "proxy-harvester-{}-{}.txt",
         std::process::id(),
-        index
+        label
     ));
 
     let output = std::env::temp_dir().join(format!(
         "proxy-harvester-{}-{}-working.txt",
         std::process::id(),
-        index
+        label
     ));
 
     fs::write(&temp, configs.join("\n")).await?;
 
     println!(
         "[INFO] Testing chunk {} ({} configs)...",
-        index + 1,
+        label,
         configs.len()
     );
 
-    let status = Command::new("sb2p")
+    let result = Command::new("sb2p")
         .arg("--check")
         .arg(&temp)
         .arg("-o")
@@ -268,16 +290,15 @@ async fn test_chunk(
         .arg(TEST_TIMEOUT.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .await?;
 
-    if !status.success() {
-        let code = status.code().unwrap_or(-1);
-        println!(
-            "[WARN] Chunk {} failed with exit code {}. Splitting the chunk.",
-            index + 1,
-            code
-        );
+    if !result.status.success() {
+        let code = result.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        if !stderr.trim().is_empty() {
+            println!("[WARN] sb2p chunk {label}: {}", stderr.trim());
+        }
 
         let _ = fs::remove_file(&temp).await;
         let _ = fs::remove_file(&output).await;
@@ -290,9 +311,17 @@ async fn test_chunk(
         let left = configs[..midpoint].to_vec();
         let right = configs[midpoint..].to_vec();
 
+        let left_label = format!("{label}a");
+        let right_label = format!("{label}b");
+
+        println!(
+            "[WARN] Chunk {} failed with exit code {}. Splitting.",
+            label, code
+        );
+
         let (left_result, right_result) = tokio::join!(
-            test_chunk(index, left),
-            test_chunk(index, right)
+            test_chunk(index, left_label, left),
+            test_chunk(index, right_label, right)
         );
 
         let mut working = left_result?.1;
@@ -308,7 +337,7 @@ async fn test_chunk(
 
     println!(
         "[INFO] Chunk {} complete: {}/{} working.",
-        index + 1,
+        label,
         working.len(),
         configs.len()
     );
@@ -332,13 +361,4 @@ async fn read_working(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
     }
 
     Ok(result)
-}
-
-fn uuid_seed(value: &str) -> String {
-    let mut hash = 1469598103934665603u64;
-    for byte in value.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(1099511628211);
-    }
-    format!("{hash:x}")
 }
