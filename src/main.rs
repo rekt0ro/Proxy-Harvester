@@ -272,15 +272,32 @@ async fn test_chunk(
         .await?;
 
     if !status.success() {
+        let code = status.code().unwrap_or(-1);
         println!(
-            "[WARN] Chunk {} returned exit code {}. Retrying invalid entries individually.",
+            "[WARN] Chunk {} failed with exit code {}. Splitting the chunk.",
             index + 1,
-            status.code().unwrap_or(-1)
+            code
         );
-        let result = retry_individually(&configs).await?;
+
         let _ = fs::remove_file(&temp).await;
         let _ = fs::remove_file(&output).await;
-        return Ok((index, result));
+
+        if configs.len() == 1 {
+            return Ok((index, Vec::new()));
+        }
+
+        let midpoint = configs.len() / 2;
+        let left = configs[..midpoint].to_vec();
+        let right = configs[midpoint..].to_vec();
+
+        let (left_result, right_result) = tokio::join!(
+            test_chunk(index, left),
+            test_chunk(index, right)
+        );
+
+        let mut working = left_result?.1;
+        working.extend(right_result?.1);
+        return Ok((index, working));
     }
 
     let working = if output.exists() {
@@ -300,69 +317,6 @@ async fn test_chunk(
     let _ = fs::remove_file(&output).await;
 
     Ok((index, working))
-}
-
-async fn retry_individually(
-    configs: &[String],
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let semaphore = Arc::new(Semaphore::new(TEST_WORKERS));
-    let results = stream::iter(configs.iter().cloned())
-        .map(|config| {
-            let semaphore = semaphore.clone();
-            async move {
-                let _permit = semaphore.acquire_owned().await?;
-                test_one(&config).await
-            }
-        })
-        .buffer_unordered(TEST_WORKERS)
-        .try_collect::<Vec<Option<String>>>()
-        .await?;
-
-    Ok(results.into_iter().flatten().collect())
-}
-
-async fn test_one(
-    config: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let temp = std::env::temp_dir().join(format!(
-        "proxy-harvester-one-{}.txt",
-        uuid_seed(config)
-    ));
-    let output = std::env::temp_dir().join(format!(
-        "proxy-harvester-one-{}-working.txt",
-        uuid_seed(config)
-    ));
-
-    fs::write(&temp, config).await?;
-
-    let status = Command::new("sb2p")
-        .arg("--check")
-        .arg(&temp)
-        .arg("-o")
-        .arg(&output)
-        .arg("-q")
-        .arg("--workers")
-        .arg("1")
-        .arg("--batch-size")
-        .arg("1")
-        .arg("--timeout")
-        .arg(TEST_TIMEOUT.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-
-    let working = if status.map(|s| s.success()).unwrap_or(false) && output.exists() {
-        let values = read_working(&output).await?;
-        values.into_iter().next()
-    } else {
-        None
-    };
-
-    let _ = fs::remove_file(&temp).await;
-    let _ = fs::remove_file(&output).await;
-
-    Ok(working)
 }
 
 async fn read_working(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
