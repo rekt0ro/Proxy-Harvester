@@ -1,2 +1,0 @@
-requests
-singbox2proxy
