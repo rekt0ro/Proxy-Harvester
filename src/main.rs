@@ -147,17 +147,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_subscription = STANDARD.encode(all_contents.as_bytes());
     let light_subscription = STANDARD.encode(light_output.as_bytes());
+    let all_subscription_path = output_dir.join(".all.b64");
+    let light_subscription_path = output_dir.join(".light.b64");
 
-    fs::write(&all_path, format!("{all_subscription}\n")).await?;
-    fs::write(&light_path, format!("{light_subscription}\n")).await?;
+    fs::write(&all_subscription_path, format!("{all_subscription}\n")).await?;
+    fs::write(&light_subscription_path, format!("{light_subscription}\n")).await?;
+    fs::rename(&all_subscription_path, &all_path).await?;
+    fs::rename(&light_subscription_path, &light_path).await?;
     fs::remove_file(&working_path).await?;
-    fs::write(&light_working_path, light_output).await?;
-    fs::remove_file(&light_working_path).await?;
 
-    let light_count = fs::read_to_string(&light_path)
-        .await?
-        .lines()
-        .count();
+    let light_count = light_output.lines().count();
 
     println!("[INFO] Published {} working configs to all.txt.", working_count);
     println!("[INFO] Published {} configs to light.txt.", light_count);
