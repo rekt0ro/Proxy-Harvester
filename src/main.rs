@@ -132,6 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if working_count == 0 {
         let _ = fs::remove_file(&working_path).await;
+        diagnose_configs(&configs[..configs.len().min(5)]).await;
         return Err("zero working configs; refusing to replace existing subscriptions".into());
     }
 
@@ -345,6 +346,40 @@ async fn test_chunk(
     let _ = fs::remove_file(&output).await;
 
     Ok((index, working))
+}
+
+async fn diagnose_configs(configs: &[String]) {
+    println!("[DIAG] No working configs were found. Testing {} individual samples verbosely.", configs.len());
+
+    for (index, config) in configs.iter().enumerate() {
+        println!("[DIAG] Sample {}: {}", index + 1, config);
+
+        match Command::new("sb2p")
+            .arg(config)
+            .arg("--test")
+            .arg("--verbose")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+        {
+            Ok(result) => {
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let stderr = String::from_utf8_lossy(&result.stderr);
+
+                if !stdout.trim().is_empty() {
+                    println!("[DIAG] stdout:\n{}", stdout.trim());
+                }
+
+                if !stderr.trim().is_empty() {
+                    println!("[DIAG] stderr:\n{}", stderr.trim());
+                }
+            }
+            Err(error) => {
+                println!("[DIAG] Failed to execute sb2p: {error}");
+            }
+        }
+    }
 }
 
 async fn read_working(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
