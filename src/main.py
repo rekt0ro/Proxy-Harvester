@@ -10,7 +10,7 @@ SOURCES_FILE = ROOT / "sources.txt"
 OUTPUT_DIR = ROOT / "subscriptions"
 
 TIMEOUT = 8
-WORKERS = 10
+WORKERS = 4
 LIGHT_LIMIT = 200
 
 SCHEMES = (
@@ -156,7 +156,7 @@ def test_configs(configs):
     try:
         batch = SingBoxBatch(
             supported,
-            batch_size=50,
+            batch_size=10,
         )
 
         try:
