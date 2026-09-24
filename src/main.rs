@@ -286,13 +286,35 @@ fn is_plain_proxy(config: &str) -> bool {
 
 fn endpoint(config: &str) -> Option<(String, u16)> {
     let url = Url::parse(config).ok()?;
+    let scheme = url.scheme().to_ascii_lowercase();
+
+    if scheme == "vmess" {
+        let encoded = config.split_once("://")?.1.split('#').next()?.trim();
+        let decoded = decode_base64_variants(encoded)?;
+        let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
+            .ok()?
+            .captures(&decoded)?
+            .get(1)?
+            .as_str()
+            .to_string();
+        let port = Regex::new(r#""port"\s*:\s*"?([0-9]+)"?"#)
+            .ok()?
+            .captures(&decoded)?
+            .get(1)?
+            .as_str()
+            .parse::<u16>()
+            .ok()?;
+        return Some((add, port));
+    }
+
     let host = url.host_str()?.to_string();
-    let port = url.port().or_else(|| match url.scheme().to_ascii_lowercase().as_str() {
+    let port = url.port().or_else(|| match scheme.as_str() {
         "http" => Some(80),
         "https" => Some(443),
         "socks" | "socks4" | "socks5" | "socks5h" => Some(1080),
         _ => None,
     })?;
+
     Some((host, port))
 }
 
