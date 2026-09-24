@@ -1,6 +1,5 @@
 from pathlib import Path
 from urllib.parse import urlparse
-import re
 import requests
 from singbox2proxy import SingBoxBatch
 
@@ -9,9 +8,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCES_FILE = ROOT / "sources.txt"
 OUTPUT_DIR = ROOT / "subscriptions"
 
-TEST_URL = "https://www.gstatic.com/generate_204"
 TIMEOUT = 8
 WORKERS = 10
+LIGHT_LIMIT = 200
 
 SCHEMES = (
     "vmess://",
@@ -52,11 +51,10 @@ def extract_configs(text):
     for line in text.splitlines():
         line = line.strip()
 
-
-        line = line.split("#", 1)[0].strip()
-
         if not line:
             continue
+
+        line = line.split("#", 1)[0].strip()
 
         for scheme in SCHEMES:
             if line.lower().startswith(scheme):
@@ -94,20 +92,15 @@ def collect():
 
         if content:
             configs.extend(extract_configs(content))
-
-
+            
     return list(dict.fromkeys(configs))
-
-
-def protocol(config):
-    return config.split("://", 1)[0].lower()
 
 
 def test_configs(configs):
     if not configs:
         return []
 
-    print(f"[INFO] Testing {len(configs)} unique configurations...")
+    print(f"[INFO] Testing {len(configs)} configurations...")
 
     working = []
 
@@ -135,34 +128,21 @@ def test_configs(configs):
 def write_outputs(configs):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    all_file = OUTPUT_DIR / "all.txt"
+    light_file = OUTPUT_DIR / "light.txt"
 
-    for file in OUTPUT_DIR.glob("*.txt"):
-        file.unlink()
-
-    grouped = {}
-
-    for config in configs:
-        grouped.setdefault(protocol(config), []).append(config)
-
-    all_configs = []
-
-    for values in grouped.values():
-        all_configs.extend(values)
-
-    all_configs = list(dict.fromkeys(all_configs))
-
-    (OUTPUT_DIR / "all.txt").write_text(
-        "\n".join(all_configs) + ("\n" if all_configs else "")
+    all_file.write_text(
+        "\n".join(configs) + ("\n" if configs else "")
     )
 
-    for name, values in sorted(grouped.items()):
-        filename = name.replace("socks5", "socks") + ".txt"
+    light_configs = configs[:LIGHT_LIMIT]
 
-        (OUTPUT_DIR / filename).write_text(
-            "\n".join(values) + ("\n" if values else "")
-        )
+    light_file.write_text(
+        "\n".join(light_configs) + ("\n" if light_configs else "")
+    )
 
-    print(f"[INFO] Published {len(all_configs)} working configurations.")
+    print(f"[INFO] Published {len(configs)} configs to all.txt")
+    print(f"[INFO] Published {len(light_configs)} configs to light.txt")
 
 
 def main():
@@ -170,11 +150,11 @@ def main():
 
     collected = collect()
 
-    print(f"[INFO] Collected {len(collected)} unique configurations.")
+    print(f"[INFO] Collected {len(collected)} unique configs.")
 
     working = test_configs(collected)
 
-    print(f"[INFO] {len(working)} configurations passed the URL test.")
+    print(f"[INFO] {len(working)} configs passed the URL test.")
 
     write_outputs(working)
 
