@@ -9,10 +9,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCES_FILE = ROOT / "sources.txt"
 OUTPUT_DIR = ROOT / "subscriptions"
 
-TIMEOUT = 8
-WORKERS = 4
-BATCH_SIZE = 10
-CHUNK_SIZE = 100
+TIMEOUT = 5
+WORKERS = 20
+BATCH_SIZE = 50
+CHUNK_SIZE = 500
 LIGHT_LIMIT = 200
 
 SCHEMES = (
@@ -183,10 +183,7 @@ def run_batch(configs):
         return run_batch(left) + run_batch(right)
 
 
-def test_configs(configs):
-    if not configs:
-        return []
-
+def prepare_configs(configs):
     supported = [
         config
         for config in configs
@@ -200,44 +197,75 @@ def test_configs(configs):
     if skipped:
         print(f"[INFO] Skipping {skipped} unsupported SSR configs.")
 
+    return supported
+
+
+def test_configs(configs):
+    supported = prepare_configs(configs)
+
     if not supported:
         return []
 
-    print(f"[INFO] Testing {len(supported)} configurations...")
+    total = len(supported)
+    print(f"[INFO] Testing {total} configurations...")
 
-    working = []
+    working_file = OUTPUT_DIR / ".working.txt"
+    light_configs = []
+    tested = 0
+    working_count = 0
 
-    for start in range(0, len(supported), CHUNK_SIZE):
-        chunk = supported[start:start + CHUNK_SIZE]
-        print(
-            f"[INFO] Testing chunk {start + 1}-{start + len(chunk)} "
-            f"of {len(supported)}..."
-        )
+    working_file.unlink(missing_ok=True)
 
-        working.extend(run_batch(chunk))
+    try:
+        with working_file.open("a", encoding="utf-8") as output:
+            for start in range(0, total, CHUNK_SIZE):
+                chunk = supported[start:start + CHUNK_SIZE]
+                end = start + len(chunk)
 
-    return list(dict.fromkeys(working))
+                print(
+                    f"[INFO] Testing chunk {start + 1}-{end} "
+                    f"of {total}..."
+                )
+
+                working = run_batch(chunk)
+
+                for config in working:
+                    output.write(config + "\n")
+                    working_count += 1
+
+                    if len(light_configs) < LIGHT_LIMIT:
+                        light_configs.append(config)
+
+                tested = end
+                print(
+                    f"[INFO] Progress: {tested}/{total} tested, "
+                    f"{working_count} working."
+                )
+
+        return light_configs, working_count
+    except Exception:
+        working_file.unlink(missing_ok=True)
+        raise
 
 
-def write_outputs(configs):
+def write_outputs(light_configs, working_count):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     all_file = OUTPUT_DIR / "all.txt"
     light_file = OUTPUT_DIR / "light.txt"
+    working_file = OUTPUT_DIR / ".working.txt"
 
-    all_file.write_text(
-        "\n".join(configs) + ("\n" if configs else ""),
-        encoding="utf-8",
-    )
-
-    light_configs = configs[:LIGHT_LIMIT]
+    if working_file.exists():
+        working_file.replace(all_file)
+    else:
+        all_file.write_text("", encoding="utf-8")
 
     light_file.write_text(
         "\n".join(light_configs) + ("\n" if light_configs else ""),
         encoding="utf-8",
     )
 
-    print(f"[INFO] Published {len(configs)} configs to all.txt")
+    print(f"[INFO] Published {working_count} configs to all.txt")
     print(f"[INFO] Published {len(light_configs)} configs to light.txt")
 
 
@@ -248,11 +276,11 @@ def main():
 
     print(f"[INFO] Collected {len(collected)} unique configs.")
 
-    working = test_configs(collected)
+    light_configs, working_count = test_configs(collected)
 
-    print(f"[INFO] {len(working)} configs passed the URL test.")
+    print(f"[INFO] {working_count} configs passed the URL test.")
 
-    write_outputs(working)
+    write_outputs(light_configs, working_count)
 
     print("[INFO] Done.")
 
