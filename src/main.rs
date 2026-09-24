@@ -274,7 +274,26 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
 
     if scheme == "vmess" {
         let encoded = config.split_once("://")?.1.split('#').next()?.trim();
-        let decoded = decode_base64_variants(encoded).into_iter().next()?;
+        let mut decoded_texts = Vec::new();
+        let mut padded = encoded.to_string();
+
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+
+        for candidate in [encoded.to_string(), padded] {
+            for decoded in [
+                STANDARD.decode(&candidate),
+                URL_SAFE.decode(&candidate),
+                URL_SAFE_NO_PAD.decode(&candidate),
+            ] {
+                if let Ok(bytes) = decoded {
+                    decoded_texts.push(String::from_utf8_lossy(&bytes).to_string());
+                }
+            }
+        }
+
+        let decoded = decoded_texts.into_iter().find(|text| text.contains(""add""))?;
         let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
             .ok()?
             .captures(&decoded)?
