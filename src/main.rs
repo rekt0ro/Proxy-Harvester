@@ -22,7 +22,7 @@ const LIGHT_LIMIT: usize = 200;
 const TEST_TIMEOUT: usize = 5;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] Proxy-Harvester starting...");
 
     let root = project_root()?;
@@ -319,10 +319,9 @@ async fn test_chunk(
             label, code
         );
 
-        let (left_result, right_result) = tokio::join!(
-            test_chunk(index, left_label, left),
-            test_chunk(index, right_label, right)
-        );
+        let left_future = Box::pin(test_chunk(index, left_label, left));
+        let right_future = Box::pin(test_chunk(index, right_label, right));
+        let (left_result, right_result) = tokio::join!(left_future, right_future);
 
         let mut working = left_result?.1;
         working.extend(right_result?.1);
