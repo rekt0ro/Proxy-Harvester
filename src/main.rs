@@ -298,7 +298,7 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
 
 async fn tcp_reachable(config: &str) -> bool {
     let Some((host, port)) = endpoint(config) else {
-        return true;
+        return false;
     };
 
     matches!(
@@ -311,62 +311,8 @@ async fn tcp_reachable(config: &str) -> bool {
     )
 }
 
-async fn test_plain_proxy(config: String, target: &'static str) -> bool {
-    let Ok(proxy) = Proxy::all(&config) else {
-        return false;
-    };
-
-    let Ok(client) = Client::builder()
-        .proxy(proxy)
-        .connect_timeout(Duration::from_secs(TCP_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(TEST_TIMEOUT as u64))
-        .user_agent("Proxy-Harvester/3.0")
-        .build()
-    else {
-        return false;
-    };
-
-    match client.get(target).send().await {
-        Ok(response) => response.status().is_success() || response.status().is_redirection(),
-        Err(_) => false,
-    }
-}
-
-async fn test_plain_configs(configs: Vec<String>) -> Vec<String> {
-    if configs.is_empty() {
-        return Vec::new();
-    }
-
-    let semaphore = Arc::new(Semaphore::new(PLAIN_WORKERS));
-
+async fn test_tcp_configs(configs: Vec<String>) -> Vec<String> {
     stream::iter(configs)
-        .map(|config| {
-            let semaphore = semaphore.clone();
-            async move {
-                let _permit = semaphore.acquire_owned().await.ok();
-                if test_plain_proxy(config.clone(), "https://www.gstatic.com/generate_204").await {
-                    Some(config)
-                } else {
-                    None
-                }
-            }
-        })
-        .buffer_unordered(PLAIN_WORKERS)
-        .filter_map(async move |result| result)
-        .collect()
-        .await
-}
-
-async fn test_advanced_batch(
-    index: usize,
-    label: &str,
-    configs: &[String],
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    if configs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let reachable = stream::iter(configs.iter().cloned())
         .map(|config| async move {
             if tcp_reachable(&config).await {
                 Some(config)
@@ -374,94 +320,10 @@ async fn test_advanced_batch(
                 None
             }
         })
-        .buffer_unordered(64)
+        .buffer_unordered(TEST_CONCURRENCY * 16)
         .filter_map(async move |result| result)
-        .collect::<Vec<String>>()
-        .await;
-
-    println!(
-        "[INFO] Chunk {} advanced candidates: {}/{} passed TCP preflight.",
-        label,
-        reachable.len(),
-        configs.len()
-    );
-
-    if reachable.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let temp = std::env::temp_dir().join(format!(
-        "proxy-harvester-{}-{}-{}.txt",
-        std::process::id(),
-        index,
-        label
-    ));
-    let output = std::env::temp_dir().join(format!(
-        "proxy-harvester-{}-{}-{}-working.txt",
-        std::process::id(),
-        index,
-        label
-    ));
-
-    fs::write(&temp, reachable.join("\n")).await?;
-
-    let result = Command::new("sb2p")
-        .arg("--check")
-        .arg(&temp)
-        .arg("-o")
-        .arg(&output)
-        .arg("-q")
-        .arg("--workers")
-        .arg(TEST_WORKERS.to_string())
-        .arg("--batch-size")
-        .arg(BATCH_SIZE.to_string())
-        .arg("--timeout")
-        .arg(TEST_TIMEOUT.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        if !stderr.trim().is_empty() {
-            println!("[WARN] sb2p chunk {}: {}", label, stderr.trim());
-        }
-
-        let _ = fs::remove_file(&temp).await;
-        let _ = fs::remove_file(&output).await;
-
-        if reachable.len() == 1 {
-            return Ok(Vec::new());
-        }
-
-        let midpoint = reachable.len() / 2;
-        let left_future = Box::pin(test_advanced_batch(index, &format!("{label}a"), &reachable[..midpoint]));
-        let right_future = Box::pin(test_advanced_batch(index, &format!("{label}b"), &reachable[midpoint..]));
-        let (left, right) = tokio::join!(left_future, right_future);
-
-        let mut combined = left?;
-        combined.extend(right?);
-        return Ok(combined);
-    }
-
-    let working = if output.exists() {
-        read_working(&output).await?
-    } else {
-        Vec::new()
-    };
-
-    println!(
-        "[INFO] Chunk {} advanced complete: {}/{} working.",
-        label,
-        working.len(),
-        reachable.len()
-    );
-
-    let _ = fs::remove_file(&temp).await;
-    let _ = fs::remove_file(&output).await;
-
-    Ok(working)
+        .collect()
+        .await
 }
 
 async fn test_chunk(
@@ -469,39 +331,19 @@ async fn test_chunk(
     label: String,
     configs: Vec<String>,
 ) -> Result<(usize, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
-    let mut plain = Vec::new();
-    let mut advanced = Vec::new();
-
-    for config in configs {
-        if is_plain_proxy(&config) {
-            plain.push(config);
-        } else {
-            advanced.push(config);
-        }
-    }
-
     println!(
-        "[INFO] Testing chunk {}: {} plain, {} advanced.",
+        "[INFO] Testing chunk {}: {} configs with TCP reachability.",
         label,
-        plain.len(),
-        advanced.len()
+        configs.len()
     );
 
-    let plain_future = test_plain_configs(plain);
-    let advanced_future = test_advanced_batch(index, &label, &advanced);
-    let (plain_working, advanced_working) = tokio::join!(plain_future, advanced_future);
-
-    let mut working = plain_working;
-    working.extend(advanced_working?);
-
-    working.sort_unstable();
-    working.dedup();
+    let working = test_tcp_configs(configs.clone()).await;
 
     println!(
-        "[INFO] Chunk {} complete: {}/{} working.",
+        "[INFO] Chunk {} complete: {}/{} TCP reachable.",
         label,
         working.len(),
-        working.len() + advanced.len()
+        configs.len()
     );
 
     Ok((index, working))
@@ -521,42 +363,19 @@ async fn diagnose_configs(configs: &[String]) {
         }
     }
 
-    println!("[DIAG] Testing {} protocol samples.", samples.len());
+    println!("[DIAG] TCP testing {} protocol samples.", samples.len());
 
     for (index, config) in samples.iter().enumerate() {
-        println!("[DIAG] Sample {} [{}]: {}", index + 1, config_scheme(config), config);
-
-        if is_plain_proxy(config) {
-            let working = test_plain_proxy(config.clone(), "https://www.gstatic.com/generate_204").await;
-            println!("[DIAG] Plain proxy result: {}", if working { "PASS" } else { "FAIL" });
-            continue;
-        }
-
-        match Command::new("sb2p")
-            .arg(config)
-            .arg("--test")
-            .arg("--verbose")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-        {
-            Ok(result) => {
-                let stdout = String::from_utf8_lossy(&result.stdout);
-                let stderr = String::from_utf8_lossy(&result.stderr);
-
-                if !stdout.trim().is_empty() {
-                    println!("[DIAG] stdout:\n{}", stdout.trim());
-                }
-
-                if !stderr.trim().is_empty() {
-                    println!("[DIAG] stderr:\n{}", stderr.trim());
-                }
-            }
-            Err(error) => {
-                println!("[DIAG] Failed to execute sb2p: {error}");
-            }
-        }
+        println!(
+            "[DIAG] Sample {} [{}]: {}",
+            index + 1,
+            config_scheme(config),
+            config
+        );
+        println!(
+            "[DIAG] TCP result: {}",
+            if tcp_reachable(config).await { "PASS" } else { "FAIL" }
+        );
     }
 }
 
