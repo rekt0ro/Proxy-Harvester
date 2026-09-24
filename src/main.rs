@@ -14,12 +14,8 @@ use url::Url;
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 const TEST_CONCURRENCY: usize = 4;
-const PLAIN_WORKERS: usize = 32;
-const TEST_WORKERS: usize = 8;
-const BATCH_SIZE: usize = 50;
 const CHUNK_SIZE: usize = 500;
 const LIGHT_LIMIT: usize = 200;
-const TEST_TIMEOUT: usize = 6;
 const TCP_TIMEOUT_SECS: u64 = 3;
 
 #[tokio::main]
@@ -268,13 +264,6 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn is_plain_proxy(config: &str) -> bool {
-    matches!(
-        config_scheme(config).as_str(),
-        "http" | "https" | "socks5" | "socks5h"
-    )
-}
-
 fn endpoint(config: &str) -> Option<(String, u16)> {
     let url = Url::parse(config).ok()?;
     let scheme = url.scheme().to_ascii_lowercase();
@@ -391,4 +380,3 @@ async fn diagnose_configs(configs: &[String]) {
         );
     }
 }
-
