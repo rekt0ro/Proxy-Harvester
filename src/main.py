@@ -1,5 +1,6 @@
 from pathlib import Path
-from urllib.parse import urlparse
+import base64
+import re
 import requests
 from singbox2proxy import SingBoxBatch
 
@@ -27,6 +28,11 @@ SCHEMES = (
     "hy2://",
 )
 
+SCHEME_PATTERN = re.compile(
+    r"(?:vmess|vless|trojan|ssr?|socks5?|https?|hysteria2?|hy2)://[^\s<>\"']+",
+    re.IGNORECASE,
+)
+
 
 def load_sources():
     if not SOURCES_FILE.exists():
@@ -34,7 +40,7 @@ def load_sources():
 
     sources = []
 
-    for line in SOURCES_FILE.read_text().splitlines():
+    for line in SOURCES_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
 
         if not line or line.startswith("#"):
@@ -45,21 +51,46 @@ def load_sources():
     return sources
 
 
+def decode_base64(text):
+    compact = "".join(text.split())
+
+    if len(compact) < 16:
+        return ""
+
+    padding = "=" * (-len(compact) % 4)
+
+    try:
+        decoded = base64.b64decode(compact + padding, validate=True)
+        result = decoded.decode("utf-8", errors="ignore")
+    except (ValueError, UnicodeDecodeError):
+        try:
+            decoded = base64.urlsafe_b64decode(compact + padding)
+            result = decoded.decode("utf-8", errors="ignore")
+        except (ValueError, UnicodeDecodeError):
+            return ""
+
+    if "://" not in result:
+        return ""
+
+    return result
+
+
 def extract_configs(text):
     configs = []
 
-    for line in text.splitlines():
-        line = line.strip()
+    for match in SCHEME_PATTERN.finditer(text):
+        config = match.group(0).rstrip("),]}\n\r")
+        configs.append(config)
 
-        if not line:
-            continue
+    if configs:
+        return configs
 
-        line = line.split("#", 1)[0].strip()
+    decoded = decode_base64(text)
 
-        for scheme in SCHEMES:
-            if line.lower().startswith(scheme):
-                configs.append(line)
-                break
+    if decoded:
+        for match in SCHEME_PATTERN.finditer(decoded):
+            config = match.group(0).rstrip("),]}\n\r")
+            configs.append(config)
 
     return configs
 
@@ -91,8 +122,10 @@ def collect():
         content = download_source(source)
 
         if content:
-            configs.extend(extract_configs(content))
-            
+            found = extract_configs(content)
+            print(f"[INFO] Found {len(found)} configs.")
+            configs.extend(found)
+
     return list(dict.fromkeys(configs))
 
 
@@ -100,24 +133,41 @@ def test_configs(configs):
     if not configs:
         return []
 
-    print(f"[INFO] Testing {len(configs)} configurations...")
+    supported = [
+        config
+        for config in configs
+        if config.lower().startswith(tuple(
+            scheme for scheme in SCHEMES if scheme != "ssr://"
+        ))
+    ]
+
+    skipped = len(configs) - len(supported)
+
+    if skipped:
+        print(f"[INFO] Skipping {skipped} unsupported SSR configs.")
+
+    if not supported:
+        return []
+
+    print(f"[INFO] Testing {len(supported)} configurations...")
 
     working = []
 
     try:
         batch = SingBoxBatch(
-            configs,
+            supported,
             batch_size=50,
         )
 
-        for result in batch.check(
-            timeout=TIMEOUT,
-            workers=WORKERS,
-        ):
-            if result.working:
-                working.append(result.url)
-
-        batch.stop()
+        try:
+            for result in batch.check(
+                timeout=TIMEOUT,
+                workers=WORKERS,
+            ):
+                if result.working:
+                    working.append(result.url)
+        finally:
+            batch.stop()
 
     except Exception as exc:
         print(f"[ERROR] Proxy testing failed: {exc}")
@@ -132,13 +182,15 @@ def write_outputs(configs):
     light_file = OUTPUT_DIR / "light.txt"
 
     all_file.write_text(
-        "\n".join(configs) + ("\n" if configs else "")
+        "\n".join(configs) + ("\n" if configs else ""),
+        encoding="utf-8",
     )
 
     light_configs = configs[:LIGHT_LIMIT]
 
     light_file.write_text(
-        "\n".join(light_configs) + ("\n" if light_configs else "")
+        "\n".join(light_configs) + ("\n" if light_configs else ""),
+        encoding="utf-8",
     )
 
     print(f"[INFO] Published {len(configs)} configs to all.txt")
