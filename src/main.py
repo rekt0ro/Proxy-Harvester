@@ -209,6 +209,8 @@ def test_configs(configs):
     total = len(supported)
     print(f"[INFO] Testing {total} configurations...")
 
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     working_file = OUTPUT_DIR / ".working.txt"
     light_configs = []
     tested = 0
