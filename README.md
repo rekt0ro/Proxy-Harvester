@@ -26,13 +26,7 @@ VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria 2, SOCKS, HTTP/HTTPS.
 
 ## Updates
 
-Automatically updated every 6 hours using GitHub Actions.
-
-## Architecture
-
-The collector is written in Rust. Input is downloaded concurrently, deduplicated in memory, processed in bounded chunks, and tested through the standalone `sb2p` engine backed by sing-box.
-
-Working results are written only after a successful test run, so a failed update does not replace the previous subscription.
+Automatically updated every 6 hours.
 
 ## Disclaimer
 
