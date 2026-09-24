@@ -29,7 +29,8 @@ jobs:
       - name: Install sb2p
         run: |
           curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.sh | sh
-          sb2p --cmd version
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/sb2p" --cmd version
 
       - name: Build
         run: cargo build --release
