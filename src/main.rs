@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let exe = env::current_exe()?;
     let root = exe
         .parent()
@@ -167,7 +167,7 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(root.to_path_buf())
 }
 
-async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let content = fs::read_to_string(path).await?;
     Ok(content
         .lines()
