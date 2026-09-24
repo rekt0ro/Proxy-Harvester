@@ -11,6 +11,8 @@ OUTPUT_DIR = ROOT / "subscriptions"
 
 TIMEOUT = 8
 WORKERS = 4
+BATCH_SIZE = 10
+CHUNK_SIZE = 100
 LIGHT_LIMIT = 200
 
 SCHEMES = (
@@ -153,24 +155,31 @@ def test_configs(configs):
 
     working = []
 
-    try:
-        batch = SingBoxBatch(
-            supported,
-            batch_size=10,
+    for start in range(0, len(supported), CHUNK_SIZE):
+        chunk = supported[start:start + CHUNK_SIZE]
+        print(
+            f"[INFO] Testing chunk {start + 1}-{start + len(chunk)} "
+            f"of {len(supported)}..."
         )
 
         try:
-            for result in batch.check(
-                timeout=TIMEOUT,
-                workers=WORKERS,
-            ):
-                if result.working:
-                    working.append(result.url)
-        finally:
-            batch.stop()
+            batch = SingBoxBatch(
+                chunk,
+                batch_size=BATCH_SIZE,
+            )
 
-    except Exception as exc:
-        print(f"[ERROR] Proxy testing failed: {exc}")
+            try:
+                for result in batch.check_iter(
+                    timeout=TIMEOUT,
+                    workers=WORKERS,
+                ):
+                    if result.working:
+                        working.append(result.url)
+            finally:
+                batch.stop()
+
+        except Exception as exc:
+            print(f"[WARN] Testing chunk failed: {exc}")
 
     return list(dict.fromkeys(working))
 
