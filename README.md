@@ -1,18 +1,33 @@
 # Proxy-Harvester
 
-**An automated harvester of publicly available proxy configurations.**
+An automated garden of publicly available proxy configurations.
 
-Proxy-Harvester continuously discovers, collects, cleans, validates, and organizes proxy configurations from publicly available sources.
+Proxy-Harvester collects, validates, tests, and publishes working proxy configurations from multiple public sources.
 
+## Subscriptions
 
-## Supported protocols
+**All**
 
-* VMess
-* VLESS
-* Trojan
-* Shadowsocks
-* ShadowsocksR
-* Hysteria
-* Hysteria 2
-* SOCKS
-* HTTP / HTTPS
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
+```
+
+**Light**
+
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light.txt
+```
+
+`light.txt` contains up to 200 working configurations.
+
+## Supported Protocols
+
+VMess, VLESS, Trojan, Shadowsocks, Hysteria, SOCKS, HTTP/HTTPS.
+
+## Updates
+
+Automatically updated every 6 hours.
+
+## Disclaimer
+
+This project aggregates publicly available configurations. Use them at your own discretion and follow applicable laws and service terms.
