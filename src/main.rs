@@ -2,17 +2,13 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use regex::Regex;
-use reqwest::{Client, Proxy};
+use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
 use tokio::fs::{self, File};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::process::Command;
-use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 use url::Url;
 
@@ -115,14 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|chunk| chunk.to_vec())
         .collect();
 
-    let semaphore = Arc::new(Semaphore::new(TEST_CONCURRENCY));
     let mut chunk_results = stream::iter(chunks.into_iter().enumerate())
         .map(|(index, chunk)| {
-            let semaphore = semaphore.clone();
-            async move {
-                let _permit = semaphore.acquire_owned().await?;
-                test_chunk(index, format!("{index}"), chunk).await
-            }
+            async move { test_chunk(index, format!("{index}"), chunk).await }
         })
         .buffer_unordered(TEST_CONCURRENCY)
         .try_collect::<Vec<(usize, Vec<String>)>>()
@@ -290,7 +281,7 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
 
     if scheme == "vmess" {
         let encoded = config.split_once("://")?.1.split('#').next()?.trim();
-        let decoded = decode_base64_variants(encoded)?;
+        let decoded = decode_base64_variants(encoded).into_iter().next()?;
         let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
             .ok()?
             .captures(&decoded)?
@@ -401,17 +392,3 @@ async fn diagnose_configs(configs: &[String]) {
     }
 }
 
-async fn read_working(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let file = File::open(path).await?;
-    let mut reader = BufReader::new(file).lines();
-    let mut result = Vec::new();
-
-    while let Some(line) = reader.next_line().await? {
-        let line = line.trim();
-        if !line.is_empty() {
-            result.push(line.to_string());
-        }
-    }
-
-    Ok(result)
-}
