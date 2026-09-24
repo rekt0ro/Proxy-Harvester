@@ -139,6 +139,22 @@ def run_batch(configs):
         )
 
         try:
+            if len(batch) != len(configs):
+                if len(configs) == 1:
+                    print("[WARN] Skipping invalid config.")
+                    return []
+
+                midpoint = len(configs) // 2
+                left = configs[:midpoint]
+                right = configs[midpoint:]
+
+                print(
+                    f"[WARN] Batch contains invalid configs. "
+                    f"Splitting {len(configs)} into {len(left)} and {len(right)}."
+                )
+
+                return run_batch(left) + run_batch(right)
+
             return [
                 result.url
                 for result in batch.check_iter(
