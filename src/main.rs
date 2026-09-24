@@ -153,6 +153,7 @@ async fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let root = exe
         .parent()
         .and_then(Path::parent)
+        .and_then(Path::parent)
         .ok_or("failed to determine project root")?;
     Ok(root.to_path_buf())
 }
