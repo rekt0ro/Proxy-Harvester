@@ -436,11 +436,12 @@ async fn test_advanced_batch(
         }
 
         let midpoint = reachable.len() / 2;
-        let left = test_advanced_batch(index, &format!("{label}a"), &reachable[..midpoint]).await?;
-        let right = test_advanced_batch(index, &format!("{label}b"), &reachable[midpoint..]).await?;
+        let left_future = Box::pin(test_advanced_batch(index, &format!("{label}a"), &reachable[..midpoint]));
+        let right_future = Box::pin(test_advanced_batch(index, &format!("{label}b"), &reachable[midpoint..]));
+        let (left, right) = tokio::join!(left_future, right_future);
 
-        let mut combined = left;
-        combined.extend(right);
+        let mut combined = left?;
+        combined.extend(right?);
         return Ok(combined);
     }
 
