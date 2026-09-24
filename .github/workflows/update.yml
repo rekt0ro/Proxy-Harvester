@@ -16,6 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install sing-box
         run: |
           curl -fsSL -o /tmp/sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.12.4/sing-box-1.12.4-linux-amd64.tar.gz
@@ -23,16 +26,16 @@ jobs:
           sudo install -m 755 /tmp/sing-box-1.12.4-linux-amd64/sing-box /usr/local/bin/sing-box
           sing-box version
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Install sb2p
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.sh | sh
+          sb2p --cmd version
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Build
+        run: cargo build --release
 
       - name: Collect and test configs
-        run: python src/main.py
+        run: ./target/release/proxy-harvester
 
       - name: Commit changes
         run: |
