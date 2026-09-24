@@ -293,7 +293,7 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
             }
         }
 
-        let decoded = decoded_texts.into_iter().find(|text| text.contains(""add""))?;
+        let decoded = decoded_texts.into_iter().find(|text| text.contains("\"add\""))?;
         let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
             .ok()?
             .captures(&decoded)?
