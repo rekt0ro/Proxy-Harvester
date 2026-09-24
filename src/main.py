@@ -131,6 +131,42 @@ def collect():
     return list(dict.fromkeys(configs))
 
 
+def run_batch(configs):
+    try:
+        batch = SingBoxBatch(
+            configs,
+            batch_size=BATCH_SIZE,
+        )
+
+        try:
+            return [
+                result.url
+                for result in batch.check_iter(
+                    timeout=TIMEOUT,
+                    workers=WORKERS,
+                )
+                if result.working
+            ]
+        finally:
+            batch.stop()
+
+    except Exception as exc:
+        if len(configs) == 1:
+            print(f"[WARN] Skipping invalid config: {exc}")
+            return []
+
+        midpoint = len(configs) // 2
+        left = configs[:midpoint]
+        right = configs[midpoint:]
+
+        print(
+            f"[WARN] Batch failed with {len(configs)} configs. "
+            f"Splitting into {len(left)} and {len(right)}."
+        )
+
+        return run_batch(left) + run_batch(right)
+
+
 def test_configs(configs):
     if not configs:
         return []
@@ -162,24 +198,7 @@ def test_configs(configs):
             f"of {len(supported)}..."
         )
 
-        try:
-            batch = SingBoxBatch(
-                chunk,
-                batch_size=BATCH_SIZE,
-            )
-
-            try:
-                for result in batch.check_iter(
-                    timeout=TIMEOUT,
-                    workers=WORKERS,
-                ):
-                    if result.working:
-                        working.append(result.url)
-            finally:
-                batch.stop()
-
-        except Exception as exc:
-            print(f"[WARN] Testing chunk failed: {exc}")
+        working.extend(run_batch(chunk))
 
     return list(dict.fromkeys(working))
 
