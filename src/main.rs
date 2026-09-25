@@ -23,13 +23,18 @@ const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 2000;
 const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
-const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
+const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 500;
 const PROXY_TEST_TIMEOUT_SECS: u64 = 8;
 const PROXY_TEST_WORKERS: usize = 24;
 const PROXY_TEST_BATCH_SIZE: usize = 100;
 const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 1;
 const PROXY_TEST_MAX_TCP_LATENCY_MS: u64 = 800;
 const LIGHT_CANDIDATE_BUDGET: usize = 6000;
+const LIGHT_VMESS_SOFT_LIMIT: usize = 100;
+const GEO_PER_PROTOCOL_LIMIT: usize = 1000;
+const GEO_BATCH_SIZE: usize = 100;
+const GEO_RESOLUTION_CONCURRENCY: usize = 64;
+const GEO_TIMEOUT_SECS: u64 = 10;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 
 #[tokio::main]
@@ -228,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
     schemes.sort_unstable();
 
-    let light_configs = match proxy_test_light(&by_scheme, &output_dir).await {
+    let light_configs = match proxy_test_light(&by_scheme, &output_dir, &client).await {
         Some(configs) => configs,
         None => {
             println!("[WARN] Proxy-level testing unavailable or produced no verified configs.");
@@ -1051,6 +1056,7 @@ async fn run_proxy_check_batch(
 async fn proxy_test_light(
     by_scheme: &HashMap<String, Vec<(String, u64)>>,
     output_dir: &Path,
+    client: &Client,
 ) -> Option<Vec<String>> {
     let root = output_dir.parent()?.to_path_buf();
     let checker = root.join("scripts").join("check_proxies.py");
@@ -1062,6 +1068,49 @@ async fn proxy_test_light(
 
     let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
     schemes.sort_unstable();
+
+    let mut geo_candidates = Vec::new();
+    for scheme in &schemes {
+        if scheme == "http" || scheme == "https" || scheme == "ssr" {
+            continue;
+        }
+
+        if let Some(configs) = by_scheme.get(scheme) {
+            geo_candidates.extend(
+                configs
+                    .iter()
+                    .take(GEO_PER_PROTOCOL_LIMIT)
+                    .map(|(config, _)| config.clone()),
+            );
+        }
+    }
+
+    let eu_by_endpoint = detect_eu_endpoints(client, &geo_candidates).await;
+
+    let mut prioritized_by_scheme = by_scheme.clone();
+    for (scheme, configs) in prioritized_by_scheme.iter_mut() {
+        configs.sort_by_key(|(config, latency_ms)| {
+            let is_eu = endpoint(config)
+                .and_then(|key| eu_by_endpoint.get(&key).copied())
+                .unwrap_or(false);
+            (!is_eu, *latency_ms)
+        });
+
+        if let Some(eu_count) = configs
+            .iter()
+            .filter(|(config, _)| {
+                endpoint(config)
+                    .and_then(|key| eu_by_endpoint.get(&key).copied())
+                    .unwrap_or(false)
+            })
+            .count()
+            .checked_sub(0)
+        {
+            if eu_count > 0 {
+                println!("[INFO] EU candidate preference: {scheme} has {eu_count} detected EU endpoints in its Light pool.");
+            }
+        }
+    }
 
     let mut verified_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
     let mut offsets: HashMap<String, usize> = HashMap::new();
@@ -1081,7 +1130,7 @@ async fn proxy_test_light(
                 continue;
             }
 
-            let Some(configs) = by_scheme.get(scheme) else { continue };
+            let Some(configs) = prioritized_by_scheme.get(scheme) else { continue };
             let offset = *offsets.get(scheme).unwrap_or(&0);
 
             if offset >= configs.len() {
@@ -1140,38 +1189,266 @@ async fn proxy_test_light(
         return None;
     }
 
-    let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
     let mut verified_schemes: Vec<String> = verified_by_scheme.keys().cloned().collect();
     verified_schemes.sort_unstable();
 
-    let mut index = 0usize;
-    while verified.len() < LIGHT_LIMIT {
-        let mut added = false;
-        for scheme in &verified_schemes {
-            if let Some(config) = verified_by_scheme
-                .get(scheme)
-                .and_then(|items| items.get(index))
-            {
-                verified.push(config.clone());
-                added = true;
-                if verified.len() >= LIGHT_LIMIT {
-                    break;
-                }
+    let mut eu_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+    let mut non_eu_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+
+    for scheme in &verified_schemes {
+        let Some(items) = verified_by_scheme.get(scheme) else {
+            continue;
+        };
+
+        for config in items {
+            let is_eu = endpoint(config)
+                .and_then(|key| eu_by_endpoint.get(&key).copied())
+                .unwrap_or(false);
+
+            if is_eu {
+                eu_by_scheme
+                    .entry(scheme.clone())
+                    .or_default()
+                    .push(config.clone());
+            } else {
+                non_eu_by_scheme
+                    .entry(scheme.clone())
+                    .or_default()
+                    .push(config.clone());
             }
         }
-        if !added {
-            break;
+    }
+
+    let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
+    let mut vmess_count = 0usize;
+
+    for pools in [&eu_by_scheme, &non_eu_by_scheme] {
+        let mut index = 0usize;
+
+        while verified.len() < LIGHT_LIMIT {
+            let mut added = false;
+
+            for scheme in &verified_schemes {
+                let Some(items) = pools.get(scheme) else {
+                    continue;
+                };
+
+                if let Some(config) = items.get(index) {
+                    if config_scheme(config) == "vmess" && vmess_count >= LIGHT_VMESS_SOFT_LIMIT {
+                        continue;
+                    }
+
+                    verified.push(config.clone());
+                    if config_scheme(config) == "vmess" {
+                        vmess_count += 1;
+                    }
+                    added = true;
+
+                    if verified.len() >= LIGHT_LIMIT {
+                        break;
+                    }
+                }
+            }
+
+            if !added {
+                break;
+            }
+
+            index += 1;
         }
-        index += 1;
+    }
+
+    if verified.len() < LIGHT_LIMIT {
+        let mut fallback = Vec::new();
+        for scheme in &verified_schemes {
+            if let Some(items) = verified_by_scheme.get(scheme) {
+                fallback.extend(items.iter().cloned());
+            }
+        }
+
+        for config in fallback {
+            if verified.contains(&config) {
+                continue;
+            }
+
+            verified.push(config);
+            if verified.len() >= LIGHT_LIMIT {
+                break;
+            }
+        }
     }
 
     println!(
-        "[INFO] Proxy-level testing completed with {} fully verified configs.",
-        verified.len()
+        "[INFO] Proxy-level testing completed with {} fully verified configs ({} EU, {} VMess).",
+        verified.len(),
+        verified
+            .iter()
+            .filter(|config| {
+                endpoint(config)
+                    .and_then(|key| eu_by_endpoint.get(&key).copied())
+                    .unwrap_or(false)
+            })
+            .count(),
+        verified.iter().filter(|config| config_scheme(config) == "vmess").count()
     );
 
     Some(verified)
 }
+fn is_eu_country_code(code: &str) -> bool {
+    matches!(
+        code,
+        "AT"
+            | "BE"
+            | "BG"
+            | "HR"
+            | "CY"
+            | "CZ"
+            | "DK"
+            | "EE"
+            | "FI"
+            | "FR"
+            | "DE"
+            | "GR"
+            | "HU"
+            | "IE"
+            | "IT"
+            | "LV"
+            | "LT"
+            | "LU"
+            | "MT"
+            | "NL"
+            | "PL"
+            | "PT"
+            | "RO"
+            | "SK"
+            | "SI"
+            | "ES"
+            | "SE"
+    )
+}
+
+async fn resolve_geo_ip(host: &str, port: u16) -> Option<std::net::IpAddr> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return Some(ip);
+    }
+
+    let mut addresses = timeout(
+        Duration::from_secs(GEO_TIMEOUT_SECS),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .ok()?
+    .ok()?
+    .collect::<Vec<_>>();
+
+    addresses.sort_by_key(|address| !address.ip().is_ipv4());
+
+    addresses
+        .into_iter()
+        .map(|address| address.ip())
+        .find(|ip| !ip.is_unspecified() && !ip.is_loopback())
+}
+
+async fn detect_eu_endpoints(
+    client: &Client,
+    configs: &[String],
+) -> HashMap<(String, u16), bool> {
+    let mut endpoints = HashSet::new();
+    for config in configs {
+        if let Some(key) = endpoint(config) {
+            endpoints.insert(key);
+        }
+    }
+
+    if endpoints.is_empty() {
+        return HashMap::new();
+    }
+
+    let resolved = stream::iter(endpoints.into_iter().map(|key| async move {
+        let ip = resolve_geo_ip(&key.0, key.1).await;
+        ip.map(|ip| (key, ip))
+    }))
+    .buffer_unordered(GEO_RESOLUTION_CONCURRENCY)
+    .filter_map(async move |result| result)
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut endpoint_by_ip: HashMap<std::net::IpAddr, Vec<(String, u16)>> = HashMap::new();
+    for (key, ip) in resolved {
+        endpoint_by_ip.entry(ip).or_default().push(key);
+    }
+
+    let ips: Vec<std::net::IpAddr> = endpoint_by_ip.keys().copied().collect();
+    let mut ip_is_eu: HashMap<std::net::IpAddr, bool> = HashMap::new();
+
+    for chunk in ips.chunks(GEO_BATCH_SIZE) {
+        let payload = match serde_json::to_vec(
+            &chunk.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ) {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+
+        let response = match client
+            .post("https://api.country.is/")
+            .header("content-type", "application/json")
+            .body(payload)
+            .send()
+            .await
+        {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => response,
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        };
+
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(_) => continue,
+        };
+
+        let results: Vec<Value> = match serde_json::from_str(&body) {
+            Ok(results) => results,
+            Err(_) => continue,
+        };
+
+        for result in results {
+            let Some(ip) = result
+                .get("ip")
+                .and_then(Value::as_str)
+                .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+            else {
+                continue;
+            };
+
+            let is_eu = result
+                .get("country")
+                .and_then(Value::as_str)
+                .is_some_and(is_eu_country_code);
+
+            ip_is_eu.insert(ip, is_eu);
+        }
+    }
+
+    let mut eu_by_endpoint = HashMap::new();
+    for (ip, keys) in endpoint_by_ip {
+        let is_eu = ip_is_eu.get(&ip).copied().unwrap_or(false);
+        for key in keys {
+            eu_by_endpoint.insert(key, is_eu);
+        }
+    }
+
+    let eu_count = eu_by_endpoint.values().filter(|&&is_eu| is_eu).count();
+    println!(
+        "[INFO] EU endpoint detection: classified {} endpoints, {} detected in the EU.",
+        eu_by_endpoint.len(),
+        eu_count
+    );
+
+    eu_by_endpoint
+}
+
 async fn diagnose_configs(configs: &[String]) {
     let mut samples = Vec::new();
     let mut seen = HashSet::new();
