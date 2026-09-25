@@ -2,6 +2,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use regex::Regex;
+use serde_json::Value;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -289,16 +290,58 @@ fn normalize_vmess(config: &str) -> Option<String> {
     }
 
     let decoded = decode_vmess_payload(encoded)?;
+    let value: Value = serde_json::from_str(&decoded).ok()?;
+    let object = value.as_object()?;
 
-    if !decoded.contains("\"add\"")
-        || !decoded.contains("\"port\"")
-        || !decoded.contains("\"id\"")
-    {
+    let version_ok = match object.get("v") {
+        Some(Value::String(version)) => version == "2",
+        Some(Value::Number(version)) => version.as_u64() == Some(2),
+        _ => false,
+    };
+    if !version_ok {
+        return None;
+    }
+
+    let add = object.get("add")?.as_str()?.trim();
+    if add.is_empty() || add.chars().any(|c| c.is_control() || c == ' ' || c == '/' || c == '\\') {
+        return None;
+    }
+
+    let port = match object.get("port") {
+        Some(Value::String(port)) => port.parse::<u16>().ok()?,
+        Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
+        _ => return None,
+    };
+    if port == 0 {
+        return None;
+    }
+
+    let id = object.get("id")?.as_str()?.trim();
+    if !is_uuid(id) {
         return None;
     }
 
     let canonical = STANDARD.encode(decoded.as_bytes());
     Some(format!("vmess://{canonical}"))
+}
+
+fn is_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn decode_vmess_payload(encoded: &str) -> Option<String> {
