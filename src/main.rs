@@ -251,12 +251,16 @@ fn extract_configs(text: &str) -> Vec<String> {
     let mut found = Vec::new();
 
     for capture in pattern.find_iter(&text) {
-        found.push(trim_config(capture.as_str()));
+        if let Some(config) = normalize_config(capture.as_str()) {
+            found.push(config);
+        }
     }
 
     for decoded in decode_base64_variants(&text) {
         for capture in pattern.find_iter(&decoded) {
-            found.push(trim_config(capture.as_str()));
+            if let Some(config) = normalize_config(capture.as_str()) {
+                found.push(config);
+            }
         }
     }
 
@@ -265,9 +269,71 @@ fn extract_configs(text: &str) -> Vec<String> {
     found
 }
 
+fn normalize_config(config: &str) -> Option<String> {
+    let config = trim_config(config);
+    let scheme = config_scheme(&config);
+
+    if scheme != "vmess" {
+        return Some(config);
+    }
+
+    normalize_vmess(&config)
+}
+
+fn normalize_vmess(config: &str) -> Option<String> {
+    let payload = config.split_once("://")?.1;
+    let encoded = payload.split('#').next()?.trim();
+
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let decoded = decode_vmess_payload(encoded)?;
+
+    if !decoded.contains(""add"")
+        || !decoded.contains(""port"")
+        || !decoded.contains(""id"")
+    {
+        return None;
+    }
+
+    let canonical = STANDARD.encode(decoded.as_bytes());
+    Some(format!("vmess://{canonical}"))
+}
+
+fn decode_vmess_payload(encoded: &str) -> Option<String> {
+    let mut candidates = Vec::with_capacity(4);
+    let mut padded = encoded.to_string();
+
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+
+    candidates.push(encoded.to_string());
+    if padded != encoded {
+        candidates.push(padded);
+    }
+
+    for candidate in candidates {
+        for decoded in [
+            STANDARD.decode(&candidate),
+            URL_SAFE.decode(&candidate),
+            URL_SAFE_NO_PAD.decode(&candidate),
+        ] {
+            if let Ok(bytes) = decoded {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    return Some(text);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn decode_html_entities(text: &str) -> String {
     text.replace("&amp;", "&")
-        .replace("&quot;", "\"")
+        .replace("&quot;", """)
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
@@ -276,7 +342,10 @@ fn decode_html_entities(text: &str) -> String {
 
 fn trim_config(config: &str) -> String {
     let config = config
-        .trim_end_matches(|c| c == ')' || c == ']' || c == '}' || c == ',' || c == '\r' || c == '\n')
+        .trim_end_matches(|c| {
+            c == ')' || c == ']' || c == '}' || c == ',' || c == ';' || c == '.'
+                || c == '\r' || c == '\n'
+        })
         .to_string();
 
     let Ok(mut url) = Url::parse(&config) else {
@@ -389,39 +458,22 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
 
     if scheme == "vmess" {
         let encoded = config.split_once("://")?.1.split('#').next()?.trim();
-        let mut decoded_texts = Vec::new();
-        let mut padded = encoded.to_string();
+        let decoded = decode_vmess_payload(encoded)?;
 
-        while padded.len() % 4 != 0 {
-            padded.push('=');
-        }
-
-        for candidate in [encoded.to_string(), padded] {
-            for decoded in [
-                STANDARD.decode(&candidate),
-                URL_SAFE.decode(&candidate),
-                URL_SAFE_NO_PAD.decode(&candidate),
-            ] {
-                if let Ok(bytes) = decoded {
-                    decoded_texts.push(String::from_utf8_lossy(&bytes).to_string());
-                }
-            }
-        }
-
-        let decoded = decoded_texts.into_iter().find(|text| text.contains("\"add\""))?;
-        let add = Regex::new(r#"\"add\"\s*:\s*\"([^\"]+)\""#)
+        let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
             .as_str()
             .to_string();
-        let port = Regex::new(r#""port"s*:s*"?([0-9]+)"?"#)
+        let port = Regex::new(r#""port"\s*:\s*"?([0-9]+)"?"#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
             .as_str()
             .parse::<u16>()
             .ok()?;
+
         return Some((add, port));
     }
 
@@ -568,11 +620,9 @@ async fn proxy_test_light(
             .iter()
             .map(|config| config.as_str())
             .collect::<Vec<_>>()
-            .join("
-");
+            .join("\n");
 
-        if fs::write(&input_path, format!("{input}
-")).await.is_err() {
+        if fs::write(&input_path, format!("{input}\n")).await.is_err() {
             println!("[WARN] Failed to prepare proxy test input for {scheme}.");
             continue;
         }
