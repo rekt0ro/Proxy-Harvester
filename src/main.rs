@@ -585,6 +585,7 @@ async fn proxy_test_light(
             .arg(PROXY_TEST_BATCH_SIZE.to_string())
             .arg("--timeout")
             .arg(PROXY_TEST_TIMEOUT_SECS.to_string())
+            .arg("-q")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -637,8 +638,11 @@ async fn proxy_test_light(
                     println!("[INFO] Proxy-tested {scheme}: 0/{} passed.", candidates.len());
                 }
             }
-            Err(error) => {
-                println!("[WARN] sb2p produced no output for {scheme}: {error}");
+            Err(_) => {
+                println!(
+                    "[INFO] Proxy-tested {scheme}: 0/{} passed.",
+                    candidates.len()
+                );
             }
         }
 
