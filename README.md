@@ -18,7 +18,7 @@ https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light.txt
 ```
 
-`light.txt` contains up to 200 working configurations.
+`light.txt` Contains up to 200 mixed, working configurations across supported protocols.
 
 ## Supported Protocols
 
