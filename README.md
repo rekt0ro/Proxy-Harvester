@@ -18,7 +18,15 @@ https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light.txt
 ```
 
-`light.txt` Contains up to 200 mixed, working configurations across supported protocols.
+**Light Base64**
+
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light-base64.txt
+```
+
+`light.txt` contains up to 200 mixed, working configurations across supported protocols.
+
+`light-base64.txt` contains the same configurations in Base64 format for clients that require Base64 subscriptions.
 
 ## Supported Protocols
 
