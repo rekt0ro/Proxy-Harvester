@@ -13,7 +13,6 @@ from singbox2proxy import SingBoxBatch
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
     "https://www.google.com/generate_204",
-    "https://www.gstatic.com/generate_204",
     "https://api.ipify.org?format=json",
 )
 
@@ -114,10 +113,13 @@ def main():
         print("0/0 working")
         return 0
 
-    test_urls = [strip_fragment(url) for url in original_urls]
+    test_urls = []
     original_by_test_url = {}
-    for original, test_url in zip(original_urls, test_urls):
-        original_by_test_url.setdefault(test_url, original)
+    for original in original_urls:
+        test_url = strip_fragment(original)
+        if test_url not in original_by_test_url:
+            original_by_test_url[test_url] = original
+            test_urls.append(test_url)
 
     rejected = []
     batches = []
@@ -151,21 +153,28 @@ def main():
         first_success_counts = collections.Counter()
         targets_used = 0
 
+        active_proxies = list(proxies)
+
         for target in DEFAULT_TARGETS:
+            if not active_proxies:
+                break
+
             targets_used += 1
             print(
-                f"target {targets_used}/{len(DEFAULT_TARGETS)}: {target}",
+                f"target {targets_used}/{len(DEFAULT_TARGETS)}: {target} "
+                f"({len(active_proxies)} active proxies)",
                 flush=True,
             )
 
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, min(args.workers, len(proxies)))
+                max_workers=max(1, min(args.workers, len(active_proxies)))
             ) as pool:
                 futures = {
                     pool.submit(check_proxy, proxy, target, args.timeout): proxy
-                    for proxy in proxies
+                    for proxy in active_proxies
                 }
 
+                next_active = []
                 for future in concurrent.futures.as_completed(futures):
                     proxy = futures[future]
                     ok, latency_ms, error = future.result()
@@ -177,6 +186,11 @@ def main():
                         latencies[original_url].append(latency_ms)
                     else:
                         failures[error or "unknown error"] += 1
+
+                    if len(latencies[original_url]) < MIN_SUCCESSFUL_TARGETS:
+                        next_active.append(proxy)
+
+                active_proxies = next_active
 
             working = sum(bool(values) for values in latencies.values())
             print(

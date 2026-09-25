@@ -23,8 +23,9 @@ const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
 const PROXY_TEST_TIMEOUT_SECS: u64 = 8;
-const PROXY_TEST_WORKERS: usize = 20;
-const PROXY_TEST_BATCH_SIZE: usize = 50;
+const PROXY_TEST_WORKERS: usize = 24;
+const PROXY_TEST_BATCH_SIZE: usize = 100;
+const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 4;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -801,6 +802,101 @@ async fn test_chunk(
     Ok((index, working))
 }
 
+async fn run_proxy_check_batch(
+    checker: &Path,
+    output_dir: &Path,
+    scheme: String,
+    candidates: Vec<String>,
+    offset: usize,
+) -> (String, Vec<String>) {
+    let input_path = output_dir.join(format!(".proxy-test-{scheme}.txt"));
+    let output_path = output_dir.join(format!(".proxy-working-{scheme}.txt"));
+    let input = candidates.join("\n");
+
+    if fs::write(&input_path, format!("{input}\n")).await.is_err() {
+        println!("[WARN] Failed to prepare proxy test input for {scheme}.");
+        return (scheme, Vec::new());
+    }
+
+    let _ = fs::remove_file(&output_path).await;
+    println!(
+        "[INFO] Proxy-testing {} {} candidates (offset {}..{}) until {} verified configs are reached.",
+        scheme,
+        candidates.len(),
+        offset,
+        offset + candidates.len(),
+        LIGHT_LIMIT
+    );
+
+    let start = Instant::now();
+    let result = Command::new("python3")
+        .arg(checker)
+        .arg("--input").arg(&input_path)
+        .arg("--output").arg(&output_path)
+        .arg("--workers").arg(PROXY_TEST_WORKERS.to_string())
+        .arg("--batch-size").arg(PROXY_TEST_BATCH_SIZE.to_string())
+        .arg("--timeout").arg(PROXY_TEST_TIMEOUT_SECS.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+
+    let Ok(result) = result else {
+        println!("[WARN] Failed to run Python proxy checker for {scheme}.");
+        let _ = fs::remove_file(&input_path).await;
+        let _ = fs::remove_file(&output_path).await;
+        return (scheme, Vec::new());
+    };
+
+    println!(
+        "[DIAG] Python proxy test {} exit: success={}, status={}, elapsed={}ms, stdout_bytes={}, stderr_bytes={}",
+        scheme,
+        result.status.success(),
+        result.status,
+        start.elapsed().as_millis(),
+        result.stdout.len(),
+        result.stderr.len()
+    );
+
+    let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+
+    if !stdout.is_empty() {
+        println!("[INFO] Python proxy test {scheme}: {stdout}");
+    }
+
+    if !result.status.success() {
+        if !stderr.is_empty() {
+            println!("[WARN] Python proxy test {scheme} stderr: {stderr}");
+        }
+        let _ = fs::remove_file(&input_path).await;
+        let _ = fs::remove_file(&output_path).await;
+        return (scheme, Vec::new());
+    }
+
+    if !stderr.is_empty() {
+        println!("[INFO] Python proxy test {scheme} stderr: {stderr}");
+    }
+
+    let verified = fs::read_to_string(&output_path)
+        .await
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let _ = fs::remove_file(&input_path).await;
+    let _ = fs::remove_file(&output_path).await;
+
+    (scheme, verified)
+}
+
 async fn proxy_test_light(
     by_scheme: &HashMap<String, Vec<(String, u64)>>,
     output_dir: &Path,
@@ -820,101 +916,68 @@ async fn proxy_test_light(
     let mut offsets: HashMap<String, usize> = HashMap::new();
     let mut total_verified = 0usize;
 
-    while total_verified < LIGHT_LIMIT {
-        let mut progress = false;
+    loop {
+        let mut jobs = Vec::new();
 
         for scheme in &schemes {
-            if total_verified >= LIGHT_LIMIT {
-                break;
-            }
             if scheme == "http" || scheme == "https" || scheme == "ssr" {
                 continue;
             }
 
             let Some(configs) = by_scheme.get(scheme) else { continue };
             let offset = *offsets.get(scheme).unwrap_or(&0);
-            if offset >= configs.len() { continue }
+
+            if offset >= configs.len() {
+                continue;
+            }
 
             let end = (offset + PROXY_TEST_LIMIT_PER_PROTOCOL).min(configs.len());
-            let candidates: Vec<&String> = configs[offset..end].iter().map(|(config, _)| config).collect();
+            let candidates = configs[offset..end]
+                .iter()
+                .map(|(config, _)| config.clone())
+                .collect::<Vec<_>>();
+
             offsets.insert(scheme.clone(), end);
 
-            if candidates.is_empty() { continue }
-            progress = true;
-
-            let input_path = output_dir.join(format!(".proxy-test-{scheme}.txt"));
-            let output_path = output_dir.join(format!(".proxy-working-{scheme}.txt"));
-            let input = candidates.iter().map(|config| config.as_str()).collect::<Vec<_>>().join("\n");
-
-            if fs::write(&input_path, format!("{input}\n")).await.is_err() {
-                println!("[WARN] Failed to prepare proxy test input for {scheme}.");
-                continue;
+            if !candidates.is_empty() {
+                jobs.push((scheme.clone(), candidates, offset));
             }
-
-            let _ = fs::remove_file(&output_path).await;
-            println!(
-                "[INFO] Proxy-testing {} {} candidates (offset {}..{}) until {} verified configs are reached.",
-                scheme, candidates.len(), offset, end, LIGHT_LIMIT
-            );
-
-            let start = Instant::now();
-            let result = Command::new("python3")
-                .arg(&checker)
-                .arg("--input").arg(&input_path)
-                .arg("--output").arg(&output_path)
-                .arg("--workers").arg(PROXY_TEST_WORKERS.to_string())
-                .arg("--batch-size").arg(PROXY_TEST_BATCH_SIZE.to_string())
-                .arg("--timeout").arg(PROXY_TEST_TIMEOUT_SECS.to_string())
-                .stdout(Stdio::piped()).stderr(Stdio::piped()).output().await;
-
-            let Ok(result) = result else {
-                println!("[WARN] Failed to run Python proxy checker for {scheme}.");
-                let _ = fs::remove_file(&input_path).await;
-                continue;
-            };
-
-            let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
-            println!(
-                "[DIAG] Python proxy test {} exit: success={}, status={}, elapsed={}ms, stdout_bytes={}, stderr_bytes={}",
-                scheme, result.status.success(), result.status, start.elapsed().as_millis(),
-                result.stdout.len(), result.stderr.len()
-            );
-            if !stdout.is_empty() { println!("[INFO] Python proxy test {scheme}: {stdout}"); }
-
-            if !result.status.success() {
-                if !stderr.is_empty() { println!("[WARN] Python proxy test {scheme} stderr: {stderr}"); }
-                let _ = fs::remove_file(&input_path).await;
-                let _ = fs::remove_file(&output_path).await;
-                continue;
-            }
-            if !stderr.is_empty() { println!("[INFO] Python proxy test {scheme} stderr: {stderr}"); }
-
-            if let Ok(content) = fs::read_to_string(&output_path).await {
-                let verified: Vec<String> = content.lines().map(str::trim).filter(|line| !line.is_empty()).map(ToOwned::to_owned).collect();
-                let entry = verified_by_scheme.entry(scheme.clone()).or_default();
-                let before = entry.len();
-                let mut seen: HashSet<String> = entry.iter().cloned().collect();
-
-                for config in verified {
-                    if seen.insert(config.clone()) { entry.push(config); }
-                }
-
-                let added = entry.len() - before;
-                total_verified += added;
-                println!(
-                    "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
-                    scheme, added, total_verified
-                );
-            } else {
-                println!("[INFO] Proxy-tested {} batch: 0/{} passed.", scheme, candidates.len());
-            }
-
-            let _ = fs::remove_file(&input_path).await;
-            let _ = fs::remove_file(&output_path).await;
         }
 
-        if !progress { break; }
+        if jobs.is_empty() {
+            break;
+        }
+
+        let batches = stream::iter(jobs.into_iter().map(|(scheme, candidates, offset)| {
+            run_proxy_check_batch(&checker, output_dir, scheme, candidates, offset)
+        }))
+        .buffer_unordered(PROXY_TEST_PROTOCOL_CONCURRENCY)
+        .collect::<Vec<(String, Vec<String>)>>()
+        .await;
+
+        for (scheme, verified) in batches {
+            let entry = verified_by_scheme.entry(scheme.clone()).or_default();
+            let before = entry.len();
+            let mut seen: HashSet<String> = entry.iter().cloned().collect();
+
+            for config in verified {
+                if seen.insert(config.clone()) {
+                    entry.push(config);
+                }
+            }
+
+            let added = entry.len() - before;
+            total_verified += added;
+
+            println!(
+                "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
+                scheme, added, total_verified
+            );
+        }
+
+        if total_verified >= LIGHT_LIMIT {
+            break;
+        }
     }
 
     if verified_by_scheme.is_empty() {
@@ -929,20 +992,30 @@ async fn proxy_test_light(
     while verified.len() < LIGHT_LIMIT {
         let mut added = false;
         for scheme in &verified_schemes {
-            if let Some(config) = verified_by_scheme.get(scheme).and_then(|items| items.get(index)) {
+            if let Some(config) = verified_by_scheme
+                .get(scheme)
+                .and_then(|items| items.get(index))
+            {
                 verified.push(config.clone());
                 added = true;
-                if verified.len() >= LIGHT_LIMIT { break; }
+                if verified.len() >= LIGHT_LIMIT {
+                    break;
+                }
             }
         }
-        if !added { break; }
+        if !added {
+            break;
+        }
         index += 1;
     }
 
-    println!("[INFO] Proxy-level testing completed with {} fully verified configs.", verified.len());
+    println!(
+        "[INFO] Proxy-level testing completed with {} fully verified configs.",
+        verified.len()
+    );
+
     Some(verified)
 }
-
 async fn diagnose_configs(configs: &[String]) {
     let mut samples = Vec::new();
     let mut seen = HashSet::new();

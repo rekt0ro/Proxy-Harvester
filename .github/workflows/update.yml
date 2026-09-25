@@ -1,14 +1,6 @@
 name: Update Configs
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/update.yml"
-      - "src/**"
-      - "scripts/**"
-      - "Cargo.toml"
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
