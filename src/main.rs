@@ -154,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Err("no compatible proxy configs were found after filtering HTTP(S) endpoints".into());
     }
 
-    let mut by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+    let mut by_scheme: HashMap<String, Vec<(String, u64)>> = HashMap::new();
     for config in &working_configs {
         if let Some(&latency_ms) = latency_by_config.get(config) {
             by_scheme
