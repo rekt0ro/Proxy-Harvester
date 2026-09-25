@@ -615,7 +615,7 @@ async fn proxy_test_light(
             .arg(PROXY_TEST_BATCH_SIZE.to_string())
             .arg("--timeout")
             .arg(PROXY_TEST_TIMEOUT_SECS.to_string())
-            .arg("-q")
+            .arg("-v")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
