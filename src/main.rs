@@ -576,16 +576,11 @@ async fn proxy_test_light(
     by_scheme: &HashMap<String, Vec<(String, u64)>>,
     output_dir: &Path,
 ) -> Option<Vec<String>> {
-    let version = Command::new("sb2p")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .ok()?;
+    let root = output_dir.parent()?.to_path_buf();
+    let checker = root.join("scripts").join("check_proxies.py");
 
-    if !version.success() {
-        println!("[WARN] sb2p is unavailable.");
+    if fs::metadata(&checker).await.is_err() {
+        println!("[WARN] Python proxy checker is unavailable.");
         return None;
     }
 
@@ -635,7 +630,7 @@ async fn proxy_test_light(
             .unwrap_or(0);
 
         println!(
-            "[DIAG] sb2p {} input: {} candidates, {} bytes, path={}",
+            "[DIAG] Python proxy test {} input: {} candidates, {} bytes, path={}",
             scheme,
             candidates.len(),
             input_size,
@@ -643,21 +638,22 @@ async fn proxy_test_light(
         );
 
         for (index, config) in candidates.iter().take(3).enumerate() {
-            println!("[DIAG] sb2p {} input {}: {}", scheme, index + 1, config);
+            println!("[DIAG] proxy test {} input {}: {}", scheme, index + 1, config);
         }
 
         println!(
-            "[INFO] Proxy-testing {} {} candidates with sb2p.",
+            "[INFO] Proxy-testing {} {} candidates with multi-target Python checker.",
             scheme,
             candidates.len()
         );
 
         let start = Instant::now();
 
-        let result = Command::new("sb2p")
-            .arg("--check")
+        let result = Command::new("python3")
+            .arg(&checker)
+            .arg("--input")
             .arg(&input_path)
-            .arg("-o")
+            .arg("--output")
             .arg(&output_path)
             .arg("--workers")
             .arg(PROXY_TEST_WORKERS.to_string())
@@ -665,14 +661,13 @@ async fn proxy_test_light(
             .arg(PROXY_TEST_BATCH_SIZE.to_string())
             .arg("--timeout")
             .arg(PROXY_TEST_TIMEOUT_SECS.to_string())
-            .arg("-v")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await;
 
         let Ok(result) = result else {
-            println!("[WARN] Failed to run sb2p for {scheme}.");
+            println!("[WARN] Failed to run Python proxy checker for {scheme}.");
             let _ = fs::remove_file(&input_path).await;
             continue;
         };
@@ -682,7 +677,7 @@ async fn proxy_test_light(
         let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
 
         println!(
-            "[DIAG] sb2p {} exit: success={}, status={}, elapsed={}ms, stdout_bytes={}, stderr_bytes={}",
+            "[DIAG] Python proxy test {} exit: success={}, status={}, elapsed={}ms, stdout_bytes={}, stderr_bytes={}",
             scheme,
             result.status.success(),
             result.status,
@@ -692,13 +687,16 @@ async fn proxy_test_light(
         );
 
         if !stdout.is_empty() {
-            println!("[INFO] sb2p {scheme}: {stdout}");
+            println!("[INFO] Python proxy test {scheme}: {stdout}");
         }
 
         if !result.status.success() {
-            println!("[WARN] sb2p failed for {scheme} with status {}.", result.status);
+            println!(
+                "[WARN] Python proxy checker failed for {scheme} with status {}.",
+                result.status
+            );
             if !stderr.is_empty() {
-                println!("[WARN] sb2p {scheme} stderr: {stderr}");
+                println!("[WARN] Python proxy test {scheme} stderr: {stderr}");
             }
             let _ = fs::remove_file(&input_path).await;
             let _ = fs::remove_file(&output_path).await;
@@ -706,13 +704,13 @@ async fn proxy_test_light(
         }
 
         if !stderr.is_empty() {
-            println!("[INFO] sb2p {scheme} stderr: {stderr}");
+            println!("[INFO] Python proxy test {scheme} stderr: {stderr}");
         }
 
         match fs::read_to_string(&output_path).await {
             Ok(content) => {
                 println!(
-                    "[DIAG] sb2p {} output: {} bytes, {} lines",
+                    "[DIAG] Python proxy test {} output: {} bytes, {} lines",
                     scheme,
                     content.len(),
                     content.lines().count()
