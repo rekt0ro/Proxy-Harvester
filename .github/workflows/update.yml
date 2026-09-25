@@ -23,9 +23,8 @@ jobs:
           test -n "$PROXY_SOURCES"
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
-
       - name: Install proxy tester
-        run: python3 -m pip install --disable-pip-version-check singbox2proxy
+        run: python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
