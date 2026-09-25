@@ -25,6 +25,11 @@ def load_urls(path):
         ]
 
 
+def strip_fragment(url):
+    """Remove the display name fragment before handing the URL to sing-box."""
+    return url.split("#", 1)[0]
+
+
 def start_group(urls, batch_size, rejected):
     """Start a group, recursively isolating configs that poison a sing-box batch."""
     if not urls:
@@ -86,17 +91,22 @@ def main():
     parser.add_argument("--timeout", type=float, default=8)
     args = parser.parse_args()
 
-    urls = load_urls(args.input)
-    if not urls:
+    original_urls = load_urls(args.input)
+    if not original_urls:
         open(args.output, "w", encoding="utf-8").close()
         print("0/0 working")
         return 0
 
+    test_urls = [strip_fragment(url) for url in original_urls]
+    original_by_test_url = {}
+    for original, test_url in zip(original_urls, test_urls):
+        original_by_test_url.setdefault(test_url, original)
+
     rejected = []
     batches = []
     groups = [
-        urls[index : index + max(1, args.batch_size)]
-        for index in range(0, len(urls), max(1, args.batch_size))
+        test_urls[index : index + max(1, args.batch_size)]
+        for index in range(0, len(test_urls), max(1, args.batch_size))
     ]
 
     try:
@@ -105,18 +115,18 @@ def main():
 
         proxies = [proxy for batch in batches for proxy in batch]
         print(
-            f"loaded {len(urls)} input URLs, started {len(proxies)} proxy handles "
+            f"loaded {len(original_urls)} input URLs, started {len(proxies)} proxy handles "
             f"in {len(batches)} batch(es), rejected {len(rejected)}",
             flush=True,
         )
 
         if rejected:
             for url, reason in rejected[:8]:
-                print(f"rejected: {url} :: {reason}", flush=True)
+                print(f"rejected: {original_by_test_url.get(url, url)} :: {reason}", flush=True)
 
         if not proxies:
             open(args.output, "w", encoding="utf-8").close()
-            print(f"0/{len(urls)} working", flush=True)
+            print(f"0/{len(original_urls)} working", flush=True)
             return 0
 
         working = {}
@@ -147,9 +157,10 @@ def main():
                     proxy = futures[future]
                     ok, latency_ms, error = future.result()
                     if ok:
-                        previous = working.get(proxy.url)
+                        original_url = original_by_test_url.get(proxy.url, proxy.url)
+                        previous = working.get(original_url)
                         if previous is None or latency_ms < previous:
-                            working[proxy.url] = latency_ms
+                            working[original_url] = latency_ms
                     else:
                         failures[error or "unknown error"] += 1
                         next_remaining.append(proxy)
