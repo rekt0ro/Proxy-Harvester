@@ -42,7 +42,7 @@ VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria 2, SOCKS, HTTP/HTTPS.
 
 ## Updates
 
-Automatically updated every 6 hours.
+Automatically updated every 2 hours.
 
 ## Disclaimer
 
