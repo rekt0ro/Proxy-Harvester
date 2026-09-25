@@ -157,6 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut by_scheme: HashMap<String, Vec<(String, u64)>> = HashMap::new();
     for config in &working_configs {
+        if !light_candidate_supported(config) {
+            continue;
+        }
+
         if let Some(&latency_ms) = latency_by_config.get(config) {
             if latency_ms <= PROXY_TEST_MAX_TCP_LATENCY_MS {
                 by_scheme
@@ -698,6 +702,32 @@ fn config_scheme(config: &str) -> String {
         .split_once("://")
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn light_candidate_supported(config: &str) -> bool {
+    let scheme = config_scheme(config);
+
+    let Ok(url) = Url::parse(config) else {
+        return false;
+    };
+
+    match scheme.as_str() {
+        "vless" => !url.query_pairs().any(|(key, value)| {
+            key.eq_ignore_ascii_case("flow")
+                && !value.is_empty()
+                && !value.eq_ignore_ascii_case("xtls-rprx-vision")
+        }),
+        "trojan" => {
+            // singbox2proxy unquotes the whole Trojan URL before urlparse().
+            // Percent-encoded brackets in the password then become IPv6 brackets
+            // and are rejected as an invalid IPv6 URL by its parser.
+            percent_decode_str(url.username())
+                .decode_utf8()
+                .map(|password| !password.contains(['[', ']']))
+                .unwrap_or(false)
+        }
+        _ => true,
+    }
 }
 
 fn endpoint(config: &str) -> Option<(String, u16)> {
