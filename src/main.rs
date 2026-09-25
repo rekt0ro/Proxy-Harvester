@@ -267,7 +267,7 @@ fn extract_configs(text: &str) -> Vec<String> {
 
 fn decode_html_entities(text: &str) -> String {
     text.replace("&amp;", "&")
-        .replace("&quot;", """)
+        .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
