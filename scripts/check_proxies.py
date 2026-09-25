@@ -132,13 +132,10 @@ def main():
 
         working = {}
         failures = collections.Counter()
-        remaining = proxies
+        first_success_counts = collections.Counter()
         targets_used = 0
 
         for target in DEFAULT_TARGETS:
-            if not remaining:
-                break
-
             targets_used += 1
             print(
                 f"target {targets_used}/{len(DEFAULT_TARGETS)}: {target}",
@@ -147,11 +144,11 @@ def main():
 
             next_remaining = []
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, min(args.workers, len(remaining)))
+                max_workers=max(1, min(args.workers, len(proxies)))
             ) as pool:
                 futures = {
                     pool.submit(check_proxy, proxy, target, args.timeout): proxy
-                    for proxy in remaining
+                    for proxy in proxies
                 }
 
                 for future in concurrent.futures.as_completed(futures):
@@ -160,21 +157,32 @@ def main():
                     if ok:
                         original_url = original_by_test_url.get(proxy.url, proxy.url)
                         previous = working.get(original_url)
+                        if previous is None:
+                            first_success_counts[target] += 1
                         if previous is None or latency_ms < previous:
                             working[original_url] = latency_ms
                     else:
                         failures[error or "unknown error"] += 1
-                        next_remaining.append(proxy)
 
             print(
                 f"  {len(working)}/{len(proxies)} working after this target",
                 flush=True,
             )
-            remaining = next_remaining
+
+        MAX_LATENCY_MS = 800
+        eligible = {
+            url: latency_ms
+            for url, latency_ms in working.items()
+            if latency_ms <= MAX_LATENCY_MS
+        }
+        print(
+            f"  {len(eligible)}/{len(working)} verified configs are <= {MAX_LATENCY_MS}ms",
+            flush=True,
+        )
 
         ordered = sorted(
-            working,
-            key=lambda url: (working[url], url),
+            eligible,
+            key=lambda url: (eligible[url], url),
         )
 
         with open(args.output, "w", encoding="utf-8") as handle:
@@ -182,9 +190,12 @@ def main():
                 handle.write(url + "\n")
 
         print(
-            f"{len(ordered)}/{len(proxies)} working across {targets_used} targets",
+            f"{len(ordered)}/{len(proxies)} verified configs <= {MAX_LATENCY_MS}ms across {targets_used} targets",
             flush=True,
         )
+        print("first-success by target:", flush=True)
+        for target in DEFAULT_TARGETS[:targets_used]:
+            print(f"  {first_success_counts[target]}x {target}", flush=True)
         if failures:
             print("failure summary:", flush=True)
             for error, count in failures.most_common(8):
