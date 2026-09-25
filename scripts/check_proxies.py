@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol-level proxy checker with Cloudflare reachability and trace validation."""
+"""Protocol-level proxy checker using Cloudflare reachability."""
 
 import argparse
 import collections
@@ -90,11 +90,6 @@ def check_proxy(proxy, target, timeout):
 
         if not (200 <= response.status_code < 400):
             return False, elapsed_ms, f"HTTP {response.status_code}"
-
-        if target.endswith("/cdn-cgi/trace"):
-            trace = response.text
-            if "colo=" not in trace or "ip=" not in trace:
-                return False, elapsed_ms, "invalid Cloudflare trace response"
 
         return True, elapsed_ms, ""
     except Exception as exc:
