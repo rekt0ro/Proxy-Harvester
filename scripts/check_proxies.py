@@ -56,7 +56,19 @@ def start_group(urls, batch_size, rejected):
             + start_group(urls[midpoint:], batch_size, rejected)
         )
 
-    parsed = list(batch)
+    try:
+        parsed = list(batch)
+    except Exception as exc:
+        batch.stop()
+        if len(urls) == 1:
+            rejected.append((urls[0], str(exc)))
+            return []
+        midpoint = len(urls) // 2
+        return (
+            start_group(urls[:midpoint], batch_size, rejected)
+            + start_group(urls[midpoint:], batch_size, rejected)
+        )
+
     if len(parsed) == len(urls):
         return [batch]
 
