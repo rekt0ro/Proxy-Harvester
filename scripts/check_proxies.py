@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol-level proxy checker with multiple public reachability targets."""
+"""Protocol-level proxy checker with Cloudflare reachability and trace validation."""
 
 import argparse
 import collections
@@ -11,10 +11,11 @@ from singbox2proxy import SingBoxBatch
 
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
+    "https://www.cloudflare.com/cdn-cgi/trace",
 )
 
-MIN_SUCCESSFUL_TARGETS = 1
-MAX_MEDIAN_LATENCY_MS = 800
+MIN_SUCCESSFUL_TARGETS = 2
+MAX_MEDIAN_LATENCY_MS = 3000
 
 
 def load_urls(path):
@@ -87,9 +88,16 @@ def check_proxy(proxy, target, timeout):
     try:
         response = proxy.get(target, timeout=timeout)
         elapsed_ms = (time.monotonic() - started) * 1000
-        if 200 <= response.status_code < 400:
-            return True, elapsed_ms, ""
-        return False, elapsed_ms, f"HTTP {response.status_code}"
+
+        if not (200 <= response.status_code < 400):
+            return False, elapsed_ms, f"HTTP {response.status_code}"
+
+        if target.endswith("/cdn-cgi/trace"):
+            trace = response.text
+            if "colo=" not in trace or "ip=" not in trace:
+                return False, elapsed_ms, "invalid Cloudflare trace response"
+
+        return True, elapsed_ms, ""
     except Exception as exc:
         elapsed_ms = (time.monotonic() - started) * 1000
         return False, elapsed_ms, str(exc)[:160]
