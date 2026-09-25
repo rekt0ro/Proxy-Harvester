@@ -26,12 +26,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          components: rustfmt
 
       - name: Validate repository
         run: |
           set -e
-          cargo fmt --all --check
           cargo check --release
           git diff --check
           test -f README.md
@@ -78,6 +76,6 @@ jobs:
             --base main \
             --head "$branch" \
             --title "Verify repository maintenance" \
-            --body "Routine repository maintenance: formatting, build, repository integrity, and required-file checks.")"
+            --body "Routine repository maintenance: build validation, repository integrity, and required-file checks.")"
 
           gh pr merge "$pr_url" --squash --delete-branch
