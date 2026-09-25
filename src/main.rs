@@ -189,8 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         index += 1;
     }
 
-    let all_subscription = format!("{}\\n", working_configs.join("\\n"));
-    let light_subscription = format!("{}\\n", light_configs.join("\\n"));
+    let all_subscription = format!("{}\n", working_configs.join("\n"));
+    let light_subscription = format!("{}\n", light_configs.join("\n"));
     let all_subscription_path = output_dir.join(".all.txt");
     let light_subscription_path = output_dir.join(".light.txt");
 
@@ -200,9 +200,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::rename(&light_subscription_path, &light_path).await?;
     fs::remove_file(&working_path).await?;
 
-    let light_count = light_output.lines().count();
+    let light_count = light_configs.len();
 
-    println!("[INFO] Published {} working configs to all.txt.", working_count);
+    println!("[INFO] Published {} working configs to all.txt.", working_configs.len());
     println!("[INFO] Published {} configs to light.txt.", light_count);
     println!("[INFO] Done.");
 
