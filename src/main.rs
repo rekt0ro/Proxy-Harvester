@@ -368,15 +368,17 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
 
     let public_key = public_key.trim();
 
-    if public_key.is_empty() {
+    // sing-box Reality public keys are 32-byte X25519 keys encoded as
+    // unpadded base64url, which is exactly 43 characters.
+    if public_key.len() != 43
+        || !public_key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
         return true;
     }
 
-    let decoded = URL_SAFE_NO_PAD
-        .decode(public_key)
-        .or_else(|_| URL_SAFE.decode(public_key));
-
-    !matches!(decoded, Ok(bytes) if bytes.len() == 32)
+    !matches!(URL_SAFE_NO_PAD.decode(public_key), Ok(bytes) if bytes.len() == 32)
 }
 
 fn normalize_vmess(config: &str) -> Option<String> {
