@@ -1381,7 +1381,11 @@ async fn detect_eu_endpoints(
     let ips: Vec<std::net::IpAddr> = endpoint_by_ip.keys().copied().collect();
     let mut ip_is_eu: HashMap<std::net::IpAddr, bool> = HashMap::new();
 
-    for chunk in ips.chunks(GEO_BATCH_SIZE) {
+    for (batch_index, chunk) in ips.chunks(GEO_BATCH_SIZE).enumerate() {
+        if batch_index > 0 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
         let payload = match serde_json::to_vec(
             &chunk.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ) {
@@ -1389,28 +1393,76 @@ async fn detect_eu_endpoints(
             Err(_) => continue,
         };
 
-        let response = match client
-            .post("https://api.country.is/")
-            .header("content-type", "application/json")
-            .body(payload)
-            .send()
-            .await
-        {
-            Ok(response) => match response.error_for_status() {
-                Ok(response) => response,
-                Err(_) => continue,
-            },
-            Err(_) => continue,
+        let mut response = None;
+
+        for attempt in 0..=2 {
+            let result = client
+                .post("https://api.country.is/")
+                .header("content-type", "application/json")
+                .body(payload.clone())
+                .send()
+                .await;
+
+            match result {
+                Ok(candidate) if candidate.status().is_success() => {
+                    response = Some(candidate);
+                    break;
+                }
+                Ok(candidate) if candidate.status().as_u16() == 429 || candidate.status().is_server_error() => {
+                    if attempt < 2 {
+                        let backoff_ms = 250u64.saturating_mul(1u64 << attempt);
+                        println!(
+                            "[WARN] country.is geo lookup returned HTTP {}; retrying batch in {}ms (attempt {}/3).",
+                            candidate.status(),
+                            backoff_ms,
+                            attempt + 2
+                        );
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    }
+                }
+                Ok(candidate) => {
+                    println!(
+                        "[WARN] country.is geo lookup returned HTTP {}; skipping batch.",
+                        candidate.status()
+                    );
+                    break;
+                }
+                Err(error) => {
+                    if attempt < 2 {
+                        let backoff_ms = 250u64.saturating_mul(1u64 << attempt);
+                        println!(
+                            "[WARN] country.is geo lookup failed: {error}; retrying batch in {}ms (attempt {}/3).",
+                            backoff_ms,
+                            attempt + 2
+                        );
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    } else {
+                        println!(
+                            "[WARN] country.is geo lookup failed after 3 attempts: {error}"
+                        );
+                    }
+                }
+            }
+        }
+
+        let Some(response) = response else {
+            continue;
         };
 
         let body = match response.text().await {
             Ok(body) => body,
-            Err(_) => continue,
+            Err(error) => {
+                println!("[WARN] Failed to read country.is geo response: {error}");
+                continue;
+            }
         };
 
         let results: Vec<Value> = match serde_json::from_str(&body) {
             Ok(results) => results,
-            Err(_) => continue,
+            Err(error) => {
+                println!("[WARN] Failed to parse country.is geo response: {error}");
+                continue;
+            }
         };
 
         for result in results {
