@@ -20,7 +20,7 @@ const CHUNK_SIZE: usize = 500;
 const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
-const PROXY_TEST_TIMEOUT_SECS: u64 = 5;
+const PROXY_TEST_TIMEOUT_SECS: u64 = 8;
 const PROXY_TEST_WORKERS: usize = 20;
 const PROXY_TEST_BATCH_SIZE: usize = 50;
 
@@ -585,8 +585,7 @@ async fn proxy_test_light(
             .arg(PROXY_TEST_BATCH_SIZE.to_string())
             .arg("--timeout")
             .arg(PROXY_TEST_TIMEOUT_SECS.to_string())
-            .arg("-q")
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await;
@@ -597,11 +596,25 @@ async fn proxy_test_light(
             continue;
         };
 
+        let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+
+        if !stdout.is_empty() {
+            println!("[INFO] sb2p {scheme}: {stdout}");
+        }
+
         if !result.status.success() {
-            println!("[WARN] sb2p failed for {scheme}.");
+            println!("[WARN] sb2p failed for {scheme} with status {}.", result.status);
+            if !stderr.is_empty() {
+                println!("[WARN] sb2p {scheme} stderr: {stderr}");
+            }
             let _ = fs::remove_file(&input_path).await;
             let _ = fs::remove_file(&output_path).await;
             continue;
+        }
+
+        if !stderr.is_empty() {
+            println!("[INFO] sb2p {scheme} stderr: {stderr}");
         }
 
         match fs::read_to_string(&output_path).await {
@@ -624,8 +637,8 @@ async fn proxy_test_light(
                     println!("[INFO] Proxy-tested {scheme}: 0/{} passed.", candidates.len());
                 }
             }
-            Err(_) => {
-                println!("[WARN] sb2p produced no output for {scheme}.");
+            Err(error) => {
+                println!("[WARN] sb2p produced no output for {scheme}: {error}");
             }
         }
 
