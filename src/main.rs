@@ -944,11 +944,17 @@ async fn proxy_test_light(
     let mut verified_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
     let mut offsets: HashMap<String, usize> = HashMap::new();
     let mut total_verified = 0usize;
+    let mut tested_candidates = 0usize;
 
-    loop {
+    while total_verified < LIGHT_LIMIT && tested_candidates < LIGHT_CANDIDATE_BUDGET {
         let mut jobs = Vec::new();
+        let mut remaining_budget = LIGHT_CANDIDATE_BUDGET - tested_candidates;
 
         for scheme in &schemes {
+            if remaining_budget == 0 {
+                break;
+            }
+
             if scheme == "http" || scheme == "https" || scheme == "ssr" {
                 continue;
             }
@@ -960,13 +966,16 @@ async fn proxy_test_light(
                 continue;
             }
 
-            let end = (offset + PROXY_TEST_LIMIT_PER_PROTOCOL).min(configs.len());
+            let batch_len = (PROXY_TEST_LIMIT_PER_PROTOCOL).min(remaining_budget);
+            let end = (offset + batch_len).min(configs.len());
             let candidates = configs[offset..end]
                 .iter()
                 .map(|(config, _)| config.clone())
                 .collect::<Vec<_>>();
 
             offsets.insert(scheme.clone(), end);
+            remaining_budget = remaining_budget.saturating_sub(candidates.len());
+            tested_candidates += candidates.len();
 
             if !candidates.is_empty() {
                 jobs.push((scheme.clone(), candidates, offset));
@@ -1002,10 +1011,6 @@ async fn proxy_test_light(
                 "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
                 scheme, added, total_verified
             );
-        }
-
-        if total_verified >= LIGHT_LIMIT {
-            break;
         }
     }
 
