@@ -156,8 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut by_scheme: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+    let mut light_incompatible = 0usize;
+
     for config in &working_configs {
         if !light_candidate_supported(config) {
+            light_incompatible += 1;
             continue;
         }
 
@@ -173,6 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for configs in by_scheme.values_mut() {
         configs.sort_by_key(|(_, latency_ms)| *latency_ms);
+    }
+
+    let light_candidate_count: usize = by_scheme.values().map(Vec::len).sum();
+    if light_incompatible > 0 {
+        println!(
+            "[INFO] Light candidate compatibility filtering: {} removed, {} remain before latency/budget limits.",
+            light_incompatible, light_candidate_count
+        );
     }
 
     let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
