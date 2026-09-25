@@ -139,19 +139,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let all_contents = fs::read_to_string(&working_path).await?;
-    let light_output: String = all_contents
+
+    let working_configs: Vec<String> = all_contents
         .lines()
-        .take(LIGHT_LIMIT)
-        .map(|line| format!("{line}\n"))
+        .filter(|line| {
+            let scheme = config_scheme(line);
+            scheme != "http" && scheme != "https"
+        })
+        .map(ToOwned::to_owned)
         .collect();
 
-    let all_subscription = STANDARD.encode(all_contents.as_bytes());
-    let light_subscription = STANDARD.encode(light_output.as_bytes());
-    let all_subscription_path = output_dir.join(".all.b64");
-    let light_subscription_path = output_dir.join(".light.b64");
+    if working_configs.is_empty() {
+        let _ = fs::remove_file(&working_path).await;
+        return Err("no compatible proxy configs were found after filtering HTTP(S) endpoints".into());
+    }
 
-    fs::write(&all_subscription_path, format!("{all_subscription}\n")).await?;
-    fs::write(&light_subscription_path, format!("{light_subscription}\n")).await?;
+    let mut by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+    for config in &working_configs {
+        by_scheme
+            .entry(config_scheme(config))
+            .or_default()
+            .push(config.clone());
+    }
+
+    let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
+    schemes.sort_unstable();
+
+    let mut light_configs = Vec::with_capacity(LIGHT_LIMIT);
+    let mut index = 0usize;
+
+    while light_configs.len() < LIGHT_LIMIT {
+        let mut added = false;
+
+        for scheme in &schemes {
+            if let Some(config) = by_scheme.get(scheme).and_then(|items| items.get(index)) {
+                light_configs.push(config.clone());
+                added = true;
+
+                if light_configs.len() >= LIGHT_LIMIT {
+                    break;
+                }
+            }
+        }
+
+        if !added {
+            break;
+        }
+
+        index += 1;
+    }
+
+    let all_subscription = format!("{}\\n", working_configs.join("\\n"));
+    let light_subscription = format!("{}\\n", light_configs.join("\\n"));
+    let all_subscription_path = output_dir.join(".all.txt");
+    let light_subscription_path = output_dir.join(".light.txt");
+
+    fs::write(&all_subscription_path, all_subscription).await?;
+    fs::write(&light_subscription_path, light_subscription).await?;
     fs::rename(&all_subscription_path, &all_path).await?;
     fs::rename(&light_subscription_path, &light_path).await?;
     fs::remove_file(&working_path).await?;
