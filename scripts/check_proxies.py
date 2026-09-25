@@ -247,7 +247,7 @@ def main():
         )
         print("target-success distribution:", flush=True)
         for count in sorted(success_distribution):
-            print(f"  {count}/4 targets: {success_distribution[count]}", flush=True)
+            print(f"  {count}/{targets_used} targets: {success_distribution[count]}", flush=True)
 
         if failures:
             print("failure summary:", flush=True)
