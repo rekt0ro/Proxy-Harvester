@@ -627,6 +627,13 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
 
         let name = format!("{} {:03}", display_protocol(&scheme), *counter);
 
+        if scheme == "vmess" {
+            if let Some(named_config) = name_vmess_config(&config, &name) {
+                named.push(named_config);
+                continue;
+            }
+        }
+
         if let Ok(mut url) = Url::parse(&config) {
             url.set_fragment(Some(&name));
             named.push(url.to_string());
@@ -636,6 +643,16 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
     }
 
     named
+}
+
+fn name_vmess_config(config: &str, name: &str) -> Option<String> {
+    let encoded = config.split_once("://")?.1.split('#').next()?.trim();
+    let decoded = decode_vmess_payload(encoded)?;
+    let mut object: serde_json::Map<String, Value> = serde_json::from_str(&decoded).ok()?;
+    object.insert("ps".to_string(), Value::String(name.to_string()));
+
+    let payload = serde_json::to_vec(&Value::Object(object)).ok()?;
+    Some(format!("vmess://{}", STANDARD.encode(payload)))
 }
 
 fn display_protocol(scheme: &str) -> &str {
