@@ -287,7 +287,8 @@ fn normalize_config(config: &str) -> Option<String> {
     }
 
     if url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("fp") && value.eq_ignore_ascii_case("unsafe")
+        (key.eq_ignore_ascii_case("fp") || key.eq_ignore_ascii_case("fingerprint"))
+            && value.eq_ignore_ascii_case("unsafe")
     }) {
         return None;
     }
@@ -421,11 +422,12 @@ fn normalize_vmess(config: &str) -> Option<String> {
         return None;
     }
 
-    if object
-        .get("fp")
-        .and_then(Value::as_str)
-        .is_some_and(|fp| fp.trim().eq_ignore_ascii_case("unsafe"))
-    {
+    if ["fp", "fingerprint"].iter().any(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("unsafe"))
+    }) {
         return None;
     }
 
