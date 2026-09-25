@@ -272,13 +272,69 @@ fn extract_configs(text: &str) -> Vec<String> {
 
 fn normalize_config(config: &str) -> Option<String> {
     let config = trim_config(config);
-    let scheme = config_scheme(&config);
 
-    if scheme != "vmess" {
-        return Some(config);
+    if has_invalid_percent_escapes(&config) || has_bracketed_ipv4_host(&config) {
+        return None;
     }
 
-    normalize_vmess(&config)
+    let scheme = config_scheme(&config);
+
+    if scheme == "vmess" {
+        return normalize_vmess(&config);
+    }
+
+    let Ok(url) = Url::parse(&config) else {
+        return None;
+    };
+
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("fp") && value.eq_ignore_ascii_case("unsafe")
+    }) {
+        return None;
+    }
+
+    Some(config)
+}
+
+fn has_invalid_percent_escapes(value: &str) -> bool {
+    let bytes = value.as_bytes();
+
+    for index in 0..bytes.len() {
+        if bytes[index] != b'%' {
+            continue;
+        }
+
+        if index + 2 >= bytes.len()
+            || !bytes[index + 1].is_ascii_hexdigit()
+            || !bytes[index + 2].is_ascii_hexdigit()
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn has_bracketed_ipv4_host(config: &str) -> bool {
+    let Some(authority) = config.split_once("://").and_then(|(_, rest)| rest.split(['?', '#']).next()) else {
+        return false;
+    };
+
+    let Some(host_port) = authority.rsplit_once('@').map(|(_, host)| host) else {
+        return false;
+    };
+
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped.split_once(']').map(|(host, _)| host)
+    } else {
+        None
+    };
+
+    let Some(host) = host else {
+        return false;
+    };
+
+    host.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 fn normalize_vmess(config: &str) -> Option<String> {
@@ -319,6 +375,20 @@ fn normalize_vmess(config: &str) -> Option<String> {
     let id = object.get("id")?.as_str()?.trim();
     if !is_uuid(id) {
         return None;
+    }
+
+    if object
+        .get("fp")
+        .and_then(Value::as_str)
+        .is_some_and(|fp| fp.trim().eq_ignore_ascii_case("unsafe"))
+    {
+        return None;
+    }
+
+    if let Some(path) = object.get("path").and_then(Value::as_str) {
+        if has_invalid_percent_escapes(path) {
+            return None;
+        }
     }
 
     let canonical = STANDARD.encode(decoded.as_bytes());
