@@ -1096,19 +1096,19 @@ async fn proxy_test_light(
             (!is_eu, *latency_ms)
         });
 
-        if let Some(eu_count) = configs
+        let eu_count = configs
             .iter()
             .filter(|(config, _)| {
                 endpoint(config)
                     .and_then(|key| eu_by_endpoint.get(&key).copied())
                     .unwrap_or(false)
             })
-            .count()
-            .checked_sub(0)
-        {
-            if eu_count > 0 {
-                println!("[INFO] EU candidate preference: {scheme} has {eu_count} detected EU endpoints in its Light pool.");
-            }
+            .count();
+
+        if eu_count > 0 {
+            println!(
+                "[INFO] EU candidate preference: {scheme} has {eu_count} detected EU endpoints in its Light pool."
+            );
         }
     }
 
