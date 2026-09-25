@@ -198,6 +198,9 @@ def main():
 
         eligible = {}
         for url, values in latencies.items():
+            if not values:
+                continue
+
             success_count = len(values)
             median_latency = statistics.median(values)
             min_latency = min(values)
