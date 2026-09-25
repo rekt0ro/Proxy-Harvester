@@ -40,25 +40,62 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: stable
-          cache: false
+
+      - name: Cache Go build and module data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: \${{ runner.os }}-go-singbox-v1.14.2
+          restore-keys: |
+            \${{ runner.os }}-go-singbox-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: \${{ runner.os }}-rust-\${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            \${{ runner.os }}-rust-
+
+      - name: Cache Python packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: \${{ runner.os }}-pip-singbox2proxy
+          restore-keys: |
+            \${{ runner.os }}-pip-
+
+      - name: Cache sing-box binary
+        id: sing-box-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/sing-box
+          key: \${{ runner.os }}-sing-box-v1.14.2-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
 
       - name: Install proxy tester
         run: |
           python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
           mkdir -p "$HOME/.local/bin"
-          git clone --depth 1 --branch v1.14.2 https://github.com/SagerNet/sing-box.git /tmp/sing-box
-          cd /tmp/sing-box
-          TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
-          install -m 0755 sing-box "$HOME/.local/bin/sing-box"
+          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
+            git clone --depth 1 --branch v1.14.2 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+            cd /tmp/sing-box
+            TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
+            install -m 0755 sing-box "$HOME/.local/bin/sing-box"
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/sing-box" version
           "$HOME/.local/bin/sing-box" version | grep -q 'with_utls' || {
             echo "sing-box was built without with_utls"
             exit 1
           }
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Check runner network
         run: |
