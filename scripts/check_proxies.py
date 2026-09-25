@@ -5,7 +5,6 @@ import argparse
 import collections
 import concurrent.futures
 import statistics
-import sys
 import time
 
 from singbox2proxy import SingBoxBatch
@@ -13,7 +12,7 @@ from singbox2proxy import SingBoxBatch
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
     "https://www.google.com/generate_204",
- )
+)
 
 MIN_SUCCESSFUL_TARGETS = 1
 MAX_MEDIAN_LATENCY_MS = 800

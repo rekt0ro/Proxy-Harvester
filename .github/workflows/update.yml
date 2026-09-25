@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: update-configs
-  queue: max
+  queue: single
   cancel-in-progress: false
 
 permissions:
@@ -16,6 +16,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout

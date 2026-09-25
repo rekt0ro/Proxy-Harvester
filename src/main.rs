@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -28,6 +29,8 @@ const PROXY_TEST_WORKERS: usize = 24;
 const PROXY_TEST_BATCH_SIZE: usize = 100;
 const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 4;
 const PROXY_TEST_MAX_TCP_LATENCY_MS: u64 = 800;
+const LIGHT_CANDIDATE_BUDGET: usize = 2000;
+const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -46,7 +49,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .timeout(Duration::from_secs(20))
         .build()?;
 
-    let source_results = stream::iter(sources.iter().cloned())
+    let mut unique = HashSet::new();
+    let mut source_results = stream::iter(sources.iter().cloned())
         .map(|url| {
             let client = client.clone();
             async move {
@@ -76,15 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
         })
-        .buffer_unordered(DOWNLOAD_CONCURRENCY)
-        .collect::<Vec<Vec<String>>>()
-        .await;
+        .buffer_unordered(DOWNLOAD_CONCURRENCY);
 
-    let mut unique = HashSet::new();
-    for configs in source_results {
-        for config in configs {
-            unique.insert(config);
-        }
+    while let Some(configs) = source_results.next().await {
+        unique.extend(configs);
     }
 
     let mut configs: Vec<String> = unique.into_iter().collect();
@@ -112,14 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let _ = fs::remove_file(&working_path).await;
 
-    let chunks: Vec<Vec<String>> = configs
-        .chunks(CHUNK_SIZE)
-        .map(|chunk| chunk.to_vec())
-        .collect();
-
-    let mut chunk_results = stream::iter(chunks.into_iter().enumerate())
+    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
         .map(|(index, chunk)| {
-            async move { test_chunk(index, format!("{index}"), chunk).await }
+            async move { test_chunk(index, format!("{index}"), chunk.to_vec()).await }
         })
         .buffer_unordered(TEST_CONCURRENCY)
         .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
@@ -130,13 +124,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut all_output = File::create(&working_path).await?;
     let mut working_count = 0usize;
     let mut latency_by_config = HashMap::new();
+    let mut working_configs = Vec::new();
 
     for (_, working) in chunk_results {
         for (config, latency_ms) in working {
             all_output.write_all(config.as_bytes()).await?;
             all_output.write_all(b"\n").await?;
-            latency_by_config.insert(config, latency_ms);
+            latency_by_config.insert(config.clone(), latency_ms);
             working_count += 1;
+
+            let scheme = config_scheme(&config);
+            if scheme != "http" && scheme != "https" {
+                working_configs.push(config);
+            }
         }
     }
 
@@ -149,17 +149,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         diagnose_configs(&configs).await;
         return Ok(());
     }
-
-    let all_contents = fs::read_to_string(&working_path).await?;
-
-    let working_configs: Vec<String> = all_contents
-        .lines()
-        .filter(|line| {
-            let scheme = config_scheme(line);
-            scheme != "http" && scheme != "https"
-        })
-        .map(ToOwned::to_owned)
-        .collect();
 
     if working_configs.is_empty() {
         let _ = fs::remove_file(&working_path).await;
@@ -241,13 +230,19 @@ async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
         .collect())
 }
 
+fn config_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
+        )
+        .expect("config regex must compile")
+    })
+}
+
 fn extract_configs(text: &str) -> Vec<String> {
     let text = decode_html_entities(text);
-
-    let pattern = Regex::new(
-        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
-    )
-    .unwrap();
+    let pattern = config_pattern();
 
     let mut found = Vec::new();
 
@@ -652,7 +647,10 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
 
-    if compact.len() >= 16 {
+    if compact.len() >= 16
+        && compact.len() <= MAX_COMPACT_BASE64_BYTES
+        && !text.contains("://")
+    {
         inputs.push(compact);
     }
 
@@ -709,20 +707,18 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
     if scheme == "vmess" {
         let encoded = config.split_once("://")?.1.split('#').next()?.trim();
         let decoded = decode_vmess_payload(encoded)?;
+        let value: Value = serde_json::from_str(&decoded).ok()?;
 
-        let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
-            .ok()?
-            .captures(&decoded)?
-            .get(1)?
-            .as_str()
-            .to_string();
-        let port = Regex::new(r#""port"\s*:\s*"?([0-9]+)"?"#)
-            .ok()?
-            .captures(&decoded)?
-            .get(1)?
-            .as_str()
-            .parse::<u16>()
-            .ok()?;
+        let add = value.get("add")?.as_str()?.trim().to_string();
+        let port = match value.get("port") {
+            Some(Value::String(port)) => port.parse::<u16>().ok()?,
+            Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
+            _ => return None,
+        };
+
+        if add.is_empty() || port == 0 {
+            return None;
+        }
 
         return Some((add, port));
     }
@@ -737,14 +733,12 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
 
     Some((host, port))
 }
-
-async fn tcp_latency(config: &str) -> Option<u64> {
-    let (host, port) = endpoint(config)?;
+async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
 
     let mut addresses = timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
-        tokio::net::lookup_host((host.as_str(), port)),
+        tokio::net::lookup_host((host, port)),
     )
     .await
     .ok()?
@@ -768,21 +762,52 @@ async fn tcp_latency(config: &str) -> Option<u64> {
     }
 }
 
+async fn tcp_latency(config: &str) -> Option<u64> {
+    let (host, port) = endpoint(config)?;
+    tcp_latency_endpoint(&host, port).await
+}
 async fn tcp_reachable(config: &str) -> bool {
     tcp_latency(config).await.is_some()
 }
 
 async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
-    stream::iter(configs)
-        .map(|config| async move {
-            tcp_latency(&config).await.map(|latency| (config, latency))
+    let mut by_endpoint: HashMap<(String, u16), Vec<String>> = HashMap::new();
+
+    for config in configs {
+        if let Some(endpoint) = endpoint(&config) {
+            by_endpoint.entry(endpoint).or_default().push(config);
+        }
+    }
+
+    let endpoint_count = by_endpoint.len();
+    let config_count: usize = by_endpoint.values().map(Vec::len).sum();
+    if endpoint_count < config_count {
+        println!(
+            "[INFO] TCP endpoint deduplication: {} configs -> {} unique endpoints.",
+            config_count, endpoint_count
+        );
+    }
+
+    let endpoint_results = stream::iter(by_endpoint.keys().cloned())
+        .map(|(host, port)| async move {
+            tcp_latency_endpoint(&host, port)
+                .await
+                .map(|latency| ((host, port), latency))
         })
         .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
         .filter_map(async move |result| result)
-        .collect()
-        .await
-}
+        .collect::<Vec<_>>()
+        .await;
 
+    let mut working = Vec::new();
+    for ((host, port), latency_ms) in endpoint_results {
+        if let Some(configs) = by_endpoint.get(&(host, port)) {
+            working.extend(configs.iter().cloned().map(|config| (config, latency_ms)));
+        }
+    }
+
+    working
+}
 async fn test_chunk(
     index: usize,
     label: String,
