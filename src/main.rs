@@ -649,9 +649,24 @@ async fn tcp_latency(config: &str) -> Option<u64> {
     let (host, port) = endpoint(config)?;
     let start = Instant::now();
 
+    let mut addresses = timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .ok()?
+    .ok()?
+    .collect::<Vec<_>>();
+
+    addresses.sort_by_key(|address| !address.is_ipv4());
+
+    if addresses.is_empty() {
+        return None;
+    }
+
     match timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
-        TcpStream::connect((host.as_str(), port))
+        TcpStream::connect(addresses.as_slice()),
     )
     .await
     {
