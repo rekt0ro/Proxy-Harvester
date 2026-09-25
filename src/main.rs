@@ -568,11 +568,30 @@ async fn proxy_test_light(
 
         let _ = fs::remove_file(&output_path).await;
 
+        let input_size = fs::metadata(&input_path)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+
+        println!(
+            "[DIAG] sb2p {} input: {} candidates, {} bytes, path={}",
+            scheme,
+            candidates.len(),
+            input_size,
+            input_path.display()
+        );
+
+        for (index, config) in candidates.iter().take(3).enumerate() {
+            println!("[DIAG] sb2p {} input {}: {}", scheme, index + 1, config);
+        }
+
         println!(
             "[INFO] Proxy-testing {} {} candidates with sb2p.",
             scheme,
             candidates.len()
         );
+
+        let start = Instant::now();
 
         let result = Command::new("sb2p")
             .arg("--check")
@@ -597,8 +616,19 @@ async fn proxy_test_light(
             continue;
         };
 
+        let elapsed_ms = start.elapsed().as_millis();
         let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+
+        println!(
+            "[DIAG] sb2p {} exit: success={}, status={}, elapsed={}ms, stdout_bytes={}, stderr_bytes={}",
+            scheme,
+            result.status.success(),
+            result.status,
+            elapsed_ms,
+            result.stdout.len(),
+            result.stderr.len()
+        );
 
         if !stdout.is_empty() {
             println!("[INFO] sb2p {scheme}: {stdout}");
@@ -620,6 +650,13 @@ async fn proxy_test_light(
 
         match fs::read_to_string(&output_path).await {
             Ok(content) => {
+                println!(
+                    "[DIAG] sb2p {} output: {} bytes, {} lines",
+                    scheme,
+                    content.len(),
+                    content.lines().count()
+                );
+
                 let verified: Vec<String> = content
                     .lines()
                     .map(str::trim)
