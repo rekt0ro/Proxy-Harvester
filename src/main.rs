@@ -246,7 +246,7 @@ async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
 
 fn extract_configs(text: &str) -> Vec<String> {
     let pattern = Regex::new(
-        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive+https)://[^s<>"']+|(?:https?)://[^s<>"']+:d+[^s<>"']*"#,
+        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
     )
     .unwrap();
 
