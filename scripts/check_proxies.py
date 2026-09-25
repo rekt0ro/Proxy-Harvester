@@ -3,6 +3,7 @@
 
 import argparse
 import concurrent.futures
+import collections
 import sys
 import time
 
@@ -64,6 +65,7 @@ def main():
 
     proxies = {proxy.url: proxy for proxy in batch}
     working = {}
+    failures = collections.Counter()
     remaining = [proxy for proxy in batch if proxy.url in urls]
     targets_used = 0
 
@@ -95,6 +97,8 @@ def main():
                         if previous is None or latency_ms < previous:
                             working[proxy.url] = latency_ms
                     else:
+                        error_key = error or "unknown error"
+                        failures[error_key] += 1
                         next_remaining.append(proxy)
 
             print(
@@ -116,6 +120,10 @@ def main():
             f"{len(ordered)}/{len(urls)} working across {targets_used} targets",
             flush=True,
         )
+        if failures:
+            print("failure summary:", flush=True)
+            for error, count in failures.most_common(8):
+                print(f"  {count}x {error}", flush=True)
         return 0
     finally:
         batch.stop()
