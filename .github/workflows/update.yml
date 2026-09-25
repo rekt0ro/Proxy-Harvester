@@ -37,6 +37,11 @@ jobs:
           test -n "$PROXY_SOURCES"
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
       - name: Install proxy tester
         run: |
           python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
