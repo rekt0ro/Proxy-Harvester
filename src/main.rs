@@ -295,7 +295,7 @@ fn is_emoji(c: char) -> bool {
             | 0x2300..=0x23FF
             | 0x2B00..=0x2BFF
             | 0xFE00..=0xFE0F
-            | 0x1F1E6..=0x1F1FF
+
     )
 }
 
