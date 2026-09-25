@@ -392,6 +392,45 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
         return None;
     }
 
+    if url.query_pairs().any(|(key, value)| {
+        (key.eq_ignore_ascii_case("fp") || key.eq_ignore_ascii_case("fingerprint"))
+            && value.eq_ignore_ascii_case("unsafe")
+    }) {
+        return None;
+    }
+
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("security")
+            && !matches!(value.to_ascii_lowercase().as_str(), "none" | "tls" | "reality")
+    }) {
+        return None;
+    }
+
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("encryption") && !value.eq_ignore_ascii_case("none")
+    }) {
+        return None;
+    }
+
+    if url.query_pairs().any(|(key, value)| {
+        (key.eq_ignore_ascii_case("packetencoding")
+            || key.eq_ignore_ascii_case("packet-encoding"))
+            && !matches!(value.to_ascii_lowercase().as_str(), "xudp" | "packetaddr")
+    }) {
+        return None;
+    }
+
+    if url.query_pairs().any(|(key, _)| key.eq_ignore_ascii_case("fm")) {
+        return None;
+    }
+
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("path")
+            && value.to_ascii_lowercase().contains("security=tls")
+    }) {
+        return None;
+    }
+
     if is_invalid_vless_reality_public_key(url) {
         return None;
     }
