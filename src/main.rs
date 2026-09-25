@@ -17,7 +17,8 @@ use tokio::time::{timeout, Duration, Instant};
 use url::Url;
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
-const TEST_CONCURRENCY: usize = 4;
+const TEST_CONCURRENCY: usize = 8;
+const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 500;
 const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
@@ -26,6 +27,7 @@ const PROXY_TEST_TIMEOUT_SECS: u64 = 8;
 const PROXY_TEST_WORKERS: usize = 24;
 const PROXY_TEST_BATCH_SIZE: usize = 100;
 const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 4;
+const PROXY_TEST_MAX_TCP_LATENCY_MS: u64 = 800;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -167,10 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut by_scheme: HashMap<String, Vec<(String, u64)>> = HashMap::new();
     for config in &working_configs {
         if let Some(&latency_ms) = latency_by_config.get(config) {
-            by_scheme
-                .entry(config_scheme(config))
-                .or_default()
-                .push((config.clone(), latency_ms));
+            if latency_ms <= PROXY_TEST_MAX_TCP_LATENCY_MS {
+                by_scheme
+                    .entry(config_scheme(config))
+                    .or_default()
+                    .push((config.clone(), latency_ms));
+            }
         }
     }
 
@@ -773,7 +777,7 @@ async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
         .map(|config| async move {
             tcp_latency(&config).await.map(|latency| (config, latency))
         })
-        .buffer_unordered(TEST_CONCURRENCY * 16)
+        .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
         .filter_map(async move |result| result)
         .collect()
         .await
