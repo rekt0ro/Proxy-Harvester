@@ -11,7 +11,6 @@ from singbox2proxy import SingBoxBatch
 
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
-    "https://www.google.com/generate_204",
 )
 
 MIN_SUCCESSFUL_TARGETS = 1
