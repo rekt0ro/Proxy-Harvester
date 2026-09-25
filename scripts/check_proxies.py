@@ -13,10 +13,9 @@ from singbox2proxy import SingBoxBatch
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
     "https://www.google.com/generate_204",
-    "https://api.ipify.org?format=json",
-)
+ )
 
-MIN_SUCCESSFUL_TARGETS = 2
+MIN_SUCCESSFUL_TARGETS = 1
 MAX_MEDIAN_LATENCY_MS = 800
 
 
