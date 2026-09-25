@@ -27,7 +27,14 @@ jobs:
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
       - name: Install proxy tester
-        run: python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
+        run: |
+          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]' 'sing-box-bin==1.14.2'
+          mkdir -p "$HOME/.local/bin"
+          SING_BOX_BIN="$(python3 -c 'from sing_box_bin import get_bin_path; print(get_bin_path())')"
+          test -x "$SING_BOX_BIN"
+          ln -sf "$SING_BOX_BIN" "$HOME/.local/bin/sing-box"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/sing-box" version
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
