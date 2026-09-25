@@ -15,12 +15,28 @@ permissions:
   pull-requests: write
 
 jobs:
-  refresh:
+  maintain:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Validate repository
+        run: |
+          set -e
+          cargo fmt --all --check
+          cargo check --release
+          git diff --check
+          test -f README.md
+          test -f Cargo.toml
+          test -f .github/workflows/update.yml
 
       - name: Prepare authenticated GitHub CLI
         env:
@@ -29,7 +45,7 @@ jobs:
           test -n "$GH_TOKEN"
           gh auth setup-git
 
-      - name: Refresh repository metadata
+      - name: Record maintenance
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -37,7 +53,7 @@ jobs:
           git config user.email "vultazhh@gmail.com"
 
           date_utc="$(date -u +%Y-%m-%d)"
-          branch="maintenance/refresh-$(date -u +%Y%m%d-%H%M%S)"
+          branch="maintenance/verify-$(date -u +%Y%m%d-%H%M%S)"
 
           git switch -c "$branch"
 
@@ -50,18 +66,18 @@ jobs:
           git add README.md
 
           if git diff --cached --quiet; then
-            echo "No metadata changes."
+            echo "No maintenance record changes."
             exit 0
           fi
 
-          git commit -m "Refresh repository metadata"
+          git commit -m "Verify repository maintenance"
           git push --set-upstream origin "$branch"
 
           pr_url="$(gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --base main \
             --head "$branch" \
-            --title "Refresh repository metadata" \
-            --body "Routine repository metadata refresh.")"
+            --title "Verify repository maintenance" \
+            --body "Routine repository maintenance: formatting, build, repository integrity, and required-file checks.")"
 
           gh pr merge "$pr_url" --squash --delete-branch
