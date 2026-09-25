@@ -302,12 +302,26 @@ fn is_emoji(c: char) -> bool {
     matches!(
         c as u32,
         0x1F000..=0x1FAFF
+            | 0x1FC00..=0x1FFFF
             | 0x2600..=0x27BF
             | 0x2300..=0x23FF
             | 0x2B00..=0x2BFF
+            | 0x2190..=0x21FF
+            | 0x3030..=0x303D
+            | 0x3297..=0x3299
             | 0xFE00..=0xFE0F
-            | 0x1FC00..=0x1FFFF
-    ) || matches!(c, '\u{200D}' | '\u{20E3}')
+            | 0xE0020..=0xE007F
+    ) || matches!(
+        c,
+        '\u{00A9}'
+            | '\u{00AE}'
+            | '\u{203C}'
+            | '\u{2049}'
+            | '\u{2122}'
+            | '\u{2139}'
+            | '\u{200D}'
+            | '\u{20E3}'
+    )
 }
 
 fn decode_base64_variants(text: &str) -> Vec<String> {
