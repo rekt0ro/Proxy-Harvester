@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
+use percent_encoding::percent_decode_str;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
@@ -276,7 +277,11 @@ fn trim_config(config: &str) -> String {
     };
 
     if let Some(fragment) = url.fragment().map(str::to_string) {
-        let name: String = fragment
+        let decoded_fragment = percent_decode_str(&fragment)
+            .decode_utf8_lossy()
+            .to_string();
+
+        let name: String = decoded_fragment
             .chars()
             .filter(|c| !is_emoji(*c))
             .collect::<String>()
@@ -301,7 +306,8 @@ fn is_emoji(c: char) -> bool {
             | 0x2300..=0x23FF
             | 0x2B00..=0x2BFF
             | 0xFE00..=0xFE0F
-    )
+            | 0x1FC00..=0x1FFFF
+    ) || matches!(c, '\u{200D}' | '\u{20E3}')
 }
 
 fn decode_base64_variants(text: &str) -> Vec<String> {
@@ -433,7 +439,7 @@ async fn tcp_reachable(config: &str) -> bool {
 async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
     stream::iter(configs)
         .map(|config| async move {
-            tcp_latency(&config).await.map(|latency_ms| (config, latency_ms))
+            tcp_latency(&config).await.map(|latency| (config, latency))
         })
         .buffer_unordered(TEST_CONCURRENCY * 16)
         .filter_map(async move |result| result)
