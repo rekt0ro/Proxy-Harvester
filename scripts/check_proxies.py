@@ -10,6 +10,7 @@ import time
 from singbox2proxy import SingBoxBatch
 
 DEFAULT_TARGETS = (
+    "http://cp.cloudflare.com/",
     "https://www.google.com/generate_204",
     "https://www.gstatic.com/generate_204",
     "https://api.ipify.org?format=json",
