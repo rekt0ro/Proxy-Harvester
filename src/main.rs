@@ -325,7 +325,8 @@ fn has_bracketed_ipv4_host(config: &str) -> bool {
         return false;
     };
 
-    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+    let decoded = percent_decode_str(host_port).decode_utf8_lossy();
+    let host = if let Some(stripped) = decoded.strip_prefix('[') {
         stripped.split_once(']').map(|(host, _)| host)
     } else {
         None
