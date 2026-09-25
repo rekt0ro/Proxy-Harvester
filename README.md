@@ -38,7 +38,7 @@ Both plain-text and Base64 formats are provided for compatibility with different
 
 ## Supported Protocols
 
-VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS · HTTP/HTTPS
+VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS
 
 ## Disclaimer
 
