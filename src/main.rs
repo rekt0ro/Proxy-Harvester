@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 use url::Url;
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
@@ -95,12 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let working_path = output_dir.join(".working.txt");
-    let light_working_path = output_dir.join(".light.txt");
     let all_path = output_dir.join("all.txt");
     let light_path = output_dir.join("light.txt");
 
     let _ = fs::remove_file(&working_path).await;
-    let _ = fs::remove_file(&light_working_path).await;
 
     let chunks: Vec<Vec<String>> = configs
         .chunks(CHUNK_SIZE)
@@ -119,11 +117,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut all_output = File::create(&working_path).await?;
     let mut working_count = 0usize;
+    let mut latency_by_config = HashMap::new();
 
     for (_, working) in chunk_results {
-        for config in working {
+        for (config, latency_ms) in working {
             all_output.write_all(config.as_bytes()).await?;
             all_output.write_all(b"\n").await?;
+            latency_by_config.insert(config, latency_ms);
             working_count += 1;
         }
     }
@@ -156,10 +156,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut by_scheme: HashMap<String, Vec<String>> = HashMap::new();
     for config in &working_configs {
-        by_scheme
-            .entry(config_scheme(config))
-            .or_default()
-            .push(config.clone());
+        if let Some(&latency_ms) = latency_by_config.get(config) {
+            by_scheme
+                .entry(config_scheme(config))
+                .or_default()
+                .push((config.clone(), latency_ms));
+        }
+    }
+
+    for configs in by_scheme.values_mut() {
+        configs.sort_by_key(|(_, latency_ms)| *latency_ms);
     }
 
     let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
@@ -172,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut added = false;
 
         for scheme in &schemes {
-            if let Some(config) = by_scheme.get(scheme).and_then(|items| items.get(index)) {
+            if let Some((config, _)) = by_scheme.get(scheme).and_then(|items| items.get(index)) {
                 light_configs.push(config.clone());
                 added = true;
 
@@ -406,29 +412,29 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
-async fn tcp_reachable(config: &str) -> bool {
-    let Some((host, port)) = endpoint(config) else {
-        return false;
-    };
+async fn tcp_latency(config: &str) -> Option<u64> {
+    let (host, port) = endpoint(config)?;
+    let start = Instant::now();
 
-    matches!(
-        timeout(
-            Duration::from_secs(TCP_TIMEOUT_SECS),
-            TcpStream::connect((host.as_str(), port))
-        )
-        .await,
-        Ok(Ok(_))
+    match timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        TcpStream::connect((host.as_str(), port))
     )
+    .await
+    {
+        Ok(Ok(_)) => Some(start.elapsed().as_millis() as u64),
+        _ => None,
+    }
 }
 
-async fn test_tcp_configs(configs: Vec<String>) -> Vec<String> {
+async fn tcp_reachable(config: &str) -> bool {
+    tcp_latency(config).await.is_some()
+}
+
+async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
     stream::iter(configs)
         .map(|config| async move {
-            if tcp_reachable(&config).await {
-                Some(config)
-            } else {
-                None
-            }
+            tcp_latency(&config).await.map(|latency_ms| (config, latency_ms))
         })
         .buffer_unordered(TEST_CONCURRENCY * 16)
         .filter_map(async move |result| result)
