@@ -191,19 +191,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let light_subscription = format!("{}\n", light_configs.join("\n"));
+    let all_base64 = STANDARD.encode(all_subscription.as_bytes());
+    let light_base64 = STANDARD.encode(light_subscription.as_bytes());
     let all_subscription_path = output_dir.join(".all.txt");
     let light_subscription_path = output_dir.join(".light.txt");
+    let all_base64_path = output_dir.join(".all-base64.txt");
+    let light_base64_path = output_dir.join(".light-base64.txt");
 
     fs::write(&all_subscription_path, all_subscription).await?;
     fs::write(&light_subscription_path, light_subscription).await?;
+    fs::write(&all_base64_path, format!("{}\n", all_base64)).await?;
+    fs::write(&light_base64_path, format!("{}\n", light_base64)).await?;
     fs::rename(&all_subscription_path, &all_path).await?;
     fs::rename(&light_subscription_path, &light_path).await?;
+    fs::rename(&all_base64_path, output_dir.join("all-base64.txt")).await?;
+    fs::rename(&light_base64_path, output_dir.join("light-base64.txt")).await?;
     fs::remove_file(&working_path).await?;
 
     let light_count = light_configs.len();
 
-    println!("[INFO] Published {} working configs to all.txt.", working_configs.len());
-    println!("[INFO] Published {} configs to light.txt.", light_count);
+    println!("[INFO] Published {} working configs to all.txt and all-base64.txt.", working_configs.len());
+    println!("[INFO] Published {} configs to light.txt and light-base64.txt.", light_count);
     println!("[INFO] Done.");
 
     Ok(())
