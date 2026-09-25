@@ -16,13 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Prepare sources
-        env:
-          PROXY_SOURCES: ${{ secrets.PROXY_SOURCES }}
-        run: |
-          test -n "$PROXY_SOURCES"
-          printf '%s\n' "$PROXY_SOURCES" > sources.txt
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
