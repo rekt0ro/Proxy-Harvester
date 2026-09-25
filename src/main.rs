@@ -1300,8 +1300,9 @@ async fn proxy_test_light(
                 continue;
             }
 
+            let is_vmess = config_scheme(&config) == "vmess";
             verified.push(config);
-            if config_scheme(&config) == "vmess" {
+            if is_vmess {
                 vmess_count += 1;
             }
             if verified.len() >= LIGHT_LIMIT {
