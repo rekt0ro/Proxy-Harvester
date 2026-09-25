@@ -27,9 +27,9 @@ const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
 const PROXY_TEST_TIMEOUT_SECS: u64 = 8;
 const PROXY_TEST_WORKERS: usize = 24;
 const PROXY_TEST_BATCH_SIZE: usize = 100;
-const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 4;
+const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 1;
 const PROXY_TEST_MAX_TCP_LATENCY_MS: u64 = 800;
-const LIGHT_CANDIDATE_BUDGET: usize = 2000;
+const LIGHT_CANDIDATE_BUDGET: usize = 6000;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 
 #[tokio::main]
@@ -723,11 +723,36 @@ fn light_candidate_supported(config: &str) -> bool {
     };
 
     match scheme.as_str() {
-        "vless" => !url.query_pairs().any(|(key, value)| {
-            key.eq_ignore_ascii_case("flow")
-                && !value.is_empty()
-                && !value.eq_ignore_ascii_case("xtls-rprx-vision")
-        }),
+        "vless" => {
+            let valid_flow = !url.query_pairs().any(|(key, value)| {
+                key.eq_ignore_ascii_case("flow")
+                    && !value.is_empty()
+                    && !value.eq_ignore_ascii_case("xtls-rprx-vision")
+            });
+
+            let valid_fingerprint = !url.query_pairs().any(|(key, value)| {
+                if !key.eq_ignore_ascii_case("fp") {
+                    return false;
+                }
+
+                !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "chrome"
+                        | "firefox"
+                        | "edge"
+                        | "safari"
+                        | "360"
+                        | "qq"
+                        | "ios"
+                        | "android"
+                        | "random"
+                        | "randomized"
+                        | ""
+                )
+            });
+
+            valid_flow && valid_fingerprint
+        },
         "trojan" => {
             // singbox2proxy unquotes the whole Trojan URL before urlparse().
             // Percent-encoded brackets in the password then become IPv6 brackets
