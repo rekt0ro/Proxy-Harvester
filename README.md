@@ -1,6 +1,6 @@
 # Proxy-Harvester
 
-An automated garden of publicly available proxy configurations.
+An automated collection of publicly available proxy configurations.
 
 Proxy-Harvester collects, validates, tests, and publishes working proxy configurations from multiple public sources.
 
