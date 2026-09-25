@@ -288,6 +288,10 @@ fn normalize_config(config: &str) -> Option<String> {
         return None;
     };
 
+    if scheme == "vless" {
+        return normalize_vless(&config, &url);
+    }
+
     if url.query_pairs().any(|(key, value)| {
         key.eq_ignore_ascii_case("fp") && value.eq_ignore_ascii_case("unsafe")
     }) {
@@ -337,6 +341,16 @@ fn has_bracketed_ipv4_host(config: &str) -> bool {
     };
 
     host.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+fn normalize_vless(config: &str, url: &Url) -> Option<String> {
+    let uuid = percent_decode_str(url.username()).decode_utf8().ok()?;
+
+    if !is_uuid(uuid.as_ref()) {
+        return None;
+    }
+
+    Some(config.to_string())
 }
 
 fn normalize_vmess(config: &str) -> Option<String> {
