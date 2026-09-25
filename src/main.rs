@@ -241,6 +241,8 @@ async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
 }
 
 fn extract_configs(text: &str) -> Vec<String> {
+    let text = decode_html_entities(text);
+
     let pattern = Regex::new(
         r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
     )
@@ -248,11 +250,11 @@ fn extract_configs(text: &str) -> Vec<String> {
 
     let mut found = Vec::new();
 
-    for capture in pattern.find_iter(text) {
+    for capture in pattern.find_iter(&text) {
         found.push(trim_config(capture.as_str()));
     }
 
-    for decoded in decode_base64_variants(text) {
+    for decoded in decode_base64_variants(&text) {
         for capture in pattern.find_iter(&decoded) {
             found.push(trim_config(capture.as_str()));
         }
@@ -261,6 +263,15 @@ fn extract_configs(text: &str) -> Vec<String> {
     found.sort_unstable();
     found.dedup();
     found
+}
+
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&quot;", """)
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }
 
 fn trim_config(config: &str) -> String {
