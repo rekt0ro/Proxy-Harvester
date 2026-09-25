@@ -2,8 +2,8 @@
 """Protocol-level proxy checker with multiple public reachability targets."""
 
 import argparse
-import concurrent.futures
 import collections
+import concurrent.futures
 import sys
 import time
 
@@ -23,6 +23,45 @@ def load_urls(path):
             for line in handle
             if line.strip() and not line.lstrip().startswith("#")
         ]
+
+
+def start_group(urls, batch_size, rejected):
+    """Start a group, recursively isolating configs that poison a sing-box batch."""
+    if not urls:
+        return []
+
+    try:
+        batch = SingBoxBatch(
+            urls,
+            batch_size=batch_size,
+            log_level="error",
+        )
+    except Exception as exc:
+        if len(urls) == 1:
+            rejected.append((urls[0], str(exc)))
+            return []
+        midpoint = len(urls) // 2
+        return (
+            start_group(urls[:midpoint], batch_size, rejected)
+            + start_group(urls[midpoint:], batch_size, rejected)
+        )
+
+    parsed = list(batch)
+    if len(parsed) == len(urls):
+        return [batch]
+
+    batch.stop()
+
+    if len(urls) == 1:
+        reason = f"sing-box accepted {len(parsed)}/1 proxy handles"
+        rejected.append((urls[0], reason))
+        return []
+
+    midpoint = len(urls) // 2
+    return (
+        start_group(urls[:midpoint], batch_size, rejected)
+        + start_group(urls[midpoint:], batch_size, rejected)
+    )
 
 
 def check_proxy(proxy, target, timeout):
@@ -53,23 +92,38 @@ def main():
         print("0/0 working")
         return 0
 
+    rejected = []
+    batches = []
+    groups = [
+        urls[index : index + max(1, args.batch_size)]
+        for index in range(0, len(urls), max(1, args.batch_size))
+    ]
+
     try:
-        batch = SingBoxBatch.from_file(
-            args.input,
-            batch_size=args.batch_size,
-            log_level="error",
+        for group in groups:
+            batches.extend(start_group(group, max(1, args.batch_size), rejected))
+
+        proxies = [proxy for batch in batches for proxy in batch]
+        print(
+            f"loaded {len(urls)} input URLs, started {len(proxies)} proxy handles "
+            f"in {len(batches)} batch(es), rejected {len(rejected)}",
+            flush=True,
         )
-    except Exception as exc:
-        print(f"failed to start singbox2proxy: {exc}", file=sys.stderr)
-        return 2
 
-    proxies = {proxy.url: proxy for proxy in batch}
-    working = {}
-    failures = collections.Counter()
-    remaining = [proxy for proxy in batch if proxy.url in urls]
-    targets_used = 0
+        if rejected:
+            for url, reason in rejected[:8]:
+                print(f"rejected: {url} :: {reason}", flush=True)
 
-    try:
+        if not proxies:
+            open(args.output, "w", encoding="utf-8").close()
+            print(f"0/{len(urls)} working", flush=True)
+            return 0
+
+        working = {}
+        failures = collections.Counter()
+        remaining = proxies
+        targets_used = 0
+
         for target in DEFAULT_TARGETS:
             if not remaining:
                 break
@@ -97,12 +151,11 @@ def main():
                         if previous is None or latency_ms < previous:
                             working[proxy.url] = latency_ms
                     else:
-                        error_key = error or "unknown error"
-                        failures[error_key] += 1
+                        failures[error or "unknown error"] += 1
                         next_remaining.append(proxy)
 
             print(
-                f"  {len(working)}/{len(urls)} working after this target",
+                f"  {len(working)}/{len(proxies)} working after this target",
                 flush=True,
             )
             remaining = next_remaining
@@ -117,16 +170,18 @@ def main():
                 handle.write(url + "\n")
 
         print(
-            f"{len(ordered)}/{len(urls)} working across {targets_used} targets",
+            f"{len(ordered)}/{len(proxies)} working across {targets_used} targets",
             flush=True,
         )
         if failures:
             print("failure summary:", flush=True)
             for error, count in failures.most_common(8):
                 print(f"  {count}x {error}", flush=True)
+
         return 0
     finally:
-        batch.stop()
+        for batch in batches:
+            batch.stop()
 
 
 if __name__ == "__main__":
