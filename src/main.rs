@@ -20,7 +20,7 @@ use url::Url;
 const DOWNLOAD_CONCURRENCY: usize = 16;
 const TEST_CONCURRENCY: usize = 8;
 const TEST_CONNECTION_CONCURRENCY: usize = 64;
-const CHUNK_SIZE: usize = 500;
+const CHUNK_SIZE: usize = 2000;
 const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
@@ -111,7 +111,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let _ = fs::remove_file(&working_path).await;
 
-    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
+    let mut endpoint_groups: HashMap<(String, u16), Vec<String>> = HashMap::new();
+    let mut endpoint_representatives = Vec::new();
+
+    for config in &configs {
+        let Some(endpoint) = endpoint(config) else {
+            continue;
+        };
+
+        if !endpoint_groups.contains_key(&endpoint) {
+            endpoint_representatives.push(config.clone());
+        }
+        endpoint_groups.entry(endpoint).or_default().push(config.clone());
+    }
+
+    let endpoint_config_count: usize = endpoint_groups.values().map(Vec::len).sum();
+    if endpoint_config_count < configs.len() || endpoint_config_count > endpoint_representatives.len() {
+        println!(
+            "[INFO] Global TCP endpoint deduplication: {} testable configs -> {} unique endpoints ({} configs have no testable endpoint).",
+            endpoint_config_count,
+            endpoint_representatives.len(),
+            configs.len().saturating_sub(endpoint_config_count)
+        );
+    } else {
+        println!(
+            "[INFO] Global TCP endpoint deduplication: {} testable configs -> {} unique endpoints.",
+            endpoint_config_count,
+            endpoint_representatives.len()
+        );
+    }
+
+    let mut chunk_results = stream::iter(endpoint_representatives.chunks(CHUNK_SIZE).enumerate())
         .map(|(index, chunk)| {
             async move { test_chunk(index, format!("{index}"), chunk.to_vec()).await }
         })
@@ -127,15 +157,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut working_configs = Vec::new();
 
     for (_, working) in chunk_results {
-        for (config, latency_ms) in working {
-            all_output.write_all(config.as_bytes()).await?;
-            all_output.write_all(b"\n").await?;
-            latency_by_config.insert(config.clone(), latency_ms);
-            working_count += 1;
+        for (representative, latency_ms) in working {
+            let Some(endpoint_key) = endpoint(&representative) else {
+                continue;
+            };
+            let Some(group) = endpoint_groups.get(&endpoint_key) else {
+                continue;
+            };
 
-            let scheme = config_scheme(&config);
-            if scheme != "http" && scheme != "https" {
-                working_configs.push(config);
+            for config in group {
+                all_output.write_all(config.as_bytes()).await?;
+                all_output.write_all(b"\n").await?;
+                latency_by_config.insert(config.clone(), latency_ms);
+                working_count += 1;
+
+                let scheme = config_scheme(config);
+                if scheme != "http" && scheme != "https" {
+                    working_configs.push(config.clone());
+                }
             }
         }
     }
