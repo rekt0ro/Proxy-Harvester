@@ -415,7 +415,7 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     if url.query_pairs().any(|(key, value)| {
         (key.eq_ignore_ascii_case("packetencoding")
             || key.eq_ignore_ascii_case("packet-encoding"))
-            && !matches!(value.to_ascii_lowercase().as_str(), "xudp" | "packetaddr")
+            && !matches!(value.to_ascii_lowercase().as_str(), "xudp" | "packetaddr" | "none")
     }) {
         return None;
     }
