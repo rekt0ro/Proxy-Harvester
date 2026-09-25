@@ -261,9 +261,42 @@ fn extract_configs(text: &str) -> Vec<String> {
 }
 
 fn trim_config(config: &str) -> String {
-    config
+    let config = config
         .trim_end_matches(|c| c == ')' || c == ']' || c == '}' || c == ',' || c == '\r' || c == '\n')
-        .to_string()
+        .to_string();
+
+    let Ok(mut url) = Url::parse(&config) else {
+        return config;
+    };
+
+    if let Some(fragment) = url.fragment().map(str::to_string) {
+        let name: String = fragment
+            .chars()
+            .filter(|c| !is_emoji(*c))
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_matches(|c| c == '-' || c == '_' || c == '|')
+            .trim()
+            .to_string();
+
+        url.set_fragment(if name.is_empty() { None } else { Some(&name) });
+    }
+
+    url.to_string()
+}
+
+fn is_emoji(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F000..=0x1FAFF
+            | 0x2600..=0x27BF
+            | 0x2300..=0x23FF
+            | 0x2B00..=0x2BFF
+            | 0xFE00..=0xFE0F
+            | 0x1F1E6..=0x1F1FF
+    )
 }
 
 fn decode_base64_variants(text: &str) -> Vec<String> {
