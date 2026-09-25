@@ -39,13 +39,18 @@ jobs:
 
       - name: Install proxy tester
         run: |
-          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]' 'sing-box-bin==1.14.2'
+          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
           mkdir -p "$HOME/.local/bin"
-          SING_BOX_BIN="$(python3 -c 'from sing_box_bin import get_bin_path; print(get_bin_path())')"
-          test -x "$SING_BOX_BIN"
-          ln -sf "$SING_BOX_BIN" "$HOME/.local/bin/sing-box"
+          git clone --depth 1 --branch v1.14.2 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+          cd /tmp/sing-box
+          TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
+          install -m 0755 sing-box "$HOME/.local/bin/sing-box"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/sing-box" version
+          "$HOME/.local/bin/sing-box" version | grep -q 'with_utls' || {
+            echo "sing-box was built without with_utls"
+            exit 1
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
