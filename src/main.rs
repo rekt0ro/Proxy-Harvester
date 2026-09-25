@@ -6,9 +6,11 @@ use reqwest::Client;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 use url::Url;
 
@@ -17,6 +19,10 @@ const TEST_CONCURRENCY: usize = 4;
 const CHUNK_SIZE: usize = 500;
 const LIGHT_LIMIT: usize = 200;
 const TCP_TIMEOUT_SECS: u64 = 3;
+const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 100;
+const PROXY_TEST_TIMEOUT_SECS: u64 = 5;
+const PROXY_TEST_WORKERS: usize = 20;
+const PROXY_TEST_BATCH_SIZE: usize = 50;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -172,29 +178,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
     schemes.sort_unstable();
 
-    let mut light_configs = Vec::with_capacity(LIGHT_LIMIT);
-    let mut index = 0usize;
-
-    while light_configs.len() < LIGHT_LIMIT {
-        let mut added = false;
-
-        for scheme in &schemes {
-            if let Some((config, _)) = by_scheme.get(scheme).and_then(|items| items.get(index)) {
-                light_configs.push(config.clone());
-                added = true;
-
-                if light_configs.len() >= LIGHT_LIMIT {
-                    break;
-                }
-            }
+    let light_configs = match proxy_test_light(&by_scheme, &output_dir).await {
+        Some(configs) if !configs.is_empty() => {
+            println!(
+                "[INFO] Proxy-level testing produced {} verified configs for light.txt.",
+                configs.len()
+            );
+            configs
         }
-
-        if !added {
-            break;
+        _ => {
+            println!("[WARN] Proxy-level testing unavailable or produced no results. Falling back to TCP-tested light selection.");
+            select_light_configs(&by_scheme)
         }
-
-        index += 1;
-    }
+    };
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let light_subscription = format!("{}\n", light_configs.join("\n"));
@@ -480,6 +476,198 @@ async fn test_chunk(
     );
 
     Ok((index, working))
+}
+
+fn select_light_configs(by_scheme: &HashMap<String, Vec<(String, u64)>>) -> Vec<String> {
+    let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
+    schemes.sort_unstable();
+
+    let mut light_configs = Vec::with_capacity(LIGHT_LIMIT);
+    let mut index = 0usize;
+
+    while light_configs.len() < LIGHT_LIMIT {
+        let mut added = false;
+
+        for scheme in &schemes {
+            if let Some((config, _)) = by_scheme.get(scheme).and_then(|items| items.get(index)) {
+                light_configs.push(config.clone());
+                added = true;
+
+                if light_configs.len() >= LIGHT_LIMIT {
+                    break;
+                }
+            }
+        }
+
+        if !added {
+            break;
+        }
+
+        index += 1;
+    }
+
+    light_configs
+}
+
+async fn proxy_test_light(
+    by_scheme: &HashMap<String, Vec<(String, u64)>>,
+    output_dir: &Path,
+) -> Option<Vec<String>> {
+    let version = Command::new("sb2p")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .ok()?;
+
+    if !version.success() {
+        println!("[WARN] sb2p is unavailable.");
+        return None;
+    }
+
+    let mut schemes: Vec<String> = by_scheme.keys().cloned().collect();
+    schemes.sort_unstable();
+
+    let mut verified_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+
+    for scheme in schemes {
+        if scheme == "http" || scheme == "https" || scheme == "ssr" {
+            continue;
+        }
+
+        let Some(configs) = by_scheme.get(&scheme) else {
+            continue;
+        };
+
+        let candidates: Vec<&String> = configs
+            .iter()
+            .take(PROXY_TEST_LIMIT_PER_PROTOCOL)
+            .map(|(config, _)| config)
+            .collect();
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let input_path = output_dir.join(format!(".proxy-test-{scheme}.txt"));
+        let output_path = output_dir.join(format!(".proxy-working-{scheme}.txt"));
+
+        let input = candidates
+            .iter()
+            .map(|config| config.as_str())
+            .collect::<Vec<_>>()
+            .join("
+");
+
+        if fs::write(&input_path, format!("{input}
+")).await.is_err() {
+            println!("[WARN] Failed to prepare proxy test input for {scheme}.");
+            continue;
+        }
+
+        let _ = fs::remove_file(&output_path).await;
+
+        println!(
+            "[INFO] Proxy-testing {} {} candidates with sb2p.",
+            scheme,
+            candidates.len()
+        );
+
+        let result = Command::new("sb2p")
+            .arg("--check")
+            .arg(&input_path)
+            .arg("-o")
+            .arg(&output_path)
+            .arg("--workers")
+            .arg(PROXY_TEST_WORKERS.to_string())
+            .arg("--batch-size")
+            .arg(PROXY_TEST_BATCH_SIZE.to_string())
+            .arg("--timeout")
+            .arg(PROXY_TEST_TIMEOUT_SECS.to_string())
+            .arg("-q")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        let Ok(result) = result else {
+            println!("[WARN] Failed to run sb2p for {scheme}.");
+            let _ = fs::remove_file(&input_path).await;
+            continue;
+        };
+
+        if !result.status.success() {
+            println!("[WARN] sb2p failed for {scheme}.");
+            let _ = fs::remove_file(&input_path).await;
+            let _ = fs::remove_file(&output_path).await;
+            continue;
+        }
+
+        match fs::read_to_string(&output_path).await {
+            Ok(content) => {
+                let verified: Vec<String> = content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect();
+
+                if !verified.is_empty() {
+                    println!(
+                        "[INFO] Proxy-tested {scheme}: {}/{} passed.",
+                        verified.len(),
+                        candidates.len()
+                    );
+                    verified_by_scheme.insert(scheme, verified);
+                } else {
+                    println!("[INFO] Proxy-tested {scheme}: 0/{} passed.", candidates.len());
+                }
+            }
+            Err(_) => {
+                println!("[WARN] sb2p produced no output for {scheme}.");
+            }
+        }
+
+        let _ = fs::remove_file(&input_path).await;
+        let _ = fs::remove_file(&output_path).await;
+    }
+
+    if verified_by_scheme.is_empty() {
+        return None;
+    }
+
+    let mut schemes: Vec<String> = verified_by_scheme.keys().cloned().collect();
+    schemes.sort_unstable();
+
+    let mut light_configs = Vec::with_capacity(LIGHT_LIMIT);
+    let mut index = 0usize;
+
+    while light_configs.len() < LIGHT_LIMIT {
+        let mut added = false;
+
+        for scheme in &schemes {
+            if let Some(config) = verified_by_scheme
+                .get(scheme)
+                .and_then(|items| items.get(index))
+            {
+                light_configs.push(config.clone());
+                added = true;
+
+                if light_configs.len() >= LIGHT_LIMIT {
+                    break;
+                }
+            }
+        }
+
+        if !added {
+            break;
+        }
+
+        index += 1;
+    }
+
+    Some(light_configs)
 }
 
 async fn diagnose_configs(configs: &[String]) {
