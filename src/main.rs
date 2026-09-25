@@ -1,7 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use percent_encoding::percent_decode_str;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
@@ -79,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut configs: Vec<String> = unique.into_iter().collect();
     configs.sort_unstable();
+    configs = assign_config_names(configs);
 
     println!("[INFO] Collected {} unique configs.", configs.len());
 
@@ -246,7 +246,7 @@ async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Er
 
 fn extract_configs(text: &str) -> Vec<String> {
     let pattern = Regex::new(
-        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
+        r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive+https)://[^s<>"']+|(?:https?)://[^s<>"']+:d+[^s<>"']*"#,
     )
     .unwrap();
 
@@ -276,52 +276,50 @@ fn trim_config(config: &str) -> String {
         return config;
     };
 
-    if let Some(fragment) = url.fragment().map(str::to_string) {
-        let decoded_fragment = percent_decode_str(&fragment)
-            .decode_utf8_lossy()
-            .to_string();
-
-        let name: String = decoded_fragment
-            .chars()
-            .filter(|c| !is_emoji(*c))
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim_matches(|c| c == '-' || c == '_' || c == '|')
-            .trim()
-            .to_string();
-
-        url.set_fragment(if name.is_empty() { None } else { Some(&name) });
-    }
-
+    url.set_fragment(None);
     url.to_string()
 }
 
-fn is_emoji(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x1F000..=0x1FAFF
-            | 0x1FC00..=0x1FFFF
-            | 0x2600..=0x27BF
-            | 0x2300..=0x23FF
-            | 0x2B00..=0x2BFF
-            | 0x2190..=0x21FF
-            | 0x3030..=0x303D
-            | 0x3297..=0x3299
-            | 0xFE00..=0xFE0F
-            | 0xE0020..=0xE007F
-    ) || matches!(
-        c,
-        '\u{00A9}'
-            | '\u{00AE}'
-            | '\u{203C}'
-            | '\u{2049}'
-            | '\u{2122}'
-            | '\u{2139}'
-            | '\u{200D}'
-            | '\u{20E3}'
-    )
+fn assign_config_names(configs: Vec<String>) -> Vec<String> {
+    let mut counters: HashMap<String, usize> = HashMap::new();
+    let mut named = Vec::with_capacity(configs.len());
+
+    for config in configs {
+        let scheme = config_scheme(&config);
+        let counter = counters.entry(scheme.clone()).or_insert(0);
+        *counter += 1;
+
+        let name = format!("{} {:03}", display_protocol(&scheme), *counter);
+
+        if let Ok(mut url) = Url::parse(&config) {
+            url.set_fragment(Some(&name));
+            named.push(url.to_string());
+        } else {
+            named.push(config);
+        }
+    }
+
+    named
+}
+
+fn display_protocol(scheme: &str) -> &str {
+    match scheme {
+        "vmess" => "VMess",
+        "vless" => "VLESS",
+        "trojan" => "Trojan",
+        "ss" => "Shadowsocks",
+        "ssr" => "ShadowsocksR",
+        "hysteria" => "Hysteria",
+        "hysteria2" | "hy2" => "Hysteria2",
+        "tuic" => "TUIC",
+        "socks" | "socks4" | "socks5" | "socks5h" => "SOCKS",
+        "wg" => "WireGuard",
+        "ssh" => "SSH",
+        "naive+https" => "NaiveProxy",
+        "http" => "HTTP",
+        "https" => "HTTPS",
+        _ => scheme,
+    }
 }
 
 fn decode_base64_variants(text: &str) -> Vec<String> {
@@ -403,14 +401,14 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
             }
         }
 
-        let decoded = decoded_texts.into_iter().find(|text| text.contains("\"add\""))?;
-        let add = Regex::new(r#"\"add\"\s*:\s*\"([^\"]+)\""#)
+        let decoded = decoded_texts.into_iter().find(|text| text.contains(""add""))?;
+        let add = Regex::new(r#""add"s*:s*"([^"]+)""#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
             .as_str()
             .to_string();
-        let port = Regex::new(r#"\"port\"\s*:\s*\"?([0-9]+)\"?"#)
+        let port = Regex::new(r#""port"s*:s*"?([0-9]+)"?"#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
