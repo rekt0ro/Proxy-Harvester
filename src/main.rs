@@ -290,9 +290,9 @@ fn normalize_vmess(config: &str) -> Option<String> {
 
     let decoded = decode_vmess_payload(encoded)?;
 
-    if !decoded.contains(""add"")
-        || !decoded.contains(""port"")
-        || !decoded.contains(""id"")
+    if !decoded.contains("\"add\"")
+        || !decoded.contains("\"port\"")
+        || !decoded.contains("\"id\"")
     {
         return None;
     }
@@ -333,7 +333,7 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
 
 fn decode_html_entities(text: &str) -> String {
     text.replace("&amp;", "&")
-        .replace("&quot;", """)
+        .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
