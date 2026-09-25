@@ -286,6 +286,16 @@ fn normalize_config(config: &str) -> Option<String> {
         return normalize_vless(&config, &url);
     }
 
+    if let Some(host) = url.host_str() {
+        if host.contains(':') && host.parse::<std::net::Ipv6Addr>().is_err() {
+            return None;
+        }
+    }
+
+    if scheme == "ss" {
+        return normalize_shadowsocks(&config, &url);
+    }
+
     if url.query_pairs().any(|(key, value)| {
         (key.eq_ignore_ascii_case("fp") || key.eq_ignore_ascii_case("fingerprint"))
             && value.eq_ignore_ascii_case("unsafe")
@@ -336,6 +346,43 @@ fn has_bracketed_ipv4_host(config: &str) -> bool {
     };
 
     host.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
+    const METHODS: &[&str] = &[
+        "2022-blake3-aes-128-gcm",
+        "2022-blake3-aes-256-gcm",
+        "2022-blake3-chacha20-poly1305",
+        "aes-128-gcm",
+        "aes-192-gcm",
+        "aes-256-gcm",
+        "chacha20-ietf-poly1305",
+        "xchacha20-ietf-poly1305",
+        "none",
+    ];
+
+    let method = if !url.username().is_empty() {
+        percent_decode_str(url.username()).decode_utf8().ok()?.into_owned()
+    } else {
+        let payload = config.split_once("://")?.1.split('#').next()?.split('@').next()?;
+        let mut padded = payload.to_string();
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+
+        let decoded = [STANDARD.decode(payload), STANDARD.decode(&padded), URL_SAFE.decode(payload), URL_SAFE_NO_PAD.decode(payload)]
+            .into_iter()
+            .find_map(Result::ok)?;
+
+        let decoded = String::from_utf8(decoded).ok()?;
+        decoded.split_once(':')?.0.to_string()
+    };
+
+    if METHODS.iter().any(|supported| method.eq_ignore_ascii_case(supported)) {
+        Some(config.to_string())
+    } else {
+        None
+    }
 }
 
 fn normalize_vless(config: &str, url: &Url) -> Option<String> {
