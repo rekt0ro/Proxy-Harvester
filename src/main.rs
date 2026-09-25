@@ -188,10 +188,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
 
             if configs.len() < LIGHT_LIMIT {
+                let verified_count = configs.len();
                 let topped_up = top_up_light_configs(configs, &by_scheme);
                 println!(
                     "[INFO] Topped up light.txt from {} to {} configs using TCP-tested fallbacks.",
-                    configs.len(),
+                    verified_count,
                     topped_up.len()
                 );
                 topped_up
