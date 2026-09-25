@@ -1,49 +1,45 @@
 # Proxy-Harvester
 
-An automated collection of publicly available proxy configurations.
+Automated collection, validation, testing, and publishing of publicly available proxy configurations.
 
-Proxy-Harvester collects, validates, tests, and publishes working proxy configurations from multiple public sources.
+Proxy-Harvester collects configurations from multiple public sources, filters invalid entries, tests connectivity, and publishes working configurations automatically every 2 hours.
 
 ## Subscriptions
 
-**All**
+### Light (Recommended)
 
-```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
-```
-
-**All Base64**
-
-```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
-```
-
-**Light**
+Up to 200 proxy-level verified configurations:
 
 ```text
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light.txt
 ```
 
-**Light Base64**
+Base64:
 
 ```text
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light-base64.txt
 ```
 
-`light.txt` contains up to 200 mixed, working configurations across supported protocols.
+### All
 
-`light-base64.txt` contains the same configurations in Base64 format for clients that require Base64 subscriptions.
+All working configurations:
 
-`all-base64.txt` contains all working configurations in Base64 format.
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
+```
+
+Base64:
+
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
+```
+
+Both plain-text and Base64 formats are provided for compatibility with different clients.
 
 ## Supported Protocols
 
-VMess, VLESS, Trojan, Shadowsocks, Hysteria, Hysteria 2, SOCKS, HTTP/HTTPS.
-
-## Updates
-
-Automatically updated every 2 hours.
+VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS · HTTP/HTTPS
 
 ## Disclaimer
 
-This project aggregates publicly available configurations. Use them at your own discretion and follow applicable laws and service terms.
+Configurations are collected from publicly available sources. Use them responsibly and in accordance with applicable laws and service terms.
