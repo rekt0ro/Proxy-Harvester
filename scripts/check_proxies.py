@@ -11,10 +11,9 @@ from singbox2proxy import SingBoxBatch
 
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
-    "https://www.cloudflare.com/cdn-cgi/trace",
 )
 
-MIN_SUCCESSFUL_TARGETS = 2
+MIN_SUCCESSFUL_TARGETS = 1
 MAX_MEDIAN_LATENCY_MS = 3000
 
 
