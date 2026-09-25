@@ -12,6 +12,12 @@ Proxy-Harvester collects, validates, tests, and publishes working proxy configur
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
 ```
 
+**All Base64**
+
+```text
+https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
+```
+
 **Light**
 
 ```text
@@ -27,6 +33,8 @@ https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/lig
 `light.txt` contains up to 200 mixed, working configurations across supported protocols.
 
 `light-base64.txt` contains the same configurations in Base64 format for clients that require Base64 subscriptions.
+
+`all-base64.txt` contains all working configurations in Base64 format.
 
 ## Supported Protocols
 
