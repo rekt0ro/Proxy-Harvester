@@ -186,7 +186,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "[INFO] Proxy-level testing produced {} verified configs for light.txt.",
                 configs.len()
             );
-            configs
+
+            if configs.len() < LIGHT_LIMIT {
+                let topped_up = top_up_light_configs(configs, &by_scheme);
+                println!(
+                    "[INFO] Topped up light.txt from {} to {} configs using TCP-tested fallbacks.",
+                    configs.len(),
+                    topped_up.len()
+                );
+                topped_up
+            } else {
+                configs
+            }
         }
         _ => {
             println!("[WARN] Proxy-level testing unavailable or produced no results. Falling back to TCP-tested light selection.");
@@ -696,6 +707,36 @@ fn select_light_configs(by_scheme: &HashMap<String, Vec<(String, u64)>>) -> Vec<
         }
 
         index += 1;
+    }
+
+    light_configs
+}
+
+fn top_up_light_configs(
+    verified: Vec<String>,
+    by_scheme: &HashMap<String, Vec<(String, u64)>>,
+) -> Vec<String> {
+    if verified.len() >= LIGHT_LIMIT {
+        return verified;
+    }
+
+    let mut light_configs = verified;
+    let mut seen: HashSet<String> = light_configs.iter().cloned().collect();
+
+    for scheme_configs in by_scheme.values() {
+        for (config, _) in scheme_configs {
+            if light_configs.len() >= LIGHT_LIMIT {
+                break;
+            }
+
+            if seen.insert(config.clone()) {
+                light_configs.push(config.clone());
+            }
+        }
+
+        if light_configs.len() >= LIGHT_LIMIT {
+            break;
+        }
     }
 
     light_configs
