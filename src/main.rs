@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             async move { test_chunk(index, format!("{index}"), chunk).await }
         })
         .buffer_unordered(TEST_CONCURRENCY)
-        .try_collect::<Vec<(usize, Vec<String>)>>()
+        .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
         .await?;
 
     chunk_results.sort_by_key(|(index, _)| *index);
@@ -301,7 +301,6 @@ fn is_emoji(c: char) -> bool {
             | 0x2300..=0x23FF
             | 0x2B00..=0x2BFF
             | 0xFE00..=0xFE0F
-
     )
 }
 
@@ -385,13 +384,13 @@ fn endpoint(config: &str) -> Option<(String, u16)> {
         }
 
         let decoded = decoded_texts.into_iter().find(|text| text.contains("\"add\""))?;
-        let add = Regex::new(r#""add"\s*:\s*"([^"]+)""#)
+        let add = Regex::new(r#"\"add\"\s*:\s*\"([^\"]+)\""#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
             .as_str()
             .to_string();
-        let port = Regex::new(r#""port"\s*:\s*"?([0-9]+)"?"#)
+        let port = Regex::new(r#"\"port\"\s*:\s*\"?([0-9]+)\"?"#)
             .ok()?
             .captures(&decoded)?
             .get(1)?
@@ -446,7 +445,7 @@ async fn test_chunk(
     index: usize,
     label: String,
     configs: Vec<String>,
-) -> Result<(usize, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "[INFO] Testing chunk {}: {} configs with TCP reachability.",
         label,
