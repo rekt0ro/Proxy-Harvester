@@ -68,7 +68,7 @@ def start_group(urls, batch_size, rejected):
             rejected.append((urls[0], str(exc)))
             return []
         midpoint = len(urls) // 2
-        return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
+        return start_group(urls[:midpoint], batch_size, rejected) + start_group(urls[midpoint:], batch_size, rejected)
 
     if len(parsed) == len(urls):
         for proxy in parsed:
@@ -80,7 +80,7 @@ def start_group(urls, batch_size, rejected):
         rejected.append((urls[0], f"sing-box accepted {len(parsed)}/1 proxy handles"))
         return []
     midpoint = len(urls) // 2
-    return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
+    return start_group(urls[:midpoint], batch_size, rejected) + start_group(urls[midpoint:], batch_size, rejected)
 
 
 def check_proxy(proxy, target, timeout):
@@ -116,7 +116,7 @@ def main():
     parser.add_argument(
         "--target",
         default=None,
-        help="Validation target URL. Defaults to the same Cloudflare URL used by Throne.",
+        help="Validation target URL. Defaults to the primary HTTPS probe.",
     )
     args = parser.parse_args()
 
