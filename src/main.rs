@@ -1141,8 +1141,7 @@ async fn run_proxy_check_batch(
         scheme,
         candidates.len(),
         offset,
-        offset + candidates.len(),
-        LIGHT_LIMIT
+        offset + candidates.len()
     );
 
     let start = Instant::now();
@@ -1694,7 +1693,7 @@ async fn proxy_test_light(
     let mut protocol_quotas =
         fair_protocol_quotas(&verified_schemes, &preferred_by_scheme, LIGHT_LIMIT);
 
-    let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
+    let mut verified: Vec<String> = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
     let mut selected_configs = HashSet::new();
     let mut selected_endpoints = HashSet::new();
 
@@ -1724,7 +1723,7 @@ async fn proxy_test_light(
 
                 let selected_for_scheme = verified
                     .iter()
-                    .filter(|item| config_scheme(item) == scheme.as_str())
+                    .filter(|item: &&String| config_scheme(item) == scheme.as_str())
                     .count();
 
                 if selected_for_scheme >= quota || selected_configs.contains(config) {
