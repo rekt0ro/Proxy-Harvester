@@ -131,7 +131,7 @@ jobs:
             --primary-target https://cp.cloudflare.com/ \
             --secondary-target https://www.google.com/generate_204 \
             --selection-limit 200 \
-            --max-per-endpoint 1 \
+            --max-per-endpoint 1
           status=$?
           set -e
 
