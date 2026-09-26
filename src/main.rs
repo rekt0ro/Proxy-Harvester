@@ -1193,17 +1193,6 @@ fn wireguard_now(start: std::time::Instant) -> WireGuardNow {
     WireGuardNow::new(ticks, wall.as_secs(), wall.subsec_nanos())
 }
 
-async fn transport_latency(config: &str) -> Option<u64> {
-    match config_scheme(config).as_str() {
-        "hysteria" | "hysteria2" | "hy2" | "tuic" => quic_latency(config).await,
-        "wg" => wireguard_latency(config).await,
-        _ => {
-            let (host, port) = endpoint(config)?;
-            tcp_latency_endpoint(&host, port).await
-        }
-    }
-}
-
 async fn diagnose_configs(configs: &[String]) {
     let mut samples = Vec::new();
     let mut seen = HashSet::new();
