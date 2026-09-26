@@ -20,6 +20,7 @@ const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ALL_CONFIGS: usize = 1000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -139,30 +140,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     chunk_results.sort_by_key(|(index, _)| *index);
 
-    let mut working_configs = transport_passthrough;
+    let mut ranked_working_configs = Vec::new();
     let mut reachable_endpoints = 0usize;
 
     for (_, working) in chunk_results {
         reachable_endpoints += working.len();
 
-        for (representative, _) in working {
+        for (representative, latency_ms) in working {
             let Some(endpoint_key) = endpoint(&representative) else {
                 continue;
             };
             if let Some(group) = endpoint_groups.get(&endpoint_key) {
-                working_configs.extend(group.iter().cloned());
+                for config in group {
+                    ranked_working_configs.push((config.clone(), latency_ms));
+                }
             }
         }
     }
 
-    if working_configs.is_empty() {
+    if ranked_working_configs.is_empty() && transport_passthrough.is_empty() {
         println!("[WARN] No usable configs remained after transport filtering and TCP reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
     }
 
-    working_configs.sort_unstable();
-    working_configs.dedup();
+    ranked_working_configs.sort_unstable_by(|(config_a, latency_a), (config_b, latency_b)| {
+        latency_a.cmp(latency_b).then_with(|| config_a.cmp(config_b))
+    });
+
+    let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(
+        ranked_working_configs.len() + transport_passthrough.len(),
+    ));
+    let mut seen = HashSet::new();
+
+    for (config, _) in ranked_working_configs {
+        if seen.insert(config.clone()) {
+            working_configs.push(config);
+            if working_configs.len() >= MAX_ALL_CONFIGS {
+                break;
+            }
+        }
+    }
+
+    if working_configs.len() < MAX_ALL_CONFIGS {
+        transport_passthrough.sort_unstable();
+        for config in transport_passthrough {
+            if seen.insert(config.clone()) {
+                working_configs.push(config);
+                if working_configs.len() >= MAX_ALL_CONFIGS {
+                    break;
+                }
+            }
+        }
+    }
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
@@ -170,9 +200,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::rename(&temporary_all, &all_path).await?;
 
     println!(
-        "[INFO] Published {} TCP-reachable configs from {} reachable endpoints.",
+        "[INFO] Published {} configs, prioritizing the fastest TCP-reachable endpoints ({} reachable endpoints; cap {}).",
         working_configs.len(),
-        reachable_endpoints
+        reachable_endpoints,
+        MAX_ALL_CONFIGS
     );
     println!("[INFO] Done.");
 
