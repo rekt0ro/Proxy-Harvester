@@ -13,7 +13,6 @@ from urllib.parse import parse_qs, urlsplit
 
 DEFAULT_BUDGET = 5000
 DISCOVERY_CHUNK_SIZE = 4000
-TARGET_GLOBAL_VERIFIED = 500
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
@@ -117,25 +116,19 @@ def read_lines(path):
         return []
 
 
-def build_candidates(all_configs, seed_configs, budget):
+def build_candidates(candidate_configs, budget):
     selected = []
     seen = set()
 
-    def add(config):
+    for config in candidate_configs:
         config = config.strip()
         if not config or config in seen:
-            return False
+            continue
 
         seen.add(config)
         selected.append(config)
-        return True
 
-    for config in seed_configs:
-        if add(config) and len(selected) >= budget:
-            return selected
-
-    for config in all_configs:
-        if add(config) and len(selected) >= budget:
+        if len(selected) >= budget:
             break
 
     return selected
@@ -259,8 +252,7 @@ def diversified(configs, limit, max_per_endpoint, max_per_family):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--all", dest="all_path", required=True)
-    parser.add_argument("--seed", required=True)
+    parser.add_argument("--candidates", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--checker", required=True)
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
@@ -268,7 +260,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=12)
     parser.add_argument("--warm-timeout", type=float, default=5)
-    parser.add_argument("--target-verified", type=int, default=TARGET_GLOBAL_VERIFIED)
     parser.add_argument("--final-recheck-limit", type=int, default=FINAL_RECHECK_LIMIT)
     parser.add_argument("--final-workers", type=int, default=12)
     parser.add_argument("--final-batch-size", type=int, default=1)
@@ -281,8 +272,7 @@ def main():
 
     budget = max(1, args.budget)
     candidates = build_candidates(
-        read_lines(args.all_path),
-        read_lines(args.seed),
+        read_lines(args.candidates),
         budget,
     )
 
@@ -352,9 +342,6 @@ def main():
                 f"{len(chunk_verified)} verified; "
                 f"{len(global_verified)} total."
             )
-
-            if len(global_verified) >= max(1, args.target_verified):
-                break
 
         if not global_verified:
             print("[WARN] Global validation produced zero verified configs.")
