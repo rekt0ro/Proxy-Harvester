@@ -13,8 +13,6 @@ DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
 )
 
-# A proxy must survive two independent requests. This is intentionally stricter
-# than a single lucky hit, while still allowing one transient failure.
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_MEDIAN_LATENCY_MS = 3000
@@ -22,11 +20,7 @@ MAX_MEDIAN_LATENCY_MS = 3000
 
 def load_urls(path):
     with open(path, encoding="utf-8") as handle:
-        return [
-            line.strip()
-            for line in handle
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
+        return [line.strip() for line in handle if line.strip() and not line.lstrip().startswith("#")]
 
 
 def strip_fragment(url):
@@ -34,26 +28,16 @@ def strip_fragment(url):
 
 
 def start_group(urls, batch_size, rejected, chain_proxy=None):
-    """Start a group, recursively isolating configs that poison a sing-box batch."""
     if not urls:
         return []
-
     try:
-        batch = SingBoxBatch(
-            urls,
-            batch_size=batch_size,
-            chain_proxy=chain_proxy,
-            log_level="error",
-        )
+        batch = SingBoxBatch(urls, batch_size=batch_size, chain_proxy=chain_proxy, log_level="error")
     except Exception as exc:
         if len(urls) == 1:
             rejected.append((urls[0], str(exc)))
             return []
         midpoint = len(urls) // 2
-        return (
-            start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
-            + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
-        )
+        return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
 
     try:
         parsed = list(batch)
@@ -63,26 +47,18 @@ def start_group(urls, batch_size, rejected, chain_proxy=None):
             rejected.append((urls[0], str(exc)))
             return []
         midpoint = len(urls) // 2
-        return (
-            start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
-            + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
-        )
+        return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
 
     if len(parsed) == len(urls):
         return [batch]
 
     batch.stop()
-
     if len(urls) == 1:
-        reason = f"sing-box accepted {len(parsed)}/1 proxy handles"
-        rejected.append((urls[0], reason))
+        rejected.append((urls[0], f"sing-box accepted {len(parsed)}/1 proxy handles"))
         return []
 
     midpoint = len(urls) // 2
-    return (
-        start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
-        + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
-    )
+    return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
 
 
 def check_proxy(proxy, target, timeout):
@@ -90,14 +66,11 @@ def check_proxy(proxy, target, timeout):
     try:
         response = proxy.get(target, timeout=timeout)
         elapsed_ms = (time.monotonic() - started) * 1000
-
         if not (200 <= response.status_code < 400):
             return False, elapsed_ms, f"HTTP {response.status_code}"
-
         return True, elapsed_ms, ""
     except Exception as exc:
-        elapsed_ms = (time.monotonic() - started) * 1000
-        return False, elapsed_ms, str(exc)[:160]
+        return False, (time.monotonic() - started) * 1000, str(exc)[:160]
 
 
 def main():
@@ -126,23 +99,14 @@ def main():
 
     rejected = []
     batches = []
-    groups = [
-        test_urls[index : index + max(1, args.batch_size)]
-        for index in range(0, len(test_urls), max(1, args.batch_size))
-    ]
+    groups = [test_urls[index:index + max(1, args.batch_size)] for index in range(0, len(test_urls), max(1, args.batch_size))]
 
     try:
         for group in groups:
-            batches.extend(
-                start_group(group, max(1, args.batch_size), rejected, args.chain_proxy)
-            )
+            batches.extend(start_group(group, max(1, args.batch_size), rejected, args.chain_proxy))
 
         proxies = [proxy for batch in batches for proxy in batch]
-        print(
-            f"loaded {len(original_urls)} input URLs, started {len(proxies)} proxy handles "
-            f"in {len(batches)} batch(es), rejected {len(rejected)}",
-            flush=True,
-        )
+        print(f"loaded {len(original_urls)} input URLs, started {len(proxies)} proxy handles in {len(batches)} batch(es), rejected {len(rejected)}", flush=True)
 
         if rejected:
             for url, reason in rejected[:8]:
@@ -162,39 +126,24 @@ def main():
             if not active_proxies:
                 break
 
-            print(
-                f"target {target}: {len(active_proxies)} active proxies, "
-                f"requiring {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts",
-                flush=True,
-            )
+            print(f"target {target}: {len(active_proxies)} active proxies, requiring {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts", flush=True)
 
-            # Every active proxy gets up to three independent attempts. A proxy
-            # remains eligible after a success so we can measure real stability.
             for attempt in range(1, STABILITY_ATTEMPTS + 1):
                 if not active_proxies:
                     break
 
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=max(1, min(args.workers, len(active_proxies)))
-                ) as pool:
-                    futures = {
-                        pool.submit(check_proxy, proxy, target, args.timeout): proxy
-                        for proxy in active_proxies
-                    }
-
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(args.workers, len(active_proxies)))) as pool:
+                    futures = {pool.submit(check_proxy, proxy, target, args.timeout): proxy for proxy in active_proxies}
                     for future in concurrent.futures.as_completed(futures):
                         proxy = futures[future]
                         ok, latency_ms, error = future.result()
                         original_url = original_by_test_url.get(proxy.url, proxy.url)
-
                         if ok:
                             success_counts[original_url] += 1
                             latencies[original_url].append(latency_ms)
                         else:
                             failures[error or "unknown error"] += 1
 
-                # Stop retrying only when a proxy has already proven stable or
-                # when it can no longer reach the required success count.
                 remaining = []
                 attempts_left = STABILITY_ATTEMPTS - attempt
                 for proxy in active_proxies:
@@ -204,65 +153,32 @@ def main():
                         continue
                     if successes + attempts_left >= MIN_SUCCESSFUL_TARGETS:
                         remaining.append(proxy)
-
                 active_proxies = remaining
-                working = sum(
-                    1 for count in success_counts.values()
-                    if count >= MIN_SUCCESSFUL_TARGETS
-                )
-                print(
-                    f"  attempt {attempt}/{STABILITY_ATTEMPTS}: "
-                    f"{working}/{len(proxies)} stable so far; {len(active_proxies)} still testing",
-                    flush=True,
-                )
+
+                stable = sum(1 for count in success_counts.values() if count >= MIN_SUCCESSFUL_TARGETS)
+                print(f"  attempt {attempt}/{STABILITY_ATTEMPTS}: {stable}/{len(proxies)} stable so far; {len(active_proxies)} still testing", flush=True)
 
         eligible = {}
         for url, values in latencies.items():
-            success_count = success_counts[url]
-            if not values or success_count < MIN_SUCCESSFUL_TARGETS:
+            if success_counts[url] < MIN_SUCCESSFUL_TARGETS or not values:
                 continue
-
             median_latency = statistics.median(values)
             min_latency = min(values)
-
             if median_latency <= MAX_MEDIAN_LATENCY_MS:
-                eligible[url] = (
-                    median_latency,
-                    success_count,
-                    min_latency,
-                )
+                eligible[url] = (median_latency, success_counts[url], min_latency)
 
-        print(
-            f"  {len(eligible)}/{len(latencies)} verified configs meet "
-            f"{MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and "
-            f"<= {MAX_MEDIAN_LATENCY_MS}ms median latency",
-            flush=True,
-        )
+        print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and <= {MAX_MEDIAN_LATENCY_MS}ms median latency", flush=True)
 
-        ordered = sorted(
-            eligible,
-            key=lambda url: (
-                eligible[url][0],
-                -eligible[url][1],
-                eligible[url][2],
-                url,
-            ),
-        )
-
+        ordered = sorted(eligible, key=lambda url: (eligible[url][0], -eligible[url][1], eligible[url][2], url))
         with open(args.output, "w", encoding="utf-8") as handle:
             for url in ordered:
                 handle.write(url + "\n")
 
-        print(
-            f"{len(ordered)}/{len(proxies)} verified configs with stability-tested "
-            f"Cloudflare reachability across {targets_used if 'targets_used' in locals() else len(DEFAULT_TARGETS)} target(s)",
-            flush=True,
-        )
-        print("success distribution:", flush=True)
+        print(f"{len(ordered)}/{len(proxies)} verified configs with stability-tested Cloudflare reachability across {len(DEFAULT_TARGETS)} target(s)", flush=True)
         distribution = collections.Counter(success_counts[url] for url in eligible)
+        print("success distribution:", flush=True)
         for count, number in sorted(distribution.items()):
             print(f"  {count}/{STABILITY_ATTEMPTS}: {number}", flush=True)
-
     finally:
         for batch in batches:
             try:
