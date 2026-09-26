@@ -1,266 +1,638 @@
 #!/usr/bin/env python3
-"""Protocol-level proxy checker for HTTPS connectivity and stability."""
+"""Xray-core proxy checker for HTTP connectivity and stability."""
 
 import argparse
+import base64
 import collections
 import concurrent.futures
 import json
-import logging
-import statistics
+import os
+import socket
+import subprocess
+import tempfile
 import time
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from singbox2proxy import SingBoxBatch
-
-# The proxy library logs every rejected/invalid URL at ERROR level. Those
-# per-config diagnostics can flood Actions logs without changing validation
-# results, so keep our own aggregate summaries while silencing that logger.
-logging.getLogger("singbox2proxy").setLevel(logging.CRITICAL + 1)
-
-DEFAULT_TARGETS = (
-    "http://cp.cloudflare.com:80/",
-)
-
+DEFAULT_TARGET = "http://cp.cloudflare.com:80/"
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_LATENCY_MS = 800
+CORE_START_TIMEOUT = 5.0
+SUPPORTED = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "wg", "socks", "socks5", "socks5h", "http"}
 
 
 def load_urls(path):
-    with open(path, encoding="utf-8") as handle:
-        return [line.strip() for line in handle if line.strip() and not line.lstrip().startswith("#")]
+    with open(path, encoding="utf-8") as f:
+        return [x.strip() for x in f if x.strip() and not x.lstrip().startswith("#")]
 
 
-def strip_fragment(url):
+def clean(url):
     return url.split("#", 1)[0]
 
 
-def configure_proxy(proxy):
-    """Disable nested automatic retries so each stability attempt is real."""
-    client = getattr(proxy, "client", None)
-    if client is None:
-        request = getattr(proxy, "request", None)
-        client = getattr(request, "__self__", None)
-    if client is None:
-        return
-    if hasattr(client, "auto_retry"):
-        client.auto_retry = False
-    if hasattr(client, "retry_times"):
-        client.retry_times = 0
+def b64text(value):
+    value = value.strip()
+    for candidate in (value, value + "=" * (-len(value) % 4)):
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                return decoder(candidate).decode()
+            except (ValueError, UnicodeError, base64.binascii.Error):
+                pass
+    return None
 
 
-def start_group(urls, batch_size, rejected):
-    if not urls:
-        return []
+def first(query, *names, default=None):
+    wanted = {name.lower() for name in names}
+    for name, values in query.items():
+        if name.lower() in wanted and values and values[0] != "":
+            return values[0]
+    return default
+
+
+def truthy(query, *names):
+    return str(first(query, *names, default="")).lower() in {"1", "true", "yes", "on"}
+
+
+def csv(value):
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def endpoint(parsed, default_port=None):
+    if not parsed.hostname:
+        raise ValueError("missing host")
+    port = parsed.port or default_port
+    if not port or not 0 < port <= 65535:
+        raise ValueError("missing or invalid port")
+    return parsed.hostname, port
+
+
+def stream(query, host):
+    network = first(query, "type", "network", default="tcp").lower()
+    if network == "tcp":
+        network = "raw"
+    if network not in {"raw", "ws", "grpc", "httpupgrade", "xhttp"}:
+        raise ValueError(f"unsupported transport {network}")
+
+    security = first(query, "security", default="none").lower()
+    if security not in {"none", "tls", "reality"}:
+        raise ValueError(f"unsupported security {security}")
+    if security == "reality" and network not in {"raw", "xhttp", "grpc"}:
+        raise ValueError("reality unsupported with this transport")
+
+    out = {"network": network, "security": security}
+    sni = first(query, "sni", "server_name", "peer", default=host)
+    alpn = csv(first(query, "alpn", default=""))
+    if security == "tls":
+        tls = {"serverName": sni}
+        if alpn:
+            tls["alpn"] = alpn
+        fp = first(query, "fp", "fingerprint")
+        if fp:
+            tls["fingerprint"] = fp
+        if truthy(query, "insecure", "allowInsecure"):
+            tls["allowInsecure"] = True
+        out["tlsSettings"] = tls
+    elif security == "reality":
+        pbk = first(query, "pbk", "publicKey")
+        if not pbk:
+            raise ValueError("reality public key missing")
+        reality = {"show": False, "serverName": sni, "publicKey": pbk}
+        fp = first(query, "fp", "fingerprint")
+        sid = first(query, "sid", "shortId")
+        spx = first(query, "spx", "spiderX")
+        if fp:
+            reality["fingerprint"] = fp
+        if sid:
+            reality["shortId"] = sid
+        if spx:
+            reality["spiderX"] = unquote(spx)
+        out["realitySettings"] = reality
+
+    path = first(query, "path")
+    host_header = first(query, "host")
+    if network == "raw":
+        header_type = first(query, "headerType", "header_type")
+        if header_type and header_type.lower() == "http":
+            header = {"type": "http"}
+            request = {}
+            if path:
+                request["path"] = [path]
+            if host_header:
+                request["headers"] = {"Host": csv(host_header)}
+            if request:
+                header["request"] = request
+            out["rawSettings"] = {"header": header}
+    elif network == "ws":
+        ws = {}
+        if path:
+            ws["path"] = path
+        if host_header:
+            ws["headers"] = {"Host": host_header}
+        out["wsSettings"] = ws
+    elif network == "httpupgrade":
+        hu = {}
+        if path:
+            hu["path"] = path
+        if host_header:
+            hu["host"] = host_header
+        out["httpupgradeSettings"] = hu
+    elif network == "grpc":
+        grpc = {}
+        authority = first(query, "authority", "host")
+        service = first(query, "serviceName", "service_name")
+        if authority:
+            grpc["authority"] = authority
+        if service:
+            grpc["serviceName"] = service
+        if str(first(query, "mode", default="")).lower() == "multi":
+            grpc["multiMode"] = True
+        out["grpcSettings"] = grpc
+    else:
+        xhttp = {"mode": first(query, "mode", default="auto")}
+        if path:
+            xhttp["path"] = path
+        if host_header:
+            xhttp["host"] = host_header
+        extra = first(query, "extra")
+        if extra:
+            try:
+                value = json.loads(unquote(extra))
+                if isinstance(value, dict):
+                    xhttp["extra"] = value
+            except json.JSONDecodeError:
+                pass
+        out["xhttpSettings"] = xhttp
+    return out
+
+
+def parse_vless(config):
+    p = urlsplit(clean(config))
+    host, port = endpoint(p)
+    q = parse_qs(p.query, keep_blank_values=True)
+    uuid = unquote(p.username or "")
+    if not uuid:
+        raise ValueError("VLESS UUID missing")
+    user = {"id": uuid, "encryption": first(q, "encryption", default="none")}
+    flow = first(q, "flow")
+    if flow:
+        user["flow"] = flow
+    return {
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": host, "port": port, "users": [user]}]},
+        "streamSettings": stream(q, host),
+    }
+
+
+def parse_vmess(config):
+    decoded = b64text(clean(config).split("://", 1)[1])
+    if not decoded:
+        raise ValueError("invalid VMess base64")
+    value = json.loads(decoded)
+    host = str(value.get("add", "")).strip()
+    port = int(value.get("port", 0) or 0)
+    uuid = str(value.get("id", "")).strip()
+    if not host or not uuid or not 0 < port <= 65535:
+        raise ValueError("VMess endpoint or UUID missing")
+    network = str(value.get("net", "tcp") or "tcp").lower()
+    if network == "h2":
+        raise ValueError("VMess h2 transport unsupported")
+    q = {"type": [network], "security": [str(value.get("tls", "") or "none")]}
+    for src, dst in (("sni", "sni"), ("alpn", "alpn"), ("fp", "fp"), ("host", "host"), ("path", "path"), ("allowInsecure", "insecure")):
+        if value.get(src) not in (None, ""):
+            q[dst] = [str(value[src])]
+    if str(value.get("type", "none")).lower() == "http" and network == "tcp":
+        q["headerType"] = ["http"]
+    user = {"id": uuid, "alterId": int(value.get("aid", 0) or 0), "security": str(value.get("scy", "auto") or "auto")}
+    return {
+        "protocol": "vmess",
+        "settings": {"vnext": [{"address": host, "port": port, "users": [user]}]},
+        "streamSettings": stream(q, host),
+    }
+
+
+def parse_trojan(config):
+    p = urlsplit(clean(config))
+    host, port = endpoint(p)
+    password = unquote(p.username or "")
+    if not password:
+        raise ValueError("Trojan password missing")
+    q = parse_qs(p.query, keep_blank_values=True)
+    return {
+        "protocol": "trojan",
+        "settings": {"servers": [{"address": host, "port": port, "password": password}]},
+        "streamSettings": stream(q, host),
+    }
+
+
+def parse_ss(config):
+    p = urlsplit(clean(config))
+    q = parse_qs(p.query, keep_blank_values=True)
+    if first(q, "plugin"):
+        raise ValueError("Shadowsocks plugins unsupported")
+    if p.hostname and p.port and p.username:
+        host, port, method, password = p.hostname, p.port, unquote(p.username), unquote(p.password or "")
+    else:
+        decoded = b64text(p.netloc)
+        if not decoded or "@" not in decoded or ":" not in decoded.split("@", 1)[0]:
+            raise ValueError("invalid Shadowsocks payload")
+        credentials, remote = decoded.rsplit("@", 1)
+        method, password = credentials.split(":", 1)
+        host, port = endpoint(urlsplit("ss://" + remote))
+    return {
+        "protocol": "shadowsocks",
+        "settings": {"servers": [{"address": host, "port": port, "method": method, "password": password}]},
+    }
+
+
+def parse_hy2(config):
+    p = urlsplit(clean(config))
+    host, port = endpoint(p)
+    q = parse_qs(p.query, keep_blank_values=True)
+    if first(q, "obfs") or first(q, "obfs-password"):
+        raise ValueError("Hysteria2 obfs unsupported by Xray")
+    password = unquote(p.username or "")
+    if p.password is not None:
+        password += ":" + unquote(p.password)
+    if not password:
+        raise ValueError("Hysteria2 password missing")
+    tls_query = dict(q)
+    tls_query["security"] = ["tls"]
+    return {
+        "protocol": "hysteria",
+        "settings": {"version": 2, "address": host, "port": port},
+        "streamSettings": {
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": stream(tls_query, host)["tlsSettings"],
+            "hysteriaSettings": {"version": 2, "auth": password},
+        },
+    }
+
+
+def parse_wg(config):
+    p = urlsplit(clean(config))
+    host, port = endpoint(p)
+    q = parse_qs(p.query, keep_blank_values=True)
+    private = unquote(p.username or "") or first(q, "privatekey", "private-key", "private_key", "private_key_base64")
+    public = first(q, "publickey", "public-key", "public_key", "peer-public-key", "peer_public_key", "pubkey")
+    if not private or not public:
+        raise ValueError("WireGuard keys missing")
+    address = csv(first(q, "address", "addresses", "local-address", default="10.0.0.1"))
+    peer = {
+        "endpoint": f"{host}:{port}",
+        "publicKey": public,
+        "allowedIPs": csv(first(q, "allowedIPs", "allowed-ips", default="0.0.0.0/0,::/0")),
+    }
+    psk = first(q, "presharedkey", "preshared-key", "preshared_key", "psk")
+    if psk:
+        peer["preSharedKey"] = psk
+    keepalive = first(q, "keepalive", "keep-alive")
+    if keepalive:
+        peer["keepAlive"] = int(keepalive)
+    return {
+        "protocol": "wireguard",
+        "settings": {
+            "secretKey": private,
+            "address": address,
+            "peers": [peer],
+            "noKernelTun": True,
+            "remoteDNS": ["1.1.1.1", "1.0.0.1"],
+        },
+    }
+
+
+def parse_basic(config):
+    p = urlsplit(clean(config))
+    host, port = endpoint(p, 1080 if p.scheme in {"socks", "socks5", "socks5h"} else 8080)
+    protocol = "http" if p.scheme == "http" else "socks"
+    server = {"address": host, "port": port}
+    if p.username:
+        server["users"] = [{"user": unquote(p.username), "pass": unquote(p.password or "")}]
+    return {"protocol": protocol, "settings": {"servers": [server]}}
+
+
+def parse_config(config):
+    scheme = urlsplit(clean(config)).scheme.lower()
+    if scheme not in SUPPORTED:
+        raise ValueError(f"unsupported scheme {scheme or 'unknown'}")
+    if scheme == "vless":
+        return parse_vless(config)
+    if scheme == "vmess":
+        return parse_vmess(config)
+    if scheme == "trojan":
+        return parse_trojan(config)
+    if scheme == "ss":
+        return parse_ss(config)
+    if scheme in {"hysteria2", "hy2"}:
+        return parse_hy2(config)
+    if scheme == "wg":
+        return parse_wg(config)
+    return parse_basic(config)
+
+
+def ports(count):
+    sockets = []
+    values = []
     try:
-        batch = SingBoxBatch(urls, batch_size=batch_size, log_level="error")
-    except Exception as exc:
-        if len(urls) == 1:
-            rejected.append((urls[0], str(exc)))
-            return []
-        midpoint = len(urls) // 2
-        return start_group(urls[:midpoint], batch_size, rejected) + start_group(urls[midpoint:], batch_size, rejected)
+        for _ in range(count):
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            values.append(s.getsockname()[1])
+            sockets.append(s)
+        return values
+    finally:
+        for s in sockets:
+            s.close()
 
+
+def xray_config(entries):
+    selected = ports(len(entries))
+    ins = []
+    outs = []
+    rules = []
+    for i, (_, outbound) in enumerate(entries):
+        itag, otag = f"in-{i}", f"out-{i}"
+        ins.append({
+            "tag": itag,
+            "listen": "127.0.0.1",
+            "port": selected[i],
+            "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": False},
+        })
+        outbound["tag"] = otag
+        outs.append(outbound)
+        rules.append({"type": "field", "inboundTag": [itag], "outboundTag": otag})
+    return {
+        "log": {"loglevel": "error"},
+        "inbounds": ins,
+        "outbounds": outs,
+        "routing": {"domainStrategy": "AsIs", "rules": rules},
+    }, selected
+
+
+def start_xray(binary, config_path, log_path):
+    log = open(log_path, "w", encoding="utf-8")
+    return subprocess.Popen(
+        [binary, "run", "-c", config_path],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    ), log
+
+
+def wait_ports(process, values):
+    deadline = time.monotonic() + CORE_START_TIMEOUT
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        if all(_port_ready(port) for port in values):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _port_ready(port):
     try:
-        parsed = list(batch)
-    except Exception as exc:
-        batch.stop()
-        if len(urls) == 1:
-            rejected.append((urls[0], str(exc)))
-            return []
-        midpoint = len(urls) // 2
-        return start_group(urls[:midpoint], batch_size, rejected) + start_group(urls[midpoint:], batch_size, rejected)
-
-    if len(parsed) == len(urls):
-        for proxy in parsed:
-            configure_proxy(proxy)
-        return [batch]
-
-    batch.stop()
-    if len(urls) == 1:
-        rejected.append((urls[0], f"sing-box accepted {len(parsed)}/1 proxy handles"))
-        return []
-    midpoint = len(urls) // 2
-    return start_group(urls[:midpoint], batch_size, rejected) + start_group(urls[midpoint:], batch_size, rejected)
+        with socket.create_connection(("127.0.0.1", port), timeout=0.15):
+            return True
+    except OSError:
+        return False
 
 
-def check_proxy(proxy, target, timeout):
+def probe(port, target, timeout_seconds):
+    p = urlsplit(target)
+    host, target_port = endpoint(p)
     started = time.monotonic()
+    sock = socket.create_connection(("127.0.0.1", port), timeout=timeout_seconds)
+    sock.settimeout(timeout_seconds)
     try:
-        response = proxy.get(target, timeout=timeout)
-        elapsed_ms = (time.monotonic() - started) * 1000
-        status = response.status_code
+        sock.sendall(b"\x05\x01\x00")
+        if sock.recv(2) != b"\x05\x00":
+            raise OSError("SOCKS5 auth negotiation failed")
+        name = host.encode("idna")
+        if len(name) > 255:
+            raise OSError("target hostname too long")
+        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + target_port.to_bytes(2, "big"))
+        head = sock.recv(4)
+        if len(head) != 4 or head[0] != 5 or head[1] != 0:
+            raise OSError("SOCKS5 CONNECT failed")
+        atyp = head[3]
+        size = 4 if atyp == 1 else 16 if atyp == 4 else None
+        if atyp == 3:
+            length = sock.recv(1)
+            if not length:
+                raise OSError("SOCKS5 response truncated")
+            size = length[0]
+        if size is None:
+            raise OSError("SOCKS5 response address type invalid")
+        left = size + 2
+        while left:
+            chunk = sock.recv(left)
+            if not chunk:
+                raise OSError("SOCKS5 response truncated")
+            left -= len(chunk)
+
+        path = p.path or "/"
+        if p.query:
+            path += "?" + p.query
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Connection: close\r\n"
+            "User-Agent: Proxy-Harvester/3.0\r\n"
+            "\r\n"
+        ).encode("ascii")
+        sock.sendall(request)
+
+        data = b""
+        while b"\r\n\r\n" not in data and len(data) < 65536:
+            chunk = sock.recv(min(4096, 65536 - len(data)))
+            if not chunk:
+                break
+            data += chunk
+        if b"\r\n\r\n" not in data:
+            raise OSError("HTTP response headers not received")
+        return True, (time.monotonic() - started) * 1000, ""
+    finally:
+        sock.close()
+
+
+def check_batch(binary, entries, target, timeout_seconds, workers):
+    with tempfile.TemporaryDirectory(prefix="proxy-harvester-xray-") as work:
+        config_path = os.path.join(work, "xray.json")
+        log_path = os.path.join(work, "xray.log")
+        conf, local_ports = xray_config(entries)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(conf, f, separators=(",", ":"))
+
+        process, log = start_xray(binary, config_path, log_path)
         try:
-            response.close()
-        except Exception:
-            pass
-        if not (200 <= status < 400):
-            return False, elapsed_ms, f"HTTP {status}"
-        return True, elapsed_ms, ""
-    except Exception as exc:
-        return False, (time.monotonic() - started) * 1000, str(exc)[:160]
+            if not wait_ports(process, local_ports):
+                if len(entries) == 1:
+                    reason = "Xray core failed to start"
+                    try:
+                        with open(log_path, encoding="utf-8", errors="replace") as f:
+                            tail = f.read()[-700:].strip()
+                        if tail:
+                            reason += f": {tail}"
+                    except OSError:
+                        pass
+                    return {}, {entries[0][0]: reason}
+
+                mid = len(entries) // 2
+                left = check_batch(binary, entries[:mid], target, timeout_seconds, workers)
+                right = check_batch(binary, entries[mid:], target, timeout_seconds, workers)
+                left[0].update(right[0])
+                left[1].update(right[1])
+                return left
+
+            active = [(config, local_ports[i]) for i, (config, _) in enumerate(entries)]
+            successes = collections.Counter()
+            latencies = collections.defaultdict(list)
+            errors = {}
+
+            for attempt in range(STABILITY_ATTEMPTS):
+                if not active:
+                    break
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, min(workers, len(active)))
+                ) as pool:
+                    futures = {
+                        pool.submit(probe, port, target, timeout_seconds): config
+                        for config, port in active
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        config = futures[future]
+                        try:
+                            ok, latency, error = future.result()
+                        except Exception as exc:
+                            ok, latency, error = False, 0, str(exc)[:160]
+                        if ok:
+                            successes[config] += 1
+                            latencies[config].append(latency)
+                        else:
+                            errors[config] = error
+
+                left = STABILITY_ATTEMPTS - attempt - 1
+                active = [
+                    (config, port)
+                    for config, port in active
+                    if successes[config] < MIN_SUCCESSFUL_TARGETS
+                    and successes[config] + left >= MIN_SUCCESSFUL_TARGETS
+                ]
+
+            metadata = {}
+            failures = {}
+            for config, _ in entries:
+                values = latencies[config]
+                if (
+                    successes[config] >= MIN_SUCCESSFUL_TARGETS
+                    and values
+                    and max(values) <= MAX_LATENCY_MS
+                ):
+                    values = sorted(values)
+                    mid = len(values) // 2
+                    median = (
+                        values[mid]
+                        if len(values) % 2
+                        else (values[mid - 1] + values[mid]) / 2
+                    )
+                    metadata[config] = {
+                        "successes": successes[config],
+                        "attempts": len(values),
+                        "median_ms": median,
+                        "min_ms": min(values),
+                    }
+                else:
+                    failures[config] = errors.get(config, "validation failed")
+            return metadata, failures
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+            log.close()
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--workers", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=50)
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=1,
-        help="Maximum time allowed for each validation request.",
-    )
-    parser.add_argument("--metadata", default=None)
-    parser.add_argument(
-        "--target",
-        default=None,
-        help="Validation target URL. Defaults to the primary Cloudflare HTTP probe.",
-    )
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--workers", type=int, default=20)
+    ap.add_argument("--batch-size", type=int, default=100)
+    ap.add_argument("--timeout", type=float, default=1)
+    ap.add_argument("--metadata")
+    ap.add_argument("--target", default=DEFAULT_TARGET)
+    ap.add_argument("--xray", default="xray")
+    args = ap.parse_args()
 
-    original_urls = load_urls(args.input)
-    if not original_urls:
-        open(args.output, "w", encoding="utf-8").close()
-        print("0/0 working")
-        return 0
+    originals = load_urls(args.input)
+    unique = []
+    original_for = {}
+    for original in originals:
+        value = clean(original)
+        if value not in original_for:
+            original_for[value] = original
+            unique.append(value)
 
-    test_urls = []
-    original_by_test_url = {}
-    for original in original_urls:
-        test_url = strip_fragment(original)
-        if test_url not in original_by_test_url:
-            original_by_test_url[test_url] = original
-            test_urls.append(test_url)
-
+    parsed = []
     rejected = []
-    batches = []
-    groups = [test_urls[index:index + max(1, args.batch_size)] for index in range(0, len(test_urls), max(1, args.batch_size))]
+    rejected_by_scheme = collections.Counter()
+    for config in unique:
+        try:
+            parsed.append((config, parse_config(config)))
+        except Exception as exc:
+            rejected.append((config, str(exc)))
+            rejected_by_scheme[urlsplit(config).scheme.lower() or "unknown"] += 1
 
-    try:
-        for group in groups:
-            batches.extend(start_group(group, max(1, args.batch_size), rejected))
+    print(
+        f"loaded {len(originals)} input URLs, accepted {len(parsed)} for Xray, rejected {len(rejected)}",
+        flush=True,
+    )
+    if rejected:
+        for config, reason in rejected[:8]:
+            print(f"rejected: {original_for[config]} :: {reason}", flush=True)
+        print("rejected by scheme:", dict(sorted(rejected_by_scheme.items())), flush=True)
 
-        proxies = [proxy for batch in batches for proxy in batch]
-        print(f"loaded {len(original_urls)} input URLs, started {len(proxies)} proxy handles in {len(batches)} batch(es), rejected {len(rejected)}", flush=True)
-
-        if rejected:
-            for url, reason in rejected[:8]:
-                print(f"rejected: {original_by_test_url.get(url, url)} :: {reason}", flush=True)
-
-        if not proxies:
-            open(args.output, "w", encoding="utf-8").close()
-            print(f"0/{len(original_urls)} working", flush=True)
-            return 0
-
-        latencies = collections.defaultdict(list)
-        success_counts = collections.Counter()
-        attempt_counts = collections.Counter()
-        active_proxies = list(proxies)
-
-        targets = (args.target,) if args.target else DEFAULT_TARGETS
-        for target in targets:
-            if not active_proxies:
-                break
-
-            print(f"target {target}: {len(active_proxies)} active proxies, requiring {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts", flush=True)
-
-            for attempt in range(1, STABILITY_ATTEMPTS + 1):
-                if not active_proxies:
-                    break
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(args.workers, len(active_proxies)))) as pool:
-                    request_timeout = args.timeout
-                    futures = {
-                        pool.submit(
-                            check_proxy,
-                            proxy,
-                            target,
-                            request_timeout,
-                        ): proxy
-                        for proxy in active_proxies
-                    }
-                    for future in concurrent.futures.as_completed(futures):
-                        proxy = futures[future]
-                        ok, latency_ms, _ = future.result()
-                        original_url = original_by_test_url.get(proxy.url, proxy.url)
-                        attempt_counts[original_url] += 1
-                        if ok:
-                            success_counts[original_url] += 1
-                            latencies[original_url].append(latency_ms)
-
-                remaining = []
-                attempts_left = STABILITY_ATTEMPTS - attempt
-                for proxy in active_proxies:
-                    original_url = original_by_test_url.get(proxy.url, proxy.url)
-                    successes = success_counts[original_url]
-                    if successes >= MIN_SUCCESSFUL_TARGETS:
-                        continue
-                    if successes + attempts_left >= MIN_SUCCESSFUL_TARGETS:
-                        remaining.append(proxy)
-                active_proxies = remaining
-
-                stable = sum(1 for count in success_counts.values() if count >= MIN_SUCCESSFUL_TARGETS)
-                print(
-                    f"  attempt {attempt}/{STABILITY_ATTEMPTS}: "
-                    f"{stable}/{len(proxies)} stable so far; "
-                    f"{len(active_proxies)} still testing; "
-                    f"timeout={request_timeout:g}s",
-                    flush=True,
-                )
-
-        eligible = {}
-        for url, values in latencies.items():
-            if success_counts[url] < MIN_SUCCESSFUL_TARGETS or not values:
-                continue
-            median_latency = statistics.median(values)
-            min_latency = min(values)
-            if max(values) <= MAX_LATENCY_MS:
-                eligible[url] = (
-                    median_latency,
-                    success_counts[url],
-                    min_latency,
-                    attempt_counts[url],
-                )
-
-        print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts with every measured latency <= {MAX_LATENCY_MS}ms", flush=True)
-
-        ordered = sorted(
-            eligible,
-            key=lambda url: (-eligible[url][1], eligible[url][0], eligible[url][2], url),
+    metadata = {}
+    batch_size = max(1, args.batch_size)
+    for i in range(0, len(parsed), batch_size):
+        batch = parsed[i:i + batch_size]
+        batch_number = i // batch_size + 1
+        batch_count = (len(parsed) + batch_size - 1) // batch_size
+        print(
+            f"target {args.target}: batch {batch_number}/{batch_count}, "
+            f"testing {len(batch)} configs with Xray core; "
+            f"requiring {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS}",
+            flush=True,
         )
-        with open(args.output, "w", encoding="utf-8") as handle:
-            for url in ordered:
-                handle.write(url + "\n")
+        batch_meta, _ = check_batch(args.xray, batch, args.target, args.timeout, args.workers)
+        metadata.update(batch_meta)
 
-        print(f"{len(ordered)}/{len(proxies)} verified configs with stability-tested reachability across {len(targets)} target(s)", flush=True)
-        distribution = collections.Counter(
-            (success_counts[url], attempt_counts[url]) for url in eligible
-        )
-        print("success distribution:", flush=True)
-        for (successes, attempts), number in sorted(distribution.items()):
-            print(f"  {successes}/{attempts}: {number}", flush=True)
+    ordered = sorted(
+        metadata,
+        key=lambda c: (
+            -metadata[c]["successes"],
+            metadata[c]["median_ms"],
+            metadata[c]["min_ms"],
+            c,
+        ),
+    )
+    with open(args.output, "w", encoding="utf-8") as f:
+        for config in ordered:
+            f.write(original_for[config] + "\n")
 
-        if args.metadata:
-            metadata = {
-                url: {
-                    "successes": success_counts[url],
-                    "attempts": eligible[url][3],
-                    "median_ms": eligible[url][0],
-                    "min_ms": eligible[url][2],
-                }
-                for url in eligible
-            }
-            with open(args.metadata, "w", encoding="utf-8") as handle:
-                json.dump(metadata, handle, separators=(",", ":"))
-    finally:
-        for batch in batches:
-            try:
-                batch.stop()
-            except Exception:
-                pass
-
+    print(
+        f"{len(ordered)}/{len(originals)} verified by Xray with "
+        f"{MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and "
+        f"every measured latency <= {MAX_LATENCY_MS}ms",
+        flush=True,
+    )
+    if args.metadata:
+        with open(args.metadata, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, separators=(",", ":"))
     return 0
 
 
