@@ -396,7 +396,6 @@ def main():
             args.final_workers,
             args.final_batch_size,
             args.timeout,
-            args.timeout,
         ):
             print("[WARN] Final secondary validation failed.")
             return 1
