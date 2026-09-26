@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 DEFAULT_BUDGET = 5000
 DISCOVERY_CHUNK_SIZE = 4000
@@ -174,9 +174,7 @@ def diversify_recheck_candidates(configs, limit):
     for config in configs:
         ep = endpoint(config)
 
-        if ep is None:
-            selected.append(config)
-        elif ep not in seen_endpoints:
+        if ep is not None and ep not in seen_endpoints:
             seen_endpoints.add(ep)
             selected.append(config)
         else:
