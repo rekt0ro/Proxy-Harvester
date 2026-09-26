@@ -139,7 +139,9 @@ jobs:
             --seed /tmp/proxy-harvester/previous-light.txt \
             --output subscriptions/light.txt \
             --checker scripts/check_proxies.py \
+            --metadata /tmp/proxy-harvester/light-metadata.json \
             --budget 16000
+          rm -f subscriptions/light.txt.candidates subscriptions/light.txt.verified
           python3 - <<'PY'
           from pathlib import Path
           p = Path("subscriptions/light.txt")
