@@ -453,12 +453,7 @@ def main():
             ),
         )
 
-        final_candidates = diversified(
-            ranked_global,
-            max(1, args.final_recheck_limit),
-            max(1, args.max_per_endpoint),
-            max(1, args.max_per_family),
-        )
+        final_candidates = ranked_global[:max(1, args.final_recheck_limit)]
 
         print(
             f"[INFO] Final Light recheck: {len(final_candidates)} "
@@ -528,6 +523,9 @@ def main():
             )
             return 1
 
+        global_positions = {
+            config: position for position, config in enumerate(global_verified)
+        }
         ranked_final = sorted(
             both,
             key=lambda config: (
@@ -539,9 +537,7 @@ def main():
                     float(primary_metadata.get(config, {}).get("median_ms", float("inf")))
                     + float(secondary_metadata.get(config, {}).get("median_ms", float("inf")))
                 ),
-                global_verified.index(config)
-                if config in global_verified
-                else len(global_verified),
+                global_positions.get(config, len(global_verified)),
                 config,
             ),
         )
