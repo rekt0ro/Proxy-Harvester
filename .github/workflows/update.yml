@@ -114,7 +114,7 @@ jobs:
 
       - name: Check runner network
         run: |
-          curl -fsS --max-time 10 http://cp.cloudflare.com:80/ -o /dev/null
+          curl -fsS --max-time 10 http://cp.cloudflare.com -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Prepare temporary workspace
@@ -149,13 +149,13 @@ jobs:
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxy-harvester/light.next.txt \
             --checker scripts/check_proxies.py \
-            --workers 24 \
-            --batch-size 100 \
+            --workers 48 \
+            --batch-size 250 \
             --timeout 1 \
             --final-recheck-limit 500 \
-            --final-workers 12 \
-            --final-batch-size 50 \
-            --primary-target http://cp.cloudflare.com:80/ \
+            --final-workers 24 \
+            --final-batch-size 250 \
+            --primary-target http://cp.cloudflare.com \
             --selection-limit 200 \
             --max-per-endpoint 1
           status=$?
@@ -230,7 +230,7 @@ jobs:
       - name: Clean generated temporary files
         if: always()
         run: |
-          rm -rf /tmp/proxy-harvester /tmp/xray-build
+          rm -rf /tmp/proxy-harvester /tmp/xray-build /tmp/xray-download
           rm -f subscriptions/.*.txt
 
       - name: Commit changes
