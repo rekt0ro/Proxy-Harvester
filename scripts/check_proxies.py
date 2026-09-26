@@ -325,7 +325,7 @@ def main():
                 continue
             median_latency = statistics.median(values)
             min_latency = min(values)
-            if median_latency <= MAX_MEDIAN_LATENCY_MS:
+            if max(values) <= MAX_MEDIAN_LATENCY_MS:
                 eligible[url] = (
                     median_latency,
                     success_counts[url],
