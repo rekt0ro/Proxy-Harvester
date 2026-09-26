@@ -166,7 +166,7 @@ jobs:
         if: always()
         run: |
           rm -rf /tmp/proxy-harvester
-          rm -f subscriptions/.*.txt subscriptions/.*.json
+          rm -f subscriptions/.*.txt
 
       - name: Commit changes
         run: |
