@@ -50,8 +50,8 @@ jobs:
           set -euo pipefail
 
           xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))')"
-          echo "version=\${xray_version}" >> "$GITHUB_OUTPUT"
-          echo "Xray version: \${xray_version}"
+          echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
+          echo "Xray version: ${xray_version}"
 
       - name: Update Rust dependencies
         run: |
@@ -89,7 +89,7 @@ jobs:
           mkdir -p "$HOME/.local/bin" /tmp/xray-download
 
           if [ ! -x "$HOME/.local/bin/xray" ]; then
-            asset_url="$(curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/tags/v\${XRAY_VERSION}" |
+            asset_url="$(curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/tags/v${XRAY_VERSION}" |
               python3 -c 'import json, sys; a=json.load(sys.stdin)["assets"]; print(next(x["browser_download_url"] for x in a if x["name"] == "Xray-linux-64.zip"))')"
 
             curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
