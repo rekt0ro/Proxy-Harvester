@@ -5,10 +5,16 @@ import argparse
 import collections
 import concurrent.futures
 import json
+import logging
 import statistics
 import time
 
 from singbox2proxy import SingBoxBatch
+
+# The proxy library logs every rejected/invalid URL at ERROR level. Those
+# per-config diagnostics can flood Actions logs without changing validation
+# results, so keep our own aggregate summaries while silencing that logger.
+logging.getLogger("singbox2proxy").setLevel(logging.CRITICAL + 1)
 
 DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
