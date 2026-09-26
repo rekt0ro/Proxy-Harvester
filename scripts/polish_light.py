@@ -14,6 +14,8 @@ DEFAULT_BUDGET = 16000
 MAX_PER_ENDPOINT = 4
 TEST_CHUNK_SIZE = 4000
 TARGET_VERIFIED = 250
+DEFAULT_SELECTION_LIMIT = 200
+DEFAULT_FINAL_MAX_PER_ENDPOINT = 1
 
 
 def scheme(config):
@@ -54,25 +56,38 @@ def heuristic(config):
             q = json.loads(base64.urlsafe_b64decode(raw).decode())
             net = str(q.get("net", "")).lower()
             tls = str(q.get("tls", "")).lower()
-            if net == "ws": score += 3
-            if tls == "tls": score += 3
-            if q.get("host"): score += 1
-            if q.get("sni"): score += 1
-            if q.get("path"): score += 1
+            if net == "ws":
+                score += 3
+            if tls == "tls":
+                score += 3
+            if q.get("host"):
+                score += 1
+            if q.get("sni"):
+                score += 1
+            if q.get("path"):
+                score += 1
         else:
             p = urlsplit(config)
             q = {k.lower(): v[0] for k, v in parse_qs(p.query).items()}
             transport = q.get("type", "").lower()
             security = q.get("security", "").lower()
-            if transport == "ws": score += 3
-            if security == "tls": score += 3
-            if q.get("host"): score += 1
-            if q.get("sni"): score += 1
-            if q.get("path") and q.get("path") != "/": score += 1
-            if q.get("allowinsecure", "").lower() in {"1", "true"}: score -= 3
-            if q.get("insecure", "").lower() in {"1", "true"}: score -= 3
+            if transport == "ws":
+                score += 3
+            if security == "tls":
+                score += 3
+            if q.get("host"):
+                score += 1
+            if q.get("sni"):
+                score += 1
+            if q.get("path") and q.get("path") != "/":
+                score += 1
+            if q.get("allowinsecure", "").lower() in {"1", "true"}:
+                score -= 3
+            if q.get("insecure", "").lower() in {"1", "true"}:
+                score -= 3
         ep = endpoint(config)
-        if ep and ep[1] in {443, 2053, 2083, 2087, 2096, 8443}: score += 1
+        if ep and ep[1] in {443, 2053, 2083, 2087, 2096, 8443}:
+            score += 1
     except Exception:
         pass
     return score
@@ -114,7 +129,7 @@ def build_candidates(all_configs, seed_configs, budget):
         selected.append(config)
         return True
 
-    # Re-test the previous Light pool first. It carries the existing EU preference
+    # Re-test the previous Light pool first. It carries the existing preference
     # and proven client-compatible candidates from the previous cycle.
     for config in seed_configs:
         add(config)
@@ -159,6 +174,23 @@ def main():
     parser.add_argument("--checker", required=True)
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
+    parser.add_argument("--workers", type=int, default=24)
+    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--timeout", type=float, default=12)
+    parser.add_argument("--warm-timeout", type=float, default=5)
+    parser.add_argument("--target-verified", type=int, default=TARGET_VERIFIED)
+    parser.add_argument("--selection-limit", type=int, default=DEFAULT_SELECTION_LIMIT)
+    parser.add_argument(
+        "--final-max-per-endpoint",
+        type=int,
+        default=DEFAULT_FINAL_MAX_PER_ENDPOINT,
+        help="Hard cap on configs sharing an exact endpoint in the final Light list.",
+    )
+    parser.add_argument(
+        "--tcp-prefilter",
+        action="store_true",
+        help="Ask the checker to drop unreachable TCP endpoints before sing-box validation.",
+    )
     args = parser.parse_args()
 
     all_configs = read_lines(args.all_path)
@@ -171,8 +203,8 @@ def main():
         return 0
 
     print(
-        f"[INFO] Light polish: {len(candidates)} global candidates available; "
-        f"testing in chunks of {TEST_CHUNK_SIZE}, with no final protocol quota."
+        f"[INFO] Light polish: {len(candidates)} candidates available; "
+        f"testing in chunks of {TEST_CHUNK_SIZE}."
     )
 
     verified = []
@@ -200,12 +232,15 @@ def main():
             args.checker,
             "--input", candidate_path,
             "--output", verified_path,
-            "--workers", "24",
-            "--batch-size", "100",
-            "--timeout", "12",
-            "--warm-timeout", "5",
+            "--workers", str(max(1, args.workers)),
+            "--batch-size", str(max(1, args.batch_size)),
+            "--timeout", str(args.timeout),
+            "--warm-timeout", str(args.warm_timeout),
             "--metadata", chunk_metadata_path,
         ]
+        if args.tcp_prefilter:
+            command.append("--tcp-prefilter")
+
         result = subprocess.run(command, check=False)
         if result.returncode != 0:
             print(
@@ -232,72 +267,71 @@ def main():
             f"{len(chunk_verified)} verified; {len(verified)} total verified."
         )
 
-        if len(verified) >= TARGET_VERIFIED:
+        if len(verified) >= args.target_verified:
             print(
-                f"[INFO] Reached {TARGET_VERIFIED} verified configs; "
+                f"[INFO] Reached {args.target_verified} verified configs; "
                 "stopping Light discovery early."
             )
             break
 
-    for path in [args.metadata]:
-        try:
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(metadata, handle, separators=(",", ":"))
-        except OSError:
-            pass
+    try:
+        with open(args.metadata, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, separators=(",", ":"))
+    except OSError:
+        pass
 
     if not verified:
         print("[WARN] Global Light verification produced zero stable configs; preserving the previous Light pool.")
+        open(args.output, "w", encoding="utf-8").close()
         return 0
 
-    # Stability is the hard gate. Rank only after validation; protocol quotas
-    # are deliberately absent from the final selection.
     ranked = []
-    endpoint_counts = defaultdict(int)
     for position, config in enumerate(verified):
         metrics = metadata.get(config)
         if not metrics:
             continue
-        ep = endpoint(config)
         ranked.append((
             -int(metrics["successes"]),
             float(metrics["median_ms"]),
             float(metrics["min_ms"]),
             position,
             config,
-            ep,
+            endpoint(config),
         ))
 
     ranked.sort()
+
     final = []
+    endpoint_counts = defaultdict(int)
     for item in ranked:
         config = item[4]
         ep = item[5]
-        if ep is not None and endpoint_counts[ep] >= 2:
+        if ep is not None and endpoint_counts[ep] >= max(1, args.final_max_per_endpoint):
             continue
         final.append(config)
         if ep is not None:
             endpoint_counts[ep] += 1
-        if len(final) >= 200:
+        if len(final) >= max(1, args.selection_limit):
             break
 
-    # If diversity prevented a full list, fill remaining slots from the same
-    # stability-verified pool without the endpoint cap.
-    if len(final) < 200:
-        chosen = set(final)
-        for item in ranked:
-            config = item[4]
-            if config in chosen:
-                continue
-            final.append(config)
-            chosen.add(config)
-            if len(final) >= 200:
-                break
     with open(args.output, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(final) + "\n")
+        if final:
+            handle.write("\n".join(final) + "\n")
 
-    print(f"[INFO] Light polish selected {len(final)} verified configs from {len(candidates)} candidates.")
-    print("[INFO] Final Light selection is protocol-agnostic: no VMess/Trojan/VLESS/etc. quota is applied.")
+    unique_endpoints = len({
+        ep for ep in (endpoint(config) for config in final)
+        if ep is not None
+    })
+    print(
+        f"[INFO] Light polish selected {len(final)} verified configs from "
+        f"{len(candidates)} candidates, using {unique_endpoints} unique endpoints."
+    )
+    print("[INFO] Final Light selection is protocol-agnostic and now enforces a hard endpoint cap.")
+    if len(final) < max(1, args.selection_limit):
+        print(
+            f"[INFO] Only {len(final)} configs were available after verification and "
+            "endpoint diversity filtering; no unverified configs are added to fill the list."
+        )
     return 0
 
 
