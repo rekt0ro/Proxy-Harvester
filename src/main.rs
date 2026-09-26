@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -36,6 +37,11 @@ const GEO_PER_PROTOCOL_LIMIT: usize = 1000;
 const GEO_BATCH_SIZE: usize = 100;
 const GEO_RESOLUTION_CONCURRENCY: usize = 64;
 const GEO_TIMEOUT_SECS: u64 = 10;
+const REGIONAL_TCP_MAX_ENDPOINTS: usize = 220;
+const REGIONAL_TCP_SUBMIT_INTERVAL_MS: u64 = 2100;
+const REGIONAL_TCP_CONCURRENCY: usize = 4;
+const REGIONAL_TCP_TIMEOUT_MS: u64 = 2000;
+const REGIONAL_TCP_POLL_SECS: u64 = 8;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 
 #[tokio::main]
@@ -1062,6 +1068,260 @@ async fn run_proxy_check_batch(
     (scheme, verified)
 }
 
+
+fn regional_region_weight(country_code: &str) -> usize {
+    match country_code {
+        "AZ" => 5,
+        "GE" | "TR" | "IR" => 4,
+        "AE" | "AM" => 3,
+        "DE" | "NL" | "FR" | "SE" => 2,
+        _ => 1,
+    }
+}
+
+async fn probe_endpoint_regional(
+    client: &Client,
+    host: String,
+    port: u16,
+    regions: Vec<String>,
+) -> Option<usize> {
+    let payload = serde_json::json!({
+        "target": host,
+        "port": port,
+        "region": regions,
+        "repeatchecks": 0,
+        "timeout": REGIONAL_TCP_TIMEOUT_MS
+    });
+
+    let body = serde_json::to_vec(&payload).ok()?;
+    let response = client
+        .post("https://api.check-host.cc/tcp")
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let dispatch = serde_json::from_str::<Value>(&response.text().await.ok()?).ok()?;
+    let uuid = dispatch.get("uuid")?.as_str()?;
+
+    let started = Instant::now();
+    let mut best_score = 0usize;
+
+    while started.elapsed() < Duration::from_secs(REGIONAL_TCP_POLL_SECS) {
+        if let Ok(response) = client
+            .get(format!("https://api.check-host.cc/report/{uuid}"))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                if let Ok(body) = response.text().await {
+                    if let Ok(report) = serde_json::from_str::<Value>(&body) {
+                        if let Some(data) = report.get("data").and_then(Value::as_object) {
+                            let mut successful_countries = HashSet::new();
+
+                            for entry in data.values() {
+                                let Some(country_code) =
+                                    entry.get("countryCode").and_then(Value::as_str)
+                                else {
+                                    continue;
+                                };
+
+                                let success = entry
+                                    .get("checks")
+                                    .and_then(Value::as_array)
+                                    .map(|checks| {
+                                        checks.iter().any(|check| {
+                                            check
+                                                .get("status")
+                                                .and_then(Value::as_u64)
+                                                == Some(1)
+                                        })
+                                    })
+                                    .unwrap_or(false);
+
+                                if success {
+                                    successful_countries.insert(country_code);
+                                }
+                            }
+
+                            let score: usize = successful_countries
+                                .iter()
+                                .map(|code| regional_region_weight(code))
+                                .sum();
+
+                            best_score = best_score.max(score);
+                        }
+                    }
+                }
+            }
+        }
+
+        if best_score > 0 && started.elapsed() >= Duration::from_secs(3) {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    }
+
+    Some(best_score)
+}
+
+async fn detect_regional_endpoint_reachability(
+    client: &Client,
+    verified_by_scheme: &HashMap<String, Vec<String>>,
+) -> HashMap<(String, u16), usize> {
+    let mut endpoints = HashSet::new();
+
+    for configs in verified_by_scheme.values() {
+        for config in configs {
+            if let Some(key) = endpoint(config) {
+                endpoints.insert(key);
+                if endpoints.len() >= REGIONAL_TCP_MAX_ENDPOINTS {
+                    break;
+                }
+            }
+        }
+
+        if endpoints.len() >= REGIONAL_TCP_MAX_ENDPOINTS {
+            break;
+        }
+    }
+
+    if endpoints.is_empty() {
+        return HashMap::new();
+    }
+
+    let regions = vec![
+        "AZ".to_string(),
+        "GE".to_string(),
+        "TR".to_string(),
+        "IR".to_string(),
+        "AE".to_string(),
+        "DE".to_string(),
+    ];
+
+    let limiter = Arc::new(Mutex::new(
+        Instant::now() - Duration::from_millis(REGIONAL_TCP_SUBMIT_INTERVAL_MS),
+    ));
+
+    println!(
+        "[INFO] Regional endpoint screening: {} endpoints via Check-Host (AZ/GE/TR/IR/AE/DE).",
+        endpoints.len()
+    );
+
+    let results = stream::iter(endpoints.into_iter().map(|(host, port)| {
+        let client = client.clone();
+        let regions = regions.clone();
+        let limiter = limiter.clone();
+
+        async move {
+            let mut next_slot = limiter.lock().await;
+            let now = Instant::now();
+
+            if *next_slot > now {
+                let delay = *next_slot - now;
+                *next_slot += Duration::from_millis(REGIONAL_TCP_SUBMIT_INTERVAL_MS);
+                drop(next_slot);
+                tokio::time::sleep(delay).await;
+            } else {
+                *next_slot = now + Duration::from_millis(REGIONAL_TCP_SUBMIT_INTERVAL_MS);
+                drop(next_slot);
+            }
+
+            let score =
+                probe_endpoint_regional(&client, host.clone(), port, regions).await;
+
+            score.map(|score| ((host, port), score))
+        }
+    }))
+    .buffer_unordered(REGIONAL_TCP_CONCURRENCY)
+    .filter_map(async move |result| result)
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut scores = HashMap::new();
+    let mut reachable = 0usize;
+
+    for (key, score) in results {
+        if score > 0 {
+            reachable += 1;
+        }
+        scores.insert(key, score);
+    }
+
+    println!(
+        "[INFO] Regional endpoint screening complete: {} scored, {} reachable from at least one nearby region.",
+        scores.len(),
+        reachable
+    );
+
+    scores
+}
+
+fn fair_protocol_quotas(
+    schemes: &[String],
+    candidates_by_scheme: &HashMap<String, Vec<String>>,
+    limit: usize,
+) -> HashMap<String, usize> {
+    let mut quotas = HashMap::new();
+    for scheme in schemes {
+        quotas.insert(scheme.clone(), 0usize);
+    }
+
+    let mut active = schemes
+        .iter()
+        .filter(|scheme| {
+            candidates_by_scheme
+                .get(*scheme)
+                .is_some_and(|items| !items.is_empty())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut remaining = limit;
+
+    while remaining > 0 && !active.is_empty() {
+        let fair_share = (remaining + active.len() - 1) / active.len();
+        let mut next_active = Vec::new();
+        let mut allocated = 0usize;
+
+        for scheme in active {
+            let available = candidates_by_scheme
+                .get(&scheme)
+                .map(|items| {
+                    items
+                        .len()
+                        .saturating_sub(*quotas.get(&scheme).unwrap_or(&0))
+                })
+                .unwrap_or(0);
+
+            let take = available.min(fair_share).min(remaining);
+            if take > 0 {
+                *quotas.entry(scheme.clone()).or_insert(0) += take;
+                remaining -= take;
+                allocated += take;
+            }
+
+            if available > take {
+                next_active.push(scheme);
+            }
+        }
+
+        if allocated == 0 {
+            break;
+        }
+
+        active = next_active;
+    }
+
+    quotas
+}
+
 async fn proxy_test_light(
     by_scheme: &HashMap<String, Vec<(String, u64)>>,
     output_dir: &Path,
@@ -1225,6 +1485,9 @@ async fn proxy_test_light(
     let mut verified_schemes: Vec<String> = verified_by_scheme.keys().cloned().collect();
     verified_schemes.sort_unstable();
 
+    let regional_score_by_endpoint =
+        detect_regional_endpoint_reachability(client, &verified_by_scheme).await;
+
     let mut candidate_latency = HashMap::new();
     for configs in by_scheme.values() {
         for (config, latency_ms) in configs {
@@ -1232,16 +1495,8 @@ async fn proxy_test_light(
         }
     }
 
-    let active_protocols = verified_schemes.len();
-    let protocol_cap = if active_protocols == 0 {
-        0
-    } else {
-        ((LIGHT_LIMIT + active_protocols - 1) / active_protocols).max(50)
-    };
 
     let mut preferred_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
-    let mut selected_by_scheme: HashMap<String, usize> = HashMap::new();
-    let mut offsets_by_scheme: HashMap<String, usize> = HashMap::new();
 
     for scheme in &verified_schemes {
         let Some(items) = verified_by_scheme.get(scheme) else {
@@ -1250,73 +1505,123 @@ async fn proxy_test_light(
 
         let mut preferred = items.clone();
         preferred.sort_by_key(|config| {
+            let regional_score = endpoint(config)
+                .and_then(|key| regional_score_by_endpoint.get(&key).copied())
+                .unwrap_or(0);
             let is_eu = endpoint(config)
                 .and_then(|key| eu_by_endpoint.get(&key).copied())
                 .unwrap_or(false);
             let latency_ms = candidate_latency.get(config).copied().unwrap_or(u64::MAX);
-            (!is_eu, latency_ms, config.clone())
+
+            (
+                std::cmp::Reverse(regional_score),
+                !is_eu,
+                latency_ms,
+                config.clone(),
+            )
         });
 
-        if !preferred.is_empty() {
-            preferred_by_scheme.insert(scheme.clone(), preferred);
-            selected_by_scheme.insert(scheme.clone(), 0);
-            offsets_by_scheme.insert(scheme.clone(), 0);
-        }
+        preferred_by_scheme.insert(scheme.clone(), preferred);
     }
 
-    let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
+    let mut protocol_quotas =
+        fair_protocol_quotas(&verified_schemes, &preferred_by_scheme, LIGHT_LIMIT);
 
-    while verified.len() < LIGHT_LIMIT {
-        let mut selected_scheme = None;
-        let mut selected_count = usize::MAX;
+    let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
+    let mut selected_configs = HashSet::new();
+    let mut selected_endpoints = HashSet::new();
+
+    for unique_endpoints_only in [true, false] {
+        if verified.len() >= LIGHT_LIMIT {
+            break;
+        }
 
         for scheme in &verified_schemes {
+            if verified.len() >= LIGHT_LIMIT {
+                break;
+            }
+
+            let quota = *protocol_quotas.get(scheme).unwrap_or(&0);
+            if quota == 0 {
+                continue;
+            }
+
             let Some(items) = preferred_by_scheme.get(scheme) else {
                 continue;
             };
 
-            let count = *selected_by_scheme.get(scheme).unwrap_or(&0);
-            let offset = *offsets_by_scheme.get(scheme).unwrap_or(&0);
+            for config in items {
+                if verified.len() >= LIGHT_LIMIT {
+                    break;
+                }
 
-            if count >= protocol_cap || offset >= items.len() {
-                continue;
-            }
+                let selected_for_scheme = verified
+                    .iter()
+                    .filter(|item| config_scheme(item) == scheme.as_str())
+                    .count();
 
-            if count < selected_count {
-                selected_count = count;
-                selected_scheme = Some(scheme);
+                if selected_for_scheme >= quota || selected_configs.contains(config) {
+                    continue;
+                }
+
+                if unique_endpoints_only {
+                    if let Some(key) = endpoint(config) {
+                        if selected_endpoints.contains(&key) {
+                            continue;
+                        }
+                    }
+                }
+
+                verified.push(config.clone());
+                selected_configs.insert(config.clone());
+
+                if let Some(key) = endpoint(config) {
+                    selected_endpoints.insert(key);
+                }
             }
         }
 
-        let Some(scheme) = selected_scheme else {
-            break;
-        };
+        if verified.len() < LIGHT_LIMIT {
+            let mut remaining_by_scheme = HashMap::new();
 
-        let items = preferred_by_scheme.get(scheme).expect("preferred scheme exists");
-        let offset = offsets_by_scheme.entry(scheme.clone()).or_insert(0);
-        let config = items[*offset].clone();
-        *offset += 1;
+            for scheme in &verified_schemes {
+                let remaining = preferred_by_scheme
+                    .get(scheme)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|config| !selected_configs.contains(*config))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
 
-        *selected_by_scheme.entry(scheme.clone()).or_insert(0) += 1;
-        verified.push(config);
+                remaining_by_scheme.insert(scheme.clone(), remaining);
+            }
+
+            protocol_quotas = fair_protocol_quotas(
+                &verified_schemes,
+                &remaining_by_scheme,
+                LIGHT_LIMIT - verified.len(),
+            );
+        }
     }
 
-    if verified.len() < LIGHT_LIMIT {
-        println!(
-            "[WARN] Protocol-balance cap limited Light to {} configs; {} verified configs were available.",
-            verified.len(),
-            total_verified
-        );
+    let mut final_counts = Vec::new();
+    for scheme in &verified_schemes {
+        let count = verified
+            .iter()
+            .filter(|config| config_scheme(config) == scheme.as_str())
+            .count();
+        final_counts.push((scheme.clone(), count));
     }
 
-    let mut final_counts: Vec<(&String, &usize)> = selected_by_scheme.iter().collect();
-    final_counts.sort_by_key(|(scheme, _)| (*scheme).clone());
     for (scheme, count) in final_counts {
         println!("[INFO] Light protocol balance: {scheme}={count}");
     }
 
     println!(
-        "[INFO] Proxy-level testing completed with {} fully verified configs ({} EU endpoints, {} VMess, cap {} per protocol).",
+        "[INFO] Proxy-level testing completed with {} fully verified configs ({} EU endpoints, {} VMess).",
         verified.len(),
         verified
             .iter()
@@ -1326,8 +1631,7 @@ async fn proxy_test_light(
                     .unwrap_or(false)
             })
             .count(),
-        verified.iter().filter(|config| config_scheme(config) == "vmess").count(),
-        protocol_cap
+        verified.iter().filter(|config| config_scheme(config) == "vmess").count()
     );
 
     Some(verified)
