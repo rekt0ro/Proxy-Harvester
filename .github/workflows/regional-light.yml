@@ -1,0 +1,76 @@
+name: Update Regional Light
+
+on:
+  schedule:
+    - cron: "20 */2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: regional-light
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  regional-light:
+    # Register a self-hosted runner with this label on the target network.
+    # Keep this runner isolated because the repository is public.
+    runs-on: [self-hosted, linux, x64, proxy-harvester-regional]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare Python environment
+        run: |
+          python3 -m venv /tmp/proxy-harvester-venv
+          /tmp/proxy-harvester-venv/bin/python -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
+
+      - name: Check sing-box
+        run: |
+          command -v sing-box
+          sing-box version
+          sing-box version | grep -q '1.14.2' || {
+            echo "Regional runner must provide sing-box 1.14.2"
+            exit 1
+          }
+
+      - name: Preserve previous regional Light
+        run: |
+          mkdir -p /tmp/proxy-harvester
+          if [ -s subscriptions/light-regional.txt ]; then
+            cp subscriptions/light-regional.txt /tmp/proxy-harvester/previous-regional-light.txt
+          else
+            : > /tmp/proxy-harvester/previous-regional-light.txt
+          fi
+
+      - name: Validate from regional network
+        run: |
+          /tmp/proxy-harvester-venv/bin/python scripts/polish_light.py             --all subscriptions/all.txt             --seed /tmp/proxy-harvester/previous-regional-light.txt             --output /tmp/proxy-harvester/light-regional.next.txt             --checker scripts/check_proxies.py             --metadata /tmp/proxy-harvester/light-regional-metadata.json             --budget 4000             --workers 10             --batch-size 1             --timeout 12             --warm-timeout 5             --target-verified 200             --selection-limit 200             --final-max-per-endpoint 1             --tcp-prefilter
+
+          if [ -s /tmp/proxy-harvester/light-regional.next.txt ]; then
+            cp /tmp/proxy-harvester/light-regional.next.txt subscriptions/light-regional.txt
+            cp /tmp/proxy-harvester/light-regional.next.txt subscriptions/light.txt
+            echo "Published a non-empty regional Light pool."
+          else
+            echo "Regional validation produced no verified configs; preserving the previous Light pool."
+          fi
+
+          rm -f /tmp/proxy-harvester/light-regional.next.txt
+
+      - name: Commit regional Light
+        run: |
+          git config user.name "rekt0ro"
+          git config user.email "vultazhh@gmail.com"
+
+          git add subscriptions/light.txt subscriptions/light-regional.txt
+
+          if git diff --cached --quiet; then
+            echo "No regional Light changes."
+            exit 0
+          fi
+
+          git commit -m "Publish regional Light validation"
+          git push
