@@ -539,7 +539,7 @@ def check_batch(binary, entries, target, timeout_seconds, workers):
                     )
                     metadata[config] = {
                         "successes": successes[config],
-                        "attempts": len(values),
+                        "attempts": attempts[config],
                         "median_ms": median,
                         "min_ms": min(values),
                     }
