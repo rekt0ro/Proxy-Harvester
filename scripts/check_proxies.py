@@ -109,7 +109,7 @@ def main():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=1,
+        default=5,
         help="Maximum time allowed for each validation request.",
     )
     parser.add_argument("--metadata", default=None)
