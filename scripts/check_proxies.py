@@ -4,6 +4,7 @@
 import argparse
 import collections
 import concurrent.futures
+import json
 import statistics
 import time
 
@@ -81,6 +82,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--timeout", type=float, default=8)
     parser.add_argument("--chain-proxy", default=None)
+    parser.add_argument("--metadata", default=None)
     args = parser.parse_args()
 
     original_urls = load_urls(args.input)
@@ -181,6 +183,19 @@ def main():
         print("success distribution:", flush=True)
         for count, number in sorted(distribution.items()):
             print(f"  {count}/{STABILITY_ATTEMPTS}: {number}", flush=True)
+
+        if args.metadata:
+            metadata = {
+                url: {
+                    "successes": success_counts[url],
+                    "attempts": STABILITY_ATTEMPTS,
+                    "median_ms": eligible[url][0],
+                    "min_ms": eligible[url][2],
+                }
+                for url in eligible
+            }
+            with open(args.metadata, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, separators=(",", ":"))
     finally:
         for batch in batches:
             try:
