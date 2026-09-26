@@ -93,7 +93,7 @@ jobs:
 
       - name: Check runner network
         run: |
-          curl -fsS --max-time 10 https://www.gstatic.com/generate_204 -o /dev/null
+          curl -fsS --max-time 10 https://cp.cloudflare.com/ -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Preserve previous Light pool
