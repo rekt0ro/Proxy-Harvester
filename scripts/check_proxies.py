@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol-level proxy checker using the same Cloudflare URL used by Throne."""
+"""Protocol-level proxy checker for HTTPS connectivity and stability."""
 
 import argparse
 import collections
