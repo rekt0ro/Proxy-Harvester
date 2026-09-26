@@ -94,9 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("[INFO] Protocol {scheme}: {count}");
     }
 
-    let working_path = output_dir.join(".working.txt");
     let all_path = output_dir.join("all.txt");
-    let _ = fs::remove_file(&working_path).await;
 
     let mut endpoint_groups: HashMap<(String, u16), Vec<String>> = HashMap::new();
     let mut endpoint_representatives = Vec::new();
