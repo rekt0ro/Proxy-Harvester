@@ -102,7 +102,7 @@ jobs:
 
       - name: Check runner network
         run: |
-          curl -fsS --max-time 10 https://cp.cloudflare.com/ -o /dev/null
+          curl -fsS --max-time 10 http://cp.cloudflare.com:80/ -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Prepare temporary workspace
@@ -127,7 +127,7 @@ jobs:
             --final-recheck-limit 500 \
             --final-workers 12 \
             --final-batch-size 1 \
-            --primary-target https://cp.cloudflare.com/ \
+            --primary-target http://cp.cloudflare.com:80/ \
             --secondary-target https://www.google.com/generate_204 \
             --selection-limit 200 \
             --max-per-endpoint 1
