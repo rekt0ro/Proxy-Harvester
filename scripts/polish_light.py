@@ -144,6 +144,7 @@ def main():
     parser.add_argument("--seed", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--checker", required=True)
+    parser.add_argument("--metadata", required=True)
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     args = parser.parse_args()
 
@@ -171,6 +172,7 @@ def main():
         "--workers", "12",
         "--batch-size", "100",
         "--timeout", "6",
+        "--metadata", args.metadata,
     ]
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
@@ -182,9 +184,54 @@ def main():
         print("[WARN] Global Light verification produced zero stable configs; preserving the previous Light pool.")
         return 0
 
-    # The checker already ranks 3/3 above 2/3 and then by median latency.
-    # Keep exactly the recommended subscription size when enough verified nodes exist.
-    final = verified[:200]
+    with open(args.metadata, encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    # Stability is the hard gate. Within each stability tier, prefer
+    # mainstream-client-friendly transport parameters and then latency.
+    # Protocol quotas are deliberately absent.
+    ranked = []
+    endpoint_counts = defaultdict(int)
+    for position, config in enumerate(verified):
+        metrics = metadata.get(config)
+        if not metrics:
+            continue
+        ep = endpoint(config)
+        ranked.append((
+            -int(metrics["successes"]),
+            -heuristic(config),
+            float(metrics["median_ms"]),
+            float(metrics["min_ms"]),
+            position,
+            config,
+            ep,
+        ))
+
+    ranked.sort()
+    final = []
+    for item in ranked:
+        config = item[5]
+        ep = item[6]
+        if ep is not None and endpoint_counts[ep] >= 2:
+            continue
+        final.append(config)
+        if ep is not None:
+            endpoint_counts[ep] += 1
+        if len(final) >= 200:
+            break
+
+    # If diversity prevented a full list, fill remaining slots from the same
+    # stability-verified pool without the endpoint cap.
+    if len(final) < 200:
+        chosen = set(final)
+        for item in ranked:
+            config = item[5]
+            if config in chosen:
+                continue
+            final.append(config)
+            chosen.add(config)
+            if len(final) >= 200:
+                break
     with open(args.output, "w", encoding="utf-8") as handle:
         handle.write("\n".join(final) + "\n")
 
