@@ -382,23 +382,23 @@ def start_xray(binary, config_path, log_path):
 
 def wait_ports(process, values):
     deadline = time.monotonic() + CORE_START_TIMEOUT
-    pending = set(values)
+    pending = list(values)
     workers = max(1, min(64, len(pending)))
 
-    while pending and time.monotonic() < deadline:
-        if process.poll() is not None:
-            return False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        while pending and time.monotonic() < deadline:
+            if process.poll() is not None:
+                return False
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            ready = pool.map(_port_ready, pending)
-            pending = {
+            ready = list(pool.map(_port_ready, pending))
+            pending = [
                 port
                 for port, is_ready in zip(pending, ready)
                 if not is_ready
-            }
+            ]
 
-        if pending:
-            time.sleep(0.05)
+            if pending:
+                time.sleep(0.05)
 
     return not pending
 
