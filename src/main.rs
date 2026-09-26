@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::fs;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{timeout, Duration, Instant};
@@ -18,7 +18,7 @@ use quinn::Endpoint;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use wireguard_sans_io::{Config as WireGuardConfig, Encapsulated, EntropyError, EntropySource, Now as WireGuardNow, PresharedKey, PublicKey, Received, StaticSecret, Tunnel};
+use wireguard_sans_io::{Config as WireGuardConfig, EntropyError, EntropySource, Now as WireGuardNow, PresharedKey, PublicKey, Received, StaticSecret, Tunnel};
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 const TEST_CONCURRENCY: usize = 8;
@@ -119,17 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for (_, working) in chunk_results {
         reachable_probes += working.len();
-
-        for (representative, latency_ms) in working {
-            let Some(endpoint_key) = endpoint(&representative) else {
-                continue;
-            };
-            if let Some(group) = endpoint_groups.get(&endpoint_key) {
-                for config in group {
-                    ranked_working_configs.push((config.clone(), latency_ms));
-                }
-            }
-        }
+        ranked_working_configs.extend(working);
     }
 
     if ranked_working_configs.is_empty() {
@@ -892,6 +882,8 @@ async fn test_chunk(
     Ok((index, working))
 }
 
+// This verifier is only for transport reachability. The actual proxy validation
+// later in the pipeline performs normal certificate handling.
 #[derive(Debug)]
 struct ProbeCertVerifier;
 
@@ -1007,16 +999,6 @@ async fn quic_latency(config: &str) -> Option<u64> {
     addresses.sort_by_key(|address| !address.is_ipv4());
 
     for address in addresses {
-        let mut wg_config = WireGuardConfig::new(
-            StaticSecret::from_bytes(private_key),
-            PublicKey::from_bytes(public_key),
-        );
-        if let Some(psk) = psk {
-            wg_config.psk = PresharedKey::from_bytes(psk);
-        }
-
-        let mut tunnel = Tunnel::new(wg_config).ok()?;
-
         let local = if address.ip().is_ipv4() {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
         } else {
@@ -1024,9 +1006,10 @@ async fn quic_latency(config: &str) -> Option<u64> {
         };
 
         let mut endpoint = Endpoint::client(local).ok()?;
-        let config = quic_client_config(&alpn)?;
-
-        let connecting = endpoint.connect_with(config, address, &sni).ok()?;
+        let client_config = quic_client_config(&alpn)?;
+        let connecting = endpoint
+            .connect_with(client_config, address, &sni)
+            .ok()?;
         let start = Instant::now();
 
         let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
@@ -1054,14 +1037,13 @@ impl EntropySource for OsEntropy {
     }
 }
 
-fn wireguard_query_value(config: &str, keys: &[&str]) -> Option<String> {
-    query_value(config, keys)
-}
-
 fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
-    let encoded = wireguard_query_value(config, keys)?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
-    bytes.try_into().ok()
+    let encoded = query_value(config, keys)?;
+    let mut bytes = STANDARD.decode(encoded.as_bytes()).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    Some(bytes.try_into().ok()?)
 }
 
 fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
@@ -1078,11 +1060,13 @@ fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
         return None;
     }
 
-    base64::engine::general_purpose::STANDARD
+    let mut bytes = STANDARD
         .decode(username.as_bytes())
-        .ok()?
-        .try_into()
-        .ok()
+        .ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    Some(bytes.try_into().ok()?)
 }
 
 async fn wireguard_latency(config: &str) -> Option<u64> {
@@ -1110,6 +1094,16 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
     addresses.sort_by_key(|address| !address.is_ipv4());
 
     for address in addresses {
+        let mut wg_config = WireGuardConfig::new(
+            StaticSecret::from_bytes(private_key),
+            PublicKey::from_bytes(public_key),
+        );
+        if let Some(psk) = psk {
+            wg_config.psk = PresharedKey::from_bytes(psk);
+        }
+
+        let mut tunnel = Tunnel::new(wg_config).ok()?;
+
         let local = if address.ip().is_ipv4() {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
         } else {
@@ -1121,7 +1115,7 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
 
         let start = std::time::Instant::now();
         let mut rng = OsEntropy;
-        let mut send_buf = [0u8; 256];
+        let mut send_buf = [0u8; 2048];
         let init = tunnel
             .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
             .ok()?
@@ -1154,8 +1148,7 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
                 &mut rng,
             ) {
                 Ok(Received::HandshakeComplete) => {
-                    let latency = start.elapsed().as_millis() as u64;
-                    return Some(latency);
+                    return Some(start.elapsed().as_millis() as u64);
                 }
                 Ok(Received::CookieStored) => {
                     let retry = tunnel
@@ -1174,6 +1167,17 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
     }
 
     None
+}
+
+async fn transport_latency(config: &str) -> Option<u64> {
+    match config_scheme(config).as_str() {
+        "hysteria" | "hysteria2" | "hy2" | "tuic" => quic_latency(config).await,
+        "wg" => wireguard_latency(config).await,
+        _ => {
+            let (host, port) = endpoint(config)?;
+            tcp_latency_endpoint(&host, port).await
+        }
+    }
 }
 
 fn wireguard_now(start: std::time::Instant) -> WireGuardNow {
