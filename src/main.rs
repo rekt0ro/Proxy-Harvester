@@ -924,7 +924,7 @@ impl ServerCertVerifier for ProbeCertVerifier {
     }
 }
 
-fn quic_client_config(alpn: &[String]) -> Option<QuicClientConfig> {
+fn quic_client_config(alpn: &[String]) -> Option<quinn::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
