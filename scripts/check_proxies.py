@@ -13,9 +13,11 @@ DEFAULT_TARGETS = (
     "http://cp.cloudflare.com/",
 )
 
-MIN_SUCCESSFUL_TARGETS = 1
+# A proxy must survive two independent requests. This is intentionally stricter
+# than a single lucky hit, while still allowing one transient failure.
+MIN_SUCCESSFUL_TARGETS = 2
+STABILITY_ATTEMPTS = 3
 MAX_MEDIAN_LATENCY_MS = 3000
-CHECK_RETRIES = 2
 
 
 def load_urls(path):
@@ -28,7 +30,6 @@ def load_urls(path):
 
 
 def strip_fragment(url):
-    """Remove the display name fragment before handing the URL to sing-box."""
     return url.split("#", 1)[0]
 
 
@@ -154,23 +155,22 @@ def main():
 
         latencies = collections.defaultdict(list)
         failures = collections.Counter()
-        first_success_counts = collections.Counter()
-        targets_used = 0
-
+        success_counts = collections.Counter()
         active_proxies = list(proxies)
 
         for target in DEFAULT_TARGETS:
             if not active_proxies:
                 break
 
-            targets_used += 1
             print(
-                f"target {targets_used}/{len(DEFAULT_TARGETS)}: {target} "
-                f"({len(active_proxies)} active proxies, up to {CHECK_RETRIES} attempts)",
+                f"target {target}: {len(active_proxies)} active proxies, "
+                f"requiring {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts",
                 flush=True,
             )
 
-            for attempt in range(1, CHECK_RETRIES + 1):
+            # Every active proxy gets up to three independent attempts. A proxy
+            # remains eligible after a success so we can measure real stability.
+            for attempt in range(1, STABILITY_ATTEMPTS + 1):
                 if not active_proxies:
                     break
 
@@ -182,42 +182,50 @@ def main():
                         for proxy in active_proxies
                     }
 
-                    next_active = []
                     for future in concurrent.futures.as_completed(futures):
                         proxy = futures[future]
                         ok, latency_ms, error = future.result()
                         original_url = original_by_test_url.get(proxy.url, proxy.url)
 
                         if ok:
-                            if not latencies[original_url]:
-                                first_success_counts[target] += 1
+                            success_counts[original_url] += 1
                             latencies[original_url].append(latency_ms)
                         else:
                             failures[error or "unknown error"] += 1
-                            next_active.append(proxy)
 
-                    active_proxies = next_active
+                # Stop retrying only when a proxy has already proven stable or
+                # when it can no longer reach the required success count.
+                remaining = []
+                attempts_left = STABILITY_ATTEMPTS - attempt
+                for proxy in active_proxies:
+                    original_url = original_by_test_url.get(proxy.url, proxy.url)
+                    successes = success_counts[original_url]
+                    if successes >= MIN_SUCCESSFUL_TARGETS:
+                        continue
+                    if successes + attempts_left >= MIN_SUCCESSFUL_TARGETS:
+                        remaining.append(proxy)
 
-                working = sum(bool(values) for values in latencies.values())
+                active_proxies = remaining
+                working = sum(
+                    1 for count in success_counts.values()
+                    if count >= MIN_SUCCESSFUL_TARGETS
+                )
                 print(
-                    f"  attempt {attempt}/{CHECK_RETRIES}: {working}/{len(proxies)} working; "
-                    f"{len(active_proxies)} remain for retry",
+                    f"  attempt {attempt}/{STABILITY_ATTEMPTS}: "
+                    f"{working}/{len(proxies)} stable so far; {len(active_proxies)} still testing",
                     flush=True,
                 )
 
         eligible = {}
         for url, values in latencies.items():
-            if not values:
+            success_count = success_counts[url]
+            if not values or success_count < MIN_SUCCESSFUL_TARGETS:
                 continue
 
-            success_count = len(values)
             median_latency = statistics.median(values)
             min_latency = min(values)
 
-            if (
-                success_count >= MIN_SUCCESSFUL_TARGETS
-                and median_latency <= MAX_MEDIAN_LATENCY_MS
-            ):
+            if median_latency <= MAX_MEDIAN_LATENCY_MS:
                 eligible[url] = (
                     median_latency,
                     success_count,
@@ -226,8 +234,8 @@ def main():
 
         print(
             f"  {len(eligible)}/{len(latencies)} verified configs meet "
-            f"{MIN_SUCCESSFUL_TARGETS}+ target successes and <= "
-            f"{MAX_MEDIAN_LATENCY_MS}ms median latency",
+            f"{MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and "
+            f"<= {MAX_MEDIAN_LATENCY_MS}ms median latency",
             flush=True,
         )
 
@@ -246,30 +254,23 @@ def main():
                 handle.write(url + "\n")
 
         print(
-            f"{len(ordered)}/{len(proxies)} verified configs with reliable "
-            f"retry-backed latency across {targets_used} targets",
+            f"{len(ordered)}/{len(proxies)} verified configs with stability-tested "
+            f"Cloudflare reachability across {targets_used if 'targets_used' in locals() else len(DEFAULT_TARGETS)} target(s)",
             flush=True,
         )
-        print("first-success by target:", flush=True)
-        for target in DEFAULT_TARGETS[:targets_used]:
-            print(f"  {first_success_counts[target]}x {target}", flush=True)
+        print("success distribution:", flush=True)
+        distribution = collections.Counter(success_counts[url] for url in eligible)
+        for count, number in sorted(distribution.items()):
+            print(f"  {count}/{STABILITY_ATTEMPTS}: {number}", flush=True)
 
-        success_distribution = collections.Counter(
-            len(values) for values in latencies.values()
-        )
-        print("target-success distribution:", flush=True)
-        for count in sorted(success_distribution):
-            print(f"  {count}/{targets_used} targets: {success_distribution[count]}", flush=True)
-
-        if failures:
-            print("failure summary:", flush=True)
-            for error, count in failures.most_common(8):
-                print(f"  {count}x {error}", flush=True)
-
-        return 0
     finally:
         for batch in batches:
-            batch.stop()
+            try:
+                batch.stop()
+            except Exception:
+                pass
+
+    return 0
 
 
 if __name__ == "__main__":
