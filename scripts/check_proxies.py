@@ -207,6 +207,11 @@ def main():
     parser.add_argument("--chain-proxy", default=None)
     parser.add_argument("--metadata", default=None)
     parser.add_argument(
+        "--target",
+        default=None,
+        help="Validation target URL. Defaults to the same Cloudflare URL used by Throne.",
+    )
+    parser.add_argument(
         "--tcp-prefilter",
         action="store_true",
         help="Before sing-box validation, drop TCP configs whose endpoint cannot accept TCP connections.",
@@ -259,7 +264,8 @@ def main():
         attempt_counts = collections.Counter()
         active_proxies = list(proxies)
 
-        for target in DEFAULT_TARGETS:
+        targets = (args.target,) if args.target else DEFAULT_TARGETS
+        for target in targets:
             if not active_proxies:
                 break
 
@@ -337,7 +343,7 @@ def main():
             for url in ordered:
                 handle.write(url + "\n")
 
-        print(f"{len(ordered)}/{len(proxies)} verified configs with stability-tested Cloudflare reachability across {len(DEFAULT_TARGETS)} target(s)", flush=True)
+        print(f"{len(ordered)}/{len(proxies)} verified configs with stability-tested reachability across {len(targets)} target(s)", flush=True)
         distribution = collections.Counter(
             (success_counts[url], attempt_counts[url]) for url in eligible
         )
