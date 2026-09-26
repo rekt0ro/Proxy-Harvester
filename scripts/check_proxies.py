@@ -62,8 +62,8 @@ def start_group(urls, batch_size, rejected, chain_proxy=None):
             return []
         midpoint = len(urls) // 2
         return (
-            start_group(urls[:midpoint], batch_size, rejected)
-            + start_group(urls[midpoint:], batch_size, rejected)
+            start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
+            + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
         )
 
     if len(parsed) == len(urls):
@@ -132,8 +132,8 @@ def main():
     try:
         for group in groups:
             batches.extend(
-            start_group(group, max(1, args.batch_size), rejected, args.chain_proxy)
-        )
+                start_group(group, max(1, args.batch_size), rejected, args.chain_proxy)
+            )
 
         proxies = [proxy for batch in batches for proxy in batch]
         print(
