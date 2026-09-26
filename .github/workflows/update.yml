@@ -128,7 +128,6 @@ jobs:
             --seed /tmp/proxy-harvester/previous-light.txt \
             --output /tmp/proxy-harvester/light.next.txt \
             --checker scripts/check_proxies.py \
-            --metadata /tmp/proxy-harvester/light.metadata.json \
             --budget 16000 \
             --workers 24 \
             --batch-size 100 \
@@ -184,7 +183,7 @@ jobs:
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions scripts/check_proxies.py scripts/polish_light.py src/main.rs .github/workflows/update.yml README.md .gitignore
+          git add subscriptions
 
           if git diff --cached --quiet; then
             echo "No changes."
