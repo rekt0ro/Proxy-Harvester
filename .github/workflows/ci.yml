@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust
+        run: cargo check --release
+
+      - name: Check Python
+        run: python3 -m py_compile scripts/check_proxies.py scripts/polish_light.py
+
+      - name: Check whitespace
+        run: git diff --check
