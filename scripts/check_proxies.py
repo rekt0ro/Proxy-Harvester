@@ -17,7 +17,7 @@ from singbox2proxy import SingBoxBatch
 logging.getLogger("singbox2proxy").setLevel(logging.CRITICAL + 1)
 
 DEFAULT_TARGETS = (
-    "http://cp.cloudflare.com/",
+    "https://cp.cloudflare.com/",
 )
 
 MIN_SUCCESSFUL_TARGETS = 2
@@ -117,11 +117,6 @@ def main():
         "--target",
         default=None,
         help="Validation target URL. Defaults to the same Cloudflare URL used by Throne.",
-    )
-    parser.add_argument(
-        "--tcp-prefilter",
-        action="store_true",
-        help="Before sing-box validation, drop TCP configs whose endpoint cannot accept TCP connections.",
     )
     args = parser.parse_args()
 
