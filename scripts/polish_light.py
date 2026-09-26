@@ -200,7 +200,7 @@ def main():
             args.checker,
             "--input", candidate_path,
             "--output", verified_path,
-            "--workers", "12",
+            "--workers", "24",
             "--batch-size", "100",
             "--timeout", "12",
             "--warm-timeout", "5",
