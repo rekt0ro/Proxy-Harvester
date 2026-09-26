@@ -16,7 +16,7 @@ DISCOVERY_CHUNK_SIZE = 4000
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
-PRIMARY_TARGET = "http://cp.cloudflare.com/"
+PRIMARY_TARGET = "https://cp.cloudflare.com/"
 SECONDARY_TARGET = "https://www.google.com/generate_204"
 
 
@@ -192,7 +192,7 @@ def main():
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=100)
-    parser.add_argument("--timeout", type=float, default=12)
+    parser.add_argument("--timeout", type=float, default=1)
     parser.add_argument("--final-recheck-limit", type=int, default=FINAL_RECHECK_LIMIT)
     parser.add_argument("--final-workers", type=int, default=12)
     parser.add_argument("--final-batch-size", type=int, default=1)
