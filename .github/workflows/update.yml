@@ -43,20 +43,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Resolve latest tool versions
-        id: tool-versions
+      - name: Resolve Throne Xray version
+        id: xray-version
         shell: bash
         run: |
           set -euo pipefail
 
-          sing_box_version="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))')"
-          singbox2proxy_version="$(curl -fsSL https://pypi.org/pypi/singbox2proxy/json | python3 -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])')"
+          throne_go_mod="$(curl -fsSL https://raw.githubusercontent.com/throneproj/Throne/dev/core/go.mod)"
+          xray_upstream_version="$(printf '%s\n' "$throne_go_mod" | sed -n 's/^[[:space:]]*github\.com\/xtls\/xray-core[[:space:]]\+\([^[:space:]]\+\).*/\1/p' | head -n 1)"
+          xray_fork_version="$(printf '%s\n' "$throne_go_mod" | sed -n 's/^[[:space:]]*replace github\.com\/xtls\/xray-core => github\.com\/throneproj\/xray-core[[:space:]]\+\([^[:space:]]\+\).*/\1/p' | head -n 1)"
 
-          echo "sing_box=$sing_box_version" >> "$GITHUB_OUTPUT"
-          echo "singbox2proxy=$singbox2proxy_version" >> "$GITHUB_OUTPUT"
+          test -n "$xray_upstream_version"
+          test -n "$xray_fork_version"
 
-          echo "Latest sing-box: $sing_box_version"
-          echo "Latest singbox2proxy: $singbox2proxy_version"
+          echo "upstream=$xray_upstream_version" >> "$GITHUB_OUTPUT"
+          echo "fork=$xray_fork_version" >> "$GITHUB_OUTPUT"
+
+          echo "Throne Xray upstream requirement: $xray_upstream_version"
+          echo "Throne Xray fork: $xray_fork_version"
 
       - name: Update Rust dependencies
         run: |
@@ -85,83 +89,68 @@ jobs:
           go-version: stable
           cache: false
 
-      - name: Restore Go build and module cache
-        id: go-cache-restore
+      - name: Restore Xray Go cache
+        id: xray-go-cache-restore
         uses: actions/cache/restore@v6
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: ${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}
+          key: ${{ runner.os }}-go-xray-${{ steps.xray-version.outputs.fork }}
           restore-keys: |
-            ${{ runner.os }}-go-singbox-
+            ${{ runner.os }}-go-xray-
 
-      - name: Restore Python package cache
-        id: pip-cache-restore
+      - name: Restore Xray binary cache
+        id: xray-cache-restore
         uses: actions/cache/restore@v6
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}
-          restore-keys: |
-            ${{ runner.os }}-pip-singbox2proxy-
+          path: ~/.local/bin/xray
+          key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.fork }}
 
-      - name: Restore sing-box binary cache
-        id: sing-box-cache-restore
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.local/bin/sing-box
-          key: ${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
-
-      - name: Install proxy tester
+      - name: Build Throne Xray core
         env:
-          SING_BOX_VERSION: ${{ steps.tool-versions.outputs.sing_box }}
-          SINGBOX2PROXY_VERSION: ${{ steps.tool-versions.outputs.singbox2proxy }}
+          XRAY_UPSTREAM_VERSION: ${{ steps.xray-version.outputs.upstream }}
+          XRAY_FORK_VERSION: ${{ steps.xray-version.outputs.fork }}
         run: |
           set -euo pipefail
+          mkdir -p "$HOME/.local/bin" /tmp/xray-build
 
-          python3 -m pip install --disable-pip-version-check --upgrade "singbox2proxy[socks]==$SINGBOX2PROXY_VERSION"
-          mkdir -p "$HOME/.local/bin"
+          if [ ! -x "$HOME/.local/bin/xray" ]; then
+            cat > /tmp/xray-build/go.mod <<EOF
+          module proxy-harvester-xray
 
-          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
-            git clone --depth 1 --branch "v$SING_BOX_VERSION" https://github.com/SagerNet/sing-box.git /tmp/sing-box
-            cd /tmp/sing-box
-            TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
-            install -m 0755 sing-box "$HOME/.local/bin/sing-box"
+          go 1.26.0
+
+          require github.com/xtls/xray-core $XRAY_UPSTREAM_VERSION
+
+          replace github.com/xtls/xray-core => github.com/throneproj/xray-core $XRAY_FORK_VERSION
+          EOF
+
+            cd /tmp/xray-build
+            go mod download
+            go build -trimpath -buildvcs=false \
+              -o "$HOME/.local/bin/xray" \
+              github.com/xtls/xray-core/main
           fi
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/sing-box" version
-          "$HOME/.local/bin/sing-box" version | grep -q "$SING_BOX_VERSION" || {
-            echo "Unexpected sing-box version"
-            exit 1
-          }
-          "$HOME/.local/bin/sing-box" version | grep -q 'with_utls' || {
-            echo "sing-box was built without with_utls"
-            exit 1
-          }
+          "$HOME/.local/bin/xray" version
 
-      - name: Save Go build and module cache
-        if: steps.go-cache-restore.outputs.cache-hit != 'true'
+      - name: Save Xray Go cache
+        if: steps.xray-go-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: ${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}
+          key: ${{ runner.os }}-go-xray-${{ steps.xray-version.outputs.fork }}
 
-      - name: Save Python package cache
-        if: steps.pip-cache-restore.outputs.cache-hit != 'true'
+      - name: Save Xray binary cache
+        if: steps.xray-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}
-
-      - name: Save sing-box binary cache
-        if: steps.sing-box-cache-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.local/bin/sing-box
-          key: ${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
+          path: ~/.local/bin/xray
+          key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.fork }}
 
       - name: Validate scripts
         run: |
@@ -256,41 +245,60 @@ jobs:
 
           current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
           current_build_key="${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}"
-          current_go_key="${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}"
-          current_pip_key="${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}"
-          current_sing_box_key="${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor"
+          current_go_key="${{ runner.os }}-go-xray-${{ steps.xray-version.outputs.fork }}"
+          current_xray_key="${{ runner.os }}-xray-${{ steps.xray-version.outputs.fork }}"
 
           cleanup_prefix() {
             local prefix="$1"
             local current_key="$2"
 
             gh cache list \
-              --repo "${GH_REPO}" \
-              --key "${prefix}" \
+              --repo "$GH_REPO" \
+              --key "$prefix" \
               --ref refs/heads/main \
               --limit 100 \
               --json id,key \
               --jq '.[] | [.id, .key] | @tsv' |
             while IFS=$'\t' read -r cache_id cache_key; do
-              [ -z "${cache_id}" ] && continue
-              if [ "${cache_key}" = "${current_key}" ]; then
+              [ -z "$cache_id" ] && continue
+              if [ "$cache_key" = "$current_key" ]; then
                 continue
               fi
-              echo "Deleting obsolete cache ${cache_id} (${cache_key})"
-              gh api --method DELETE "/repos/${GH_REPO}/actions/caches/${cache_id}"
+              echo "Deleting obsolete cache $cache_id ($cache_key)"
+              gh api --method DELETE "/repos/$GH_REPO/actions/caches/$cache_id"
             done
           }
 
-          cleanup_prefix "${{ runner.os }}-cargo-registry-" "${current_registry_key}"
-          cleanup_prefix "${{ runner.os }}-cargo-build-" "${current_build_key}"
-          cleanup_prefix "${{ runner.os }}-go-singbox-" "${current_go_key}"
-          cleanup_prefix "${{ runner.os }}-pip-singbox2proxy-" "${current_pip_key}"
-          cleanup_prefix "${{ runner.os }}-sing-box-" "${current_sing_box_key}"
+          delete_prefix() {
+            local prefix="$1"
+
+            gh cache list \
+              --repo "$GH_REPO" \
+              --key "$prefix" \
+              --ref refs/heads/main \
+              --limit 100 \
+              --json id,key \
+              --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r cache_id cache_key; do
+              [ -z "$cache_id" ] && continue
+              echo "Deleting obsolete cache $cache_id ($cache_key)"
+              gh api --method DELETE "/repos/$GH_REPO/actions/caches/$cache_id"
+            done
+          }
+
+          cleanup_prefix "${{ runner.os }}-cargo-registry-" "$current_registry_key"
+          cleanup_prefix "${{ runner.os }}-cargo-build-" "$current_build_key"
+          cleanup_prefix "${{ runner.os }}-go-xray-" "$current_go_key"
+          cleanup_prefix "${{ runner.os }}-xray-" "$current_xray_key"
+
+          delete_prefix "${{ runner.os }}-go-singbox-"
+          delete_prefix "${{ runner.os }}-pip-singbox2proxy-"
+          delete_prefix "${{ runner.os }}-sing-box-"
 
       - name: Clean generated temporary files
         if: always()
         run: |
-          rm -rf /tmp/proxy-harvester
+          rm -rf /tmp/proxy-harvester /tmp/xray-build
           rm -f subscriptions/.*.txt
 
       - name: Commit changes
