@@ -111,7 +111,7 @@ jobs:
       - name: Build collector
         run: cargo build --release
 
-      - name: Collect and TCP-test configs
+      - name: Collect and transport-test configs
         run: ./target/release/proxy-harvester
 
       - name: Build Light subscription
