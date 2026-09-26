@@ -1309,7 +1309,7 @@ async fn proxy_test_light(
         );
     }
 
-    let mut final_counts: Vec<(&String, usize)> = selected_by_scheme.iter().collect();
+    let mut final_counts: Vec<(&String, &usize)> = selected_by_scheme.iter().collect();
     final_counts.sort_by_key(|(scheme, _)| (*scheme).clone());
     for (scheme, count) in final_counts {
         println!("[INFO] Light protocol balance: {scheme}={count}");
