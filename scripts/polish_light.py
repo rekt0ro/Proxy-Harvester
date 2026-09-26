@@ -199,7 +199,6 @@ def main():
         ep = endpoint(config)
         ranked.append((
             -int(metrics["successes"]),
-            -heuristic(config),
             float(metrics["median_ms"]),
             float(metrics["min_ms"]),
             position,
