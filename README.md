@@ -40,7 +40,7 @@ Both plain-text and Base64 formats are provided for compatibility with different
 
 VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS
 
-Last repository maintenance: 2026-09-25
+Last repository maintenance: 2026-09-26
 
 ## Disclaimer
 
