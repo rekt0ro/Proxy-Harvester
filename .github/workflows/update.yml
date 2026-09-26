@@ -96,21 +96,6 @@ jobs:
           curl -fsS --max-time 10 https://www.gstatic.com/generate_204 -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
-      - name: Prepare EU probe relay
-        run: |
-          set -u
-          for country in DE NL FR SE; do
-            proxy="$(curl -fsS --max-time 15 "https://hproxy.com/api/proxy-list?format=txt&recent=true&protocol=socks5&country=$country&min_uptime_pct=50&max_latency_ms=1500&limit=1" 2>/dev/null | head -n 1 | tr -d '\r' || true)"
-            if [ -n "$proxy" ]; then
-              echo "EU_TEST_PROXY=socks5://$proxy" >> "$GITHUB_ENV"
-              echo "[INFO] Selected EU probe relay from HProxy ($country)."
-              break
-            fi
-          done
-          if [ -z "${EU_TEST_PROXY:-}" ]; then
-            echo "[WARN] No EU probe relay available; Light verification will use the direct runner path."
-          fi
-
       - name: Build
         run: cargo build --release
 
