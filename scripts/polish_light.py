@@ -158,8 +158,6 @@ def run_checker(
     workers,
     batch_size,
     timeout,
-    warm_timeout,
-    tcp_prefilter,
 ):
     if not candidates:
         write_lines(output_path, [])
@@ -199,9 +197,6 @@ def run_checker(
             "--target",
             target,
         ]
-
-        if tcp_prefilter:
-            command.append("--tcp-prefilter")
 
         result = subprocess.run(command, check=False)
         return result.returncode == 0
@@ -378,8 +373,7 @@ def main():
             args.final_workers,
             args.final_batch_size,
             args.timeout,
-            args.warm_timeout,
-            True,
+            args.timeout,
         ):
             print("[WARN] Final primary validation failed.")
             return 1
@@ -408,8 +402,7 @@ def main():
             args.final_workers,
             args.final_batch_size,
             args.timeout,
-            args.warm_timeout,
-            False,
+            args.timeout,
         ):
             print("[WARN] Final secondary validation failed.")
             return 1
