@@ -105,14 +105,8 @@ jobs:
           curl -fsS --max-time 10 https://cp.cloudflare.com/ -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
-      - name: Preserve previous Light pool
-        run: |
-          mkdir -p /tmp/proxy-harvester
-          if [ -s subscriptions/light.txt ]; then
-            cp subscriptions/light.txt /tmp/proxy-harvester/previous-light.txt
-          else
-            : > /tmp/proxy-harvester/previous-light.txt
-          fi
+      - name: Prepare temporary workspace
+        run: mkdir -p /tmp/proxy-harvester
 
       - name: Build collector
         run: cargo build --release
@@ -124,8 +118,7 @@ jobs:
         run: |
           set +e
           python3 scripts/polish_light.py \
-            --all subscriptions/all.txt \
-            --seed /tmp/proxy-harvester/previous-light.txt \
+            --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxy-harvester/light.next.txt \
             --checker scripts/check_proxies.py \
             --budget 5000 \
