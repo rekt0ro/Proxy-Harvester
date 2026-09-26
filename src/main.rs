@@ -1390,117 +1390,101 @@ async fn proxy_test_light(
         .cloned()
         .collect();
 
+    let target_per_protocol =
+        (LIGHT_LIMIT + test_schemes.len().saturating_sub(1)) / test_schemes.len().max(1);
+
     while tested_candidates < LIGHT_CANDIDATE_BUDGET && total_verified < LIGHT_LIMIT {
-        let mut remaining_budget = LIGHT_CANDIDATE_BUDGET - tested_candidates;
-        if remaining_budget == 0 {
+        let mut eligible = test_schemes
+            .iter()
+            .filter_map(|scheme| {
+                let configs = prioritized_by_scheme.get(scheme)?;
+                let offset = *offsets.get(scheme).unwrap_or(&0);
+
+                if offset >= configs.len() {
+                    return None;
+                }
+
+                let verified_count = verified_by_scheme
+                    .get(scheme)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+
+                Some((scheme, verified_count, offset))
+            })
+            .collect::<Vec<_>>();
+
+        if eligible.is_empty() {
             break;
         }
 
-        let target_per_protocol =
-            (LIGHT_LIMIT + test_schemes.len().saturating_sub(1)) / test_schemes.len().max(1);
+        let has_under_target = eligible
+            .iter()
+            .any(|(_, verified_count, _)| *verified_count < target_per_protocol);
 
-        let mut ranked_schemes = test_schemes.clone();
-        ranked_schemes.sort_by_key(|scheme| {
-            let verified_count = verified_by_scheme
-                .get(scheme)
-                .map(Vec::len)
-                .unwrap_or(0);
-            let exhausted = prioritized_by_scheme
-                .get(scheme)
-                .map(|configs| {
-                    *offsets.get(scheme).unwrap_or(&0) >= configs.len()
-                })
-                .unwrap_or(true);
-
+        eligible.sort_by_key(|(scheme, verified_count, _)| {
             (
-                verified_count >= target_per_protocol,
-                exhausted,
-                verified_count,
-                scheme.clone(),
+                if has_under_target {
+                    *verified_count >= target_per_protocol
+                } else {
+                    false
+                },
+                *verified_count,
+                (*scheme).clone(),
             )
         });
 
-        let mut jobs = Vec::new();
+        let scheme = eligible[0].0.clone();
+        let configs = prioritized_by_scheme
+            .get(&scheme)
+            .expect("scheme exists in prioritized candidates");
+        let offset = eligible[0].2;
 
-        for scheme in ranked_schemes {
-            if remaining_budget == 0 {
-                break;
-            }
+        let remaining_budget = LIGHT_CANDIDATE_BUDGET - tested_candidates;
+        let batch_len = PROXY_TEST_LIMIT_PER_PROTOCOL
+            .min(remaining_budget)
+            .min(configs.len() - offset);
 
-            let Some(configs) = prioritized_by_scheme.get(&scheme) else {
-                continue;
-            };
-
-            let offset = *offsets.get(&scheme).unwrap_or(&0);
-            if offset >= configs.len() {
-                continue;
-            }
-
-            let current_verified = verified_by_scheme
-                .get(&scheme)
-                .map(Vec::len)
-                .unwrap_or(0);
-
-            if current_verified >= target_per_protocol
-                && verified_by_scheme.len() < test_schemes.len()
-            {
-                continue;
-            }
-
-            let batch_len = PROXY_TEST_LIMIT_PER_PROTOCOL
-                .min(remaining_budget)
-                .min(configs.len() - offset);
-
-            if batch_len == 0 {
-                continue;
-            }
-
-            let end = offset + batch_len;
-            let candidates = configs[offset..end]
-                .iter()
-                .map(|(config, _)| config.clone())
-                .collect::<Vec<_>>();
-
-            offsets.insert(scheme.clone(), end);
-            remaining_budget = remaining_budget.saturating_sub(candidates.len());
-            tested_candidates += candidates.len();
-            jobs.push((scheme, candidates, offset));
-
-            if jobs.len() >= test_schemes.len() {
-                break;
-            }
+        if batch_len == 0 {
+            offsets.insert(scheme, configs.len());
+            continue;
         }
 
-        if jobs.is_empty() {
-            break;
-        }
+        let end_offset = offset + batch_len;
+        let candidates = configs[offset..end_offset]
+            .iter()
+            .map(|(config, _)| config.clone())
+            .collect::<Vec<_>>();
 
-        let batches = stream::iter(jobs.into_iter().map(|(scheme, candidates, offset)| {
-            run_proxy_check_batch(&checker, output_dir, scheme, candidates, offset, None)
-        }))
-        .buffer_unordered(PROXY_TEST_PROTOCOL_CONCURRENCY)
-        .collect::<Vec<(String, Vec<String>)>>()
+        offsets.insert(scheme.clone(), end_offset);
+        tested_candidates += candidates.len();
+
+        let (_, verified) = run_proxy_check_batch(
+            &checker,
+            output_dir,
+            scheme.clone(),
+            candidates,
+            offset,
+            None,
+        )
         .await;
 
-        for (scheme, verified) in batches {
-            let entry = verified_by_scheme.entry(scheme.clone()).or_default();
-            let before = entry.len();
-            let mut seen: HashSet<String> = entry.iter().cloned().collect();
+        let entry = verified_by_scheme.entry(scheme.clone()).or_default();
+        let before = entry.len();
+        let mut seen: HashSet<String> = entry.iter().cloned().collect();
 
-            for config in &verified {
-                if seen.insert(config.clone()) {
-                    entry.push(config.clone());
-                }
+        for config in verified {
+            if seen.insert(config.clone()) {
+                entry.push(config);
             }
-
-            let added = entry.len() - before;
-            total_verified += added;
-
-            println!(
-                "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
-                scheme, added, total_verified
-            );
         }
+
+        let added = entry.len() - before;
+        total_verified += added;
+
+        println!(
+            "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
+            scheme, added, total_verified
+        );
     }
 
     if verified_by_scheme.is_empty() {
