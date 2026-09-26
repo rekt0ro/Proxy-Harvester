@@ -132,7 +132,6 @@ jobs:
             --secondary-target https://www.google.com/generate_204 \
             --selection-limit 200 \
             --max-per-endpoint 1 \
-            --max-per-family 1
           status=$?
           set -e
 
