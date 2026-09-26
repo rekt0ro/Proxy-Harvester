@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlsplit
 SUPPORTED = {"vmess", "vless", "trojan", "ss", "hysteria", "hysteria2", "hy2", "tuic", "socks", "socks5", "socks5h", "naive+https"}
 DEFAULT_BUDGET = 16000
 MAX_PER_ENDPOINT = 4
+TEST_CHUNK_SIZE = 4000
+TARGET_VERIFIED = 300
 
 
 def scheme(config):
@@ -157,39 +159,88 @@ def main():
         open(args.output, "w", encoding="utf-8").close()
         return 0
 
-    candidate_path = args.output + ".candidates"
-    verified_path = args.output + ".verified"
-    with open(candidate_path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(candidates) + "\n")
+    print(
+        f"[INFO] Light polish: {len(candidates)} global candidates available; "
+        f"testing in chunks of {TEST_CHUNK_SIZE}, with no final protocol quota."
+    )
 
-    print(f"[INFO] Light polish: testing {len(candidates)} global candidates, with no final protocol quota.")
+    verified = []
+    verified_seen = set()
+    metadata = {}
+    chunk_count = (len(candidates) + TEST_CHUNK_SIZE - 1) // TEST_CHUNK_SIZE
 
-    command = [
-        sys.executable,
-        args.checker,
-        "--input", candidate_path,
-        "--output", verified_path,
-        "--workers", "12",
-        "--batch-size", "100",
-        "--timeout", "6",
-        "--metadata", args.metadata,
-    ]
-    result = subprocess.run(command, check=False)
-    if result.returncode != 0:
-        print(f"[WARN] Light polish checker exited with {result.returncode}; preserving the previous Light pool.")
-        return 0
+    for chunk_number, start in enumerate(range(0, len(candidates), TEST_CHUNK_SIZE), 1):
+        chunk = candidates[start:start + TEST_CHUNK_SIZE]
+        candidate_path = f"{args.output}.candidates.{chunk_number}"
+        verified_path = f"{args.output}.verified.{chunk_number}"
+        chunk_metadata_path = f"{args.metadata}.chunk-{chunk_number}"
 
-    verified = read_lines(verified_path)
+        with open(candidate_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(chunk) + "\n")
+
+        print(
+            f"[INFO] Light chunk {chunk_number}/{chunk_count}: "
+            f"testing {len(chunk)} candidates; "
+            f"{len(verified)} verified so far."
+        )
+
+        command = [
+            sys.executable,
+            args.checker,
+            "--input", candidate_path,
+            "--output", verified_path,
+            "--workers", "12",
+            "--batch-size", "100",
+            "--timeout", "12",
+            "--warm-timeout", "5",
+            "--metadata", chunk_metadata_path,
+        ]
+        result = subprocess.run(command, check=False)
+        if result.returncode != 0:
+            print(
+                f"[WARN] Light chunk {chunk_number} checker exited with "
+                f"{result.returncode}; continuing with the next chunk."
+            )
+            continue
+
+        chunk_verified = read_lines(verified_path)
+        for config in chunk_verified:
+            if config not in verified_seen:
+                verified_seen.add(config)
+                verified.append(config)
+
+        try:
+            with open(chunk_metadata_path, encoding="utf-8") as handle:
+                chunk_metadata = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError):
+            chunk_metadata = {}
+        metadata.update(chunk_metadata)
+
+        print(
+            f"[INFO] Light chunk {chunk_number}/{chunk_count}: "
+            f"{len(chunk_verified)} verified; {len(verified)} total verified."
+        )
+
+        if len(verified) >= TARGET_VERIFIED:
+            print(
+                f"[INFO] Reached {TARGET_VERIFIED} verified configs; "
+                "stopping Light discovery early."
+            )
+            break
+
+    for path in [args.metadata]:
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, separators=(",", ":"))
+        except OSError:
+            pass
+
     if not verified:
         print("[WARN] Global Light verification produced zero stable configs; preserving the previous Light pool.")
         return 0
 
-    with open(args.metadata, encoding="utf-8") as handle:
-        metadata = json.load(handle)
-
-    # Stability is the hard gate. Within each stability tier, prefer
-    # mainstream-client-friendly transport parameters and then latency.
-    # Protocol quotas are deliberately absent.
+    # Stability is the hard gate. Rank only after validation; protocol quotas
+    # are deliberately absent from the final selection.
     ranked = []
     endpoint_counts = defaultdict(int)
     for position, config in enumerate(verified):
