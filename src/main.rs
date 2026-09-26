@@ -100,8 +100,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut endpoint_groups: HashMap<(String, u16), Vec<String>> = HashMap::new();
     let mut endpoint_representatives = Vec::new();
+    let mut transport_passthrough = Vec::new();
 
     for config in &configs {
+        let scheme = config_scheme(config);
+
+        if matches!(scheme.as_str(), "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg") {
+            transport_passthrough.push(config.clone());
+            continue;
+        }
+
         let Some(endpoint) = endpoint(config) else {
             continue;
         };
@@ -117,9 +125,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let total_testable_configs: usize = endpoint_groups.values().map(Vec::len).sum();
     println!(
-        "[INFO] TCP endpoint deduplication: {} testable configs -> {} unique endpoints.",
+        "[INFO] TCP endpoint deduplication: {} TCP configs -> {} unique TCP endpoints; {} UDP/transport configs passed through.",
         total_testable_configs,
-        endpoint_representatives.len()
+        endpoint_representatives.len(),
+        transport_passthrough.len()
     );
 
     let mut chunk_results = stream::iter(endpoint_representatives.chunks(CHUNK_SIZE).enumerate())
@@ -132,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     chunk_results.sort_by_key(|(index, _)| *index);
 
-    let mut working_configs = Vec::new();
+    let mut working_configs = transport_passthrough;
     let mut reachable_endpoints = 0usize;
 
     for (_, working) in chunk_results {
@@ -149,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     if working_configs.is_empty() {
-        println!("[WARN] No TCP-reachable proxy endpoints found. Existing subscriptions were preserved.");
+        println!("[WARN] No usable configs remained after transport filtering and TCP reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
     }
