@@ -31,8 +31,6 @@ const PROXY_TEST_BATCH_SIZE: usize = 100;
 const PROXY_TEST_PROTOCOL_CONCURRENCY: usize = 1;
 const PROXY_TEST_MAX_TCP_LATENCY_MS: u64 = 3000;
 const LIGHT_CANDIDATE_BUDGET: usize = 12000;
-const LIGHT_NON_VMESS_TARGET: usize = 150;
-const LIGHT_VMESS_CANDIDATE_BUDGET: usize = 750;
 const GEO_PER_PROTOCOL_LIMIT: usize = 1000;
 const GEO_BATCH_SIZE: usize = 100;
 const GEO_RESOLUTION_CONCURRENCY: usize = 64;
@@ -1385,49 +1383,79 @@ async fn proxy_test_light(
     let mut offsets: HashMap<String, usize> = HashMap::new();
     let mut total_verified = 0usize;
     let mut tested_candidates = 0usize;
-    let mut tested_vmess_candidates = 0usize;
 
-    while tested_candidates < LIGHT_CANDIDATE_BUDGET {
-        let non_vmess_verified: usize = verified_by_scheme
-            .iter()
-            .filter(|(scheme, _)| scheme.as_str() != "vmess")
-            .map(|(_, configs)| configs.len())
-            .sum();
+    let test_schemes: Vec<String> = schemes
+        .iter()
+        .filter(|scheme| !matches!(scheme.as_str(), "http" | "https" | "ssr"))
+        .cloned()
+        .collect();
 
-        if total_verified >= LIGHT_LIMIT && non_vmess_verified >= LIGHT_NON_VMESS_TARGET {
+    while tested_candidates < LIGHT_CANDIDATE_BUDGET && total_verified < LIGHT_LIMIT {
+        let mut remaining_budget = LIGHT_CANDIDATE_BUDGET - tested_candidates;
+        if remaining_budget == 0 {
             break;
         }
-        let mut jobs = Vec::new();
-        let mut remaining_budget = LIGHT_CANDIDATE_BUDGET - tested_candidates;
 
-        for scheme in &schemes {
+        let target_per_protocol =
+            (LIGHT_LIMIT + test_schemes.len().saturating_sub(1)) / test_schemes.len().max(1);
+
+        let mut ranked_schemes = test_schemes.clone();
+        ranked_schemes.sort_by_key(|scheme| {
+            let verified_count = verified_by_scheme
+                .get(scheme)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let exhausted = prioritized_by_scheme
+                .get(scheme)
+                .map(|configs| {
+                    *offsets.get(scheme).unwrap_or(&0) >= configs.len()
+                })
+                .unwrap_or(true);
+
+            (
+                verified_count >= target_per_protocol,
+                exhausted,
+                verified_count,
+                scheme.clone(),
+            )
+        });
+
+        let mut jobs = Vec::new();
+
+        for scheme in ranked_schemes {
             if remaining_budget == 0 {
                 break;
             }
 
-            if scheme == "http" || scheme == "https" || scheme == "ssr" {
+            let Some(configs) = prioritized_by_scheme.get(&scheme) else {
                 continue;
-            }
+            };
 
-            let Some(configs) = prioritized_by_scheme.get(scheme) else { continue };
-            if scheme == "vmess" && tested_vmess_candidates >= LIGHT_VMESS_CANDIDATE_BUDGET {
-                continue;
-            }
-            let offset = *offsets.get(scheme).unwrap_or(&0);
-
+            let offset = *offsets.get(&scheme).unwrap_or(&0);
             if offset >= configs.len() {
                 continue;
             }
 
-            let scheme_budget = if scheme == "vmess" {
-                LIGHT_VMESS_CANDIDATE_BUDGET.saturating_sub(tested_vmess_candidates)
-            } else {
-                remaining_budget
-            };
+            let current_verified = verified_by_scheme
+                .get(&scheme)
+                .map(Vec::len)
+                .unwrap_or(0);
+
+            if current_verified >= target_per_protocol
+                && verified_by_scheme.len() < test_schemes.len()
+            {
+                continue;
+            }
+
             let batch_len = PROXY_TEST_LIMIT_PER_PROTOCOL
                 .min(remaining_budget)
-                .min(scheme_budget);
-            let end = (offset + batch_len).min(configs.len());
+                .min(configs.len() - offset);
+
+            if batch_len == 0 {
+                continue;
+            }
+
+            let end = offset + batch_len;
             let candidates = configs[offset..end]
                 .iter()
                 .map(|(config, _)| config.clone())
@@ -1436,12 +1464,10 @@ async fn proxy_test_light(
             offsets.insert(scheme.clone(), end);
             remaining_budget = remaining_budget.saturating_sub(candidates.len());
             tested_candidates += candidates.len();
-            if scheme == "vmess" {
-                tested_vmess_candidates += candidates.len();
-            }
+            jobs.push((scheme, candidates, offset));
 
-            if !candidates.is_empty() {
-                jobs.push((scheme.clone(), candidates, offset));
+            if jobs.len() >= test_schemes.len() {
+                break;
             }
         }
 
@@ -1474,7 +1500,6 @@ async fn proxy_test_light(
                 "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
                 scheme, added, total_verified
             );
-
         }
     }
 
