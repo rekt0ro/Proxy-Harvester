@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol-level proxy checker using Cloudflare reachability."""
+"""Protocol-level proxy checker using the same Cloudflare URL used by Throne."""
 
 import argparse
 import collections
@@ -118,7 +118,6 @@ def main():
             return 0
 
         latencies = collections.defaultdict(list)
-        failures = collections.Counter()
         success_counts = collections.Counter()
         active_proxies = list(proxies)
 
@@ -136,13 +135,11 @@ def main():
                     futures = {pool.submit(check_proxy, proxy, target, args.timeout): proxy for proxy in active_proxies}
                     for future in concurrent.futures.as_completed(futures):
                         proxy = futures[future]
-                        ok, latency_ms, error = future.result()
+                        ok, latency_ms, _ = future.result()
                         original_url = original_by_test_url.get(proxy.url, proxy.url)
                         if ok:
                             success_counts[original_url] += 1
                             latencies[original_url].append(latency_ms)
-                        else:
-                            failures[error or "unknown error"] += 1
 
                 remaining = []
                 attempts_left = STABILITY_ATTEMPTS - attempt
@@ -169,7 +166,12 @@ def main():
 
         print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and <= {MAX_MEDIAN_LATENCY_MS}ms median latency", flush=True)
 
-        ordered = sorted(eligible, key=lambda url: (eligible[url][0], -eligible[url][1], eligible[url][2], url))
+        # Reliability comes before raw latency. A repeatable 3/3 proxy is
+        # preferred over a faster proxy that failed one of its three probes.
+        ordered = sorted(
+            eligible,
+            key=lambda url: (-eligible[url][1], eligible[url][0], eligible[url][2], url),
+        )
         with open(args.output, "w", encoding="utf-8") as handle:
             for url in ordered:
                 handle.write(url + "\n")
