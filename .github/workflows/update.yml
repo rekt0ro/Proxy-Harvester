@@ -41,9 +41,9 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: \${{ runner.os }}-go-singbox-v1.14.2
+          key: ${{ runner.os }}-go-singbox-v1.14.2
           restore-keys: |
-            \${{ runner.os }}-go-singbox-
+            ${{ runner.os }}-go-singbox-
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,24 +55,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: \${{ runner.os }}-rust-\${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            \${{ runner.os }}-rust-
+            ${{ runner.os }}-rust-
 
       - name: Cache Python packages
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: \${{ runner.os }}-pip-singbox2proxy
+          key: ${{ runner.os }}-pip-singbox2proxy
           restore-keys: |
-            \${{ runner.os }}-pip-
+            ${{ runner.os }}-pip-
 
       - name: Cache sing-box binary
         id: sing-box-cache
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/sing-box
-          key: \${{ runner.os }}-sing-box-v1.14.2-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
+          key: ${{ runner.os }}-sing-box-v1.14.2-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
 
       - name: Install proxy tester
         run: |
@@ -97,7 +97,27 @@ jobs:
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Build
-        run: cargo build --release
+        run: |
+          # The proxy pool contains many slow-but-usable endpoints. Give the
+          # Cloudflare protocol test enough time to complete handshakes, and
+          # let it examine a much larger candidate pool before Light selection.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src/main.rs")
+          s = p.read_text()
+          replacements = {
+              "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 500;": "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 3000;",
+              "const PROXY_TEST_TIMEOUT_SECS: u64 = 3;": "const PROXY_TEST_TIMEOUT_SECS: u64 = 6;",
+              "const PROXY_TEST_WORKERS: usize = 10;": "const PROXY_TEST_WORKERS: usize = 12;",
+              "const LIGHT_CANDIDATE_BUDGET: usize = 12000;": "const LIGHT_CANDIDATE_BUDGET: usize = 30000;",
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f"expected source constant not found: {old}")
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          cargo build --release
 
       - name: Collect and test configs
         run: ./target/release/proxy-harvester
@@ -107,12 +127,12 @@ jobs:
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions/
+          git add subscriptions/ scripts/check_proxies.py .github/workflows/update.yml
 
           if git diff --cached --quiet; then
             echo "No changes."
             exit 0
           fi
 
-          git commit -m "Update configs"
+          git commit -m "Improve proxy verification reliability"
           git push
