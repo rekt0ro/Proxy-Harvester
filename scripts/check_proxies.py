@@ -488,6 +488,7 @@ def check_batch(binary, entries, target, timeout_seconds, workers):
 
             active = [(config, local_ports[i]) for i, (config, _) in enumerate(entries)]
             successes = collections.Counter()
+            attempts = collections.Counter()
             latencies = collections.defaultdict(list)
             errors = {}
 
@@ -507,6 +508,7 @@ def check_batch(binary, entries, target, timeout_seconds, workers):
                             ok, latency, error = future.result()
                         except Exception as exc:
                             ok, latency, error = False, 0, str(exc)[:160]
+                        attempts[config] += 1
                         if ok:
                             successes[config] += 1
                             latencies[config].append(latency)
