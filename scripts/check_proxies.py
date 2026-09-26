@@ -17,7 +17,7 @@ from singbox2proxy import SingBoxBatch
 logging.getLogger("singbox2proxy").setLevel(logging.CRITICAL + 1)
 
 DEFAULT_TARGETS = (
-    "https://cp.cloudflare.com/",
+    "http://cp.cloudflare.com:80/",
 )
 
 MIN_SUCCESSFUL_TARGETS = 2
@@ -116,7 +116,7 @@ def main():
     parser.add_argument(
         "--target",
         default=None,
-        help="Validation target URL. Defaults to the primary HTTPS probe.",
+        help="Validation target URL. Defaults to the primary Cloudflare HTTP probe.",
     )
     args = parser.parse_args()
 
