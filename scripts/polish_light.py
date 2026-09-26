@@ -263,7 +263,6 @@ def main():
     parser.add_argument("--seed", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--checker", required=True)
-    parser.add_argument("--metadata", required=True)
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=100)
