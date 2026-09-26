@@ -16,7 +16,6 @@ FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
 PRIMARY_TARGET = "http://cp.cloudflare.com:80/"
-SECONDARY_TARGET = "https://www.google.com/generate_204"
 
 
 def scheme(config):
@@ -208,7 +207,6 @@ def main():
     parser.add_argument("--final-workers", type=int, default=12)
     parser.add_argument("--final-batch-size", type=int, default=1)
     parser.add_argument("--primary-target", default=PRIMARY_TARGET)
-    parser.add_argument("--secondary-target", default=SECONDARY_TARGET)
     parser.add_argument("--selection-limit", type=int, default=DEFAULT_SELECTION_LIMIT)
     parser.add_argument("--max-per-endpoint", type=int, default=DEFAULT_MAX_PER_ENDPOINT)
     args = parser.parse_args()
@@ -335,53 +333,12 @@ def main():
             print("[WARN] No configs survived the final primary validation.")
             return 1
 
-        print(
-            f"[INFO] Secondary target recheck: {len(primary_verified)} "
-            f"configs against {args.secondary_target}."
-        )
-
-        secondary_output = os.path.join(work_dir, "secondary.txt")
-        secondary_metadata_path = os.path.join(work_dir, "secondary.json")
-
-        if not run_checker(
-            args.checker,
-            primary_verified,
-            args.secondary_target,
-            secondary_output,
-            secondary_metadata_path,
-            args.final_workers,
-            args.final_batch_size,
-            args.timeout,
-        ):
-            print("[WARN] Final secondary validation failed.")
-            return 1
-
-        secondary_verified = set(read_lines(secondary_output))
-        secondary_metadata = load_metadata(secondary_metadata_path)
-
-        both = [
-            config
-            for config in primary_verified
-            if config in secondary_verified
-        ]
-
-        if not both:
-            print(
-                "[WARN] No configs survived both independent validation targets."
-            )
-            return 1
-
         ranked_final = sorted(
-            both,
+            primary_verified,
             key=lambda config: (
-                -(
-                    int(primary_metadata.get(config, {}).get("successes", 0))
-                    + int(secondary_metadata.get(config, {}).get("successes", 0))
-                ),
-                (
-                    float(primary_metadata.get(config, {}).get("median_ms", float("inf")))
-                    + float(secondary_metadata.get(config, {}).get("median_ms", float("inf")))
-                ),
+                -int(primary_metadata.get(config, {}).get("successes", 0)),
+                float(primary_metadata.get(config, {}).get("median_ms", float("inf"))),
+                float(primary_metadata.get(config, {}).get("min_ms", float("inf"))),
                 global_positions.get(config, len(global_verified)),
                 config,
             ),
@@ -409,7 +366,7 @@ def main():
             f"[INFO] Published {len(final)} Light configs from "
             f"{len(global_verified)} globally verified candidates; "
             f"{len(final_endpoints)} unique parsed endpoints; "
-            "final validation required both targets."
+            f"final validation used {args.primary_target} only."
         )
         return 0
     finally:
