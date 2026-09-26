@@ -11,27 +11,11 @@ import tempfile
 from collections import defaultdict
 from urllib.parse import parse_qs, urlsplit
 
-SUPPORTED = {
-    "vmess",
-    "vless",
-    "trojan",
-    "ss",
-    "hysteria",
-    "hysteria2",
-    "hy2",
-    "tuic",
-    "socks",
-    "socks5",
-    "socks5h",
-    "naive+https",
-}
-
 DEFAULT_BUDGET = 16000
 DISCOVERY_CHUNK_SIZE = 4000
 TARGET_GLOBAL_VERIFIED = 500
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
-DEFAULT_CANDIDATE_MAX_PER_ENDPOINT = 3
 DEFAULT_MAX_PER_ENDPOINT = 1
 DEFAULT_MAX_PER_FAMILY = 1
 PRIMARY_TARGET = "http://cp.cloudflare.com/"
@@ -125,22 +109,6 @@ def family_key(config):
     )
 
 
-def is_obsolete(config):
-    try:
-        parsed = urlsplit(config)
-        query = {
-            key.lower(): values[0].lower()
-            for key, values in parse_qs(parsed.query, keep_blank_values=True).items()
-            if values
-        }
-        return query.get("flow", "") in {
-            "xtls-rprx-direct-udp443",
-            "xtls-rprx-origin",
-        }
-    except ValueError:
-        return True
-
-
 def read_lines(path):
     try:
         with open(path, encoding="utf-8") as handle:
@@ -149,28 +117,16 @@ def read_lines(path):
         return []
 
 
-def build_candidates(all_configs, seed_configs, budget, max_per_endpoint):
+def build_candidates(all_configs, seed_configs, budget):
     selected = []
     seen = set()
-    endpoint_counts = defaultdict(int)
-    by_scheme = defaultdict(list)
 
     def add(config):
         config = config.strip()
-        if (
-            not config
-            or config in seen
-            or scheme(config) not in SUPPORTED
-            or is_obsolete(config)
-        ):
-            return False
-
-        ep = endpoint(config)
-        if ep is None or endpoint_counts[ep] >= max_per_endpoint:
+        if not config or config in seen:
             return False
 
         seen.add(config)
-        endpoint_counts[ep] += 1
         selected.append(config)
         return True
 
@@ -179,36 +135,7 @@ def build_candidates(all_configs, seed_configs, budget, max_per_endpoint):
             return selected
 
     for config in all_configs:
-        s = scheme(config)
-        if s in SUPPORTED:
-            by_scheme[s].append(config)
-
-    for configs in by_scheme.values():
-        configs.sort()
-
-    schemes = sorted(by_scheme)
-    cursors = {s: 0 for s in schemes}
-
-    while len(selected) < budget:
-        progress = False
-
-        for s in schemes:
-            items = by_scheme[s]
-            cursor = cursors[s]
-
-            while cursor < len(items):
-                candidate = items[cursor]
-                cursor += 1
-                cursors[s] = cursor
-
-                if add(candidate):
-                    progress = True
-                    break
-
-            if len(selected) >= budget:
-                break
-
-        if not progress:
+        if add(config) and len(selected) >= budget:
             break
 
     return selected
@@ -349,7 +276,6 @@ def main():
     parser.add_argument("--primary-target", default=PRIMARY_TARGET)
     parser.add_argument("--secondary-target", default=SECONDARY_TARGET)
     parser.add_argument("--selection-limit", type=int, default=DEFAULT_SELECTION_LIMIT)
-    parser.add_argument("--candidate-max-per-endpoint", type=int, default=DEFAULT_CANDIDATE_MAX_PER_ENDPOINT)
     parser.add_argument("--max-per-endpoint", type=int, default=DEFAULT_MAX_PER_ENDPOINT)
     parser.add_argument("--max-per-family", type=int, default=DEFAULT_MAX_PER_FAMILY)
     args = parser.parse_args()
@@ -359,11 +285,10 @@ def main():
         read_lines(args.all_path),
         read_lines(args.seed),
         budget,
-        max(1, args.candidate_max_per_endpoint),
     )
 
     if not candidates:
-        print("[WARN] No Light candidates available after normalization.")
+        print("[WARN] No Light candidates available.")
         return 1
 
     work_dir = tempfile.mkdtemp(prefix="proxy-harvester-light-")
@@ -380,17 +305,12 @@ def main():
             range(0, len(candidates), DISCOVERY_CHUNK_SIZE), 1
         ):
             chunk = candidates[start:start + DISCOVERY_CHUNK_SIZE]
-            chunk_input = os.path.join(
-                work_dir, f"chunk-{chunk_number}.txt"
-            )
             chunk_output = os.path.join(
                 work_dir, f"chunk-{chunk_number}.verified.txt"
             )
             chunk_metadata = os.path.join(
                 work_dir, f"chunk-{chunk_number}.metadata.json"
             )
-
-            write_lines(chunk_input, chunk)
 
             print(
                 f"[INFO] Global Light pass {chunk_number}/{chunk_count}: "
@@ -523,9 +443,6 @@ def main():
             )
             return 1
 
-        global_positions = {
-            config: position for position, config in enumerate(global_verified)
-        }
         ranked_final = sorted(
             both,
             key=lambda config: (
