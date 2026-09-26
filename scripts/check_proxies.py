@@ -25,7 +25,7 @@ DEFAULT_TARGETS = (
 
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
-MAX_MEDIAN_LATENCY_MS = 400
+MAX_LATENCY_MS = 400
 DEFAULT_WARM_TIMEOUT = 5
 
 TCP_SCHEMES = {"vmess", "vless", "trojan", "ss", "socks", "socks5", "socks5h"}
@@ -325,7 +325,7 @@ def main():
                 continue
             median_latency = statistics.median(values)
             min_latency = min(values)
-            if max(values) <= MAX_MEDIAN_LATENCY_MS:
+            if max(values) <= MAX_LATENCY_MS:
                 eligible[url] = (
                     median_latency,
                     success_counts[url],
@@ -333,7 +333,7 @@ def main():
                     attempt_counts[url],
                 )
 
-        print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and <= {MAX_MEDIAN_LATENCY_MS}ms median latency", flush=True)
+        print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts with every measured latency <= {MAX_LATENCY_MS}ms", flush=True)
 
         ordered = sorted(
             eligible,
