@@ -85,8 +85,9 @@ jobs:
           go-version: stable
           cache: false
 
-      - name: Cache Go build and module data
-        uses: actions/cache@v6
+      - name: Restore Go build and module cache
+        id: go-cache-restore
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/go/pkg/mod
@@ -95,16 +96,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-singbox-
 
-      - name: Cache Python packages
-        uses: actions/cache@v6
+      - name: Restore Python package cache
+        id: pip-cache-restore
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}
           restore-keys: |
             ${{ runner.os }}-pip-singbox2proxy-
 
-      - name: Cache sing-box binary
-        uses: actions/cache@v6
+      - name: Restore sing-box binary cache
+        id: sing-box-cache-restore
+        uses: actions/cache/restore@v6
         with:
           path: ~/.local/bin/sing-box
           key: ${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
@@ -136,6 +139,29 @@ jobs:
             echo "sing-box was built without with_utls"
             exit 1
           }
+
+      - name: Save Go build and module cache
+        if: steps.go-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}
+
+      - name: Save Python package cache
+        if: steps.pip-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}
+
+      - name: Save sing-box binary cache
+        if: steps.sing-box-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
 
       - name: Validate scripts
         run: |
