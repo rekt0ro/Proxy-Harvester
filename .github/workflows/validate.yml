@@ -1,0 +1,34 @@
+name: Validate
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate Rust
+        run: cargo check --release
+
+      - name: Validate Python
+        run: python3 -m py_compile scripts/check_proxies.py scripts/polish_light.py
+
+      - name: Check whitespace
+        run: git diff --check

@@ -779,10 +779,6 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     }
 }
 
-async fn tcp_latency(config: &str) -> Option<u64> {
-    let (host, port) = endpoint(config)?;
-    tcp_latency_endpoint(&host, port).await
-}
 async fn transport_reachable(config: &str) -> bool {
     transport_latency(config).await.is_some()
 }
@@ -1007,7 +1003,7 @@ async fn quic_latency(config: &str) -> Option<u64> {
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
         };
 
-        let mut endpoint = Endpoint::client(local).ok()?;
+        let endpoint = Endpoint::client(local).ok()?;
         let client_config = quic_client_config(&alpn)?;
         let connecting = endpoint
             .connect_with(client_config, address, &sni)
