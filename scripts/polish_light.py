@@ -31,6 +31,7 @@ DISCOVERY_CHUNK_SIZE = 4000
 TARGET_GLOBAL_VERIFIED = 500
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
+DEFAULT_CANDIDATE_MAX_PER_ENDPOINT = 3
 DEFAULT_MAX_PER_ENDPOINT = 1
 DEFAULT_MAX_PER_FAMILY = 1
 PRIMARY_TARGET = "http://cp.cloudflare.com/"
@@ -348,6 +349,7 @@ def main():
     parser.add_argument("--primary-target", default=PRIMARY_TARGET)
     parser.add_argument("--secondary-target", default=SECONDARY_TARGET)
     parser.add_argument("--selection-limit", type=int, default=DEFAULT_SELECTION_LIMIT)
+    parser.add_argument("--candidate-max-per-endpoint", type=int, default=DEFAULT_CANDIDATE_MAX_PER_ENDPOINT)
     parser.add_argument("--max-per-endpoint", type=int, default=DEFAULT_MAX_PER_ENDPOINT)
     parser.add_argument("--max-per-family", type=int, default=DEFAULT_MAX_PER_FAMILY)
     args = parser.parse_args()
@@ -357,7 +359,7 @@ def main():
         read_lines(args.all_path),
         read_lines(args.seed),
         budget,
-        max(1, args.max_per_endpoint),
+        max(1, args.candidate_max_per_endpoint),
     )
 
     if not candidates:
