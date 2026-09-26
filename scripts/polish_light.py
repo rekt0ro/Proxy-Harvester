@@ -82,10 +82,14 @@ def family_key(config):
         value = vmess_object(config)
         if not value:
             return ("invalid", config)
+        try:
+            port = int(value.get("port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
         return (
             "vmess",
             str(value.get("id", "")).lower(),
-            int(value.get("port", 0) or 0),
+            port,
             str(value.get("net", "")).lower(),
             str(value.get("tls", "")).lower(),
             str(value.get("host", "")).lower(),
@@ -435,12 +439,15 @@ def main():
             print("[WARN] Global validation produced zero verified configs.")
             return 1
 
+        global_positions = {
+            config: position for position, config in enumerate(global_verified)
+        }
         ranked_global = sorted(
             global_verified,
             key=lambda config: global_rank(
                 config,
                 global_metadata,
-                global_verified.index(config),
+                global_positions.get(config, len(global_verified)),
             ),
         )
 
