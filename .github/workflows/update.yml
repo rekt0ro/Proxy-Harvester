@@ -123,7 +123,26 @@ jobs:
       - name: Build Light subscription
         run: |
           set +e
-          python3 scripts/polish_light.py             --all subscriptions/all.txt             --seed /tmp/proxy-harvester/previous-light.txt             --output /tmp/proxy-harvester/light.next.txt             --checker scripts/check_proxies.py             --budget 16000             --workers 24             --batch-size 100             --timeout 12             --warm-timeout 5             --target-verified 500             --final-recheck-limit 500             --final-workers 12             --final-batch-size 1             --primary-target http://cp.cloudflare.com/             --secondary-target https://www.google.com/generate_204             --selection-limit 200             --max-per-endpoint 1             --max-per-family 1
+          python3 scripts/polish_light.py \
+            --all subscriptions/all.txt \
+            --seed /tmp/proxy-harvester/previous-light.txt \
+            --output /tmp/proxy-harvester/light.next.txt \
+            --checker scripts/check_proxies.py \
+            --metadata /tmp/proxy-harvester/light.metadata.json \
+            --budget 16000 \
+            --workers 24 \
+            --batch-size 100 \
+            --timeout 12 \
+            --warm-timeout 5 \
+            --target-verified 500 \
+            --final-recheck-limit 500 \
+            --final-workers 12 \
+            --final-batch-size 1 \
+            --primary-target http://cp.cloudflare.com/ \
+            --secondary-target https://www.google.com/generate_204 \
+            --selection-limit 200 \
+            --max-per-endpoint 1 \
+            --max-per-family 1
           status=$?
           set -e
 
@@ -172,5 +191,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Harden and simplify proxy validation"
+          git commit -m "Update subscriptions"
           git push
