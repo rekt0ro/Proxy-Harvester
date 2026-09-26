@@ -33,6 +33,7 @@ const LIGHT_CANDIDATE_BUDGET: usize = 12000;
 const LIGHT_NON_VMESS_TARGET: usize = 150;
 const LIGHT_VMESS_CANDIDATE_BUDGET: usize = 750;
 const LIGHT_VMESS_SOFT_LIMIT: usize = 75;
+const EU_TEST_MAX_CANDIDATES_PER_BATCH: usize = 100;
 const GEO_PER_PROTOCOL_LIMIT: usize = 1000;
 const GEO_BATCH_SIZE: usize = 100;
 const GEO_RESOLUTION_CONCURRENCY: usize = 64;
@@ -966,6 +967,7 @@ async fn run_proxy_check_batch(
     scheme: String,
     candidates: Vec<String>,
     offset: usize,
+    chain_proxy: Option<String>,
 ) -> (String, Vec<String>) {
     let input_path = output_dir.join(format!(".proxy-test-{scheme}.txt"));
     let output_path = output_dir.join(format!(".proxy-working-{scheme}.txt"));
@@ -987,13 +989,20 @@ async fn run_proxy_check_batch(
     );
 
     let start = Instant::now();
-    let result = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(checker)
         .arg("--input").arg(&input_path)
         .arg("--output").arg(&output_path)
         .arg("--workers").arg(PROXY_TEST_WORKERS.to_string())
         .arg("--batch-size").arg(PROXY_TEST_BATCH_SIZE.to_string())
-        .arg("--timeout").arg(PROXY_TEST_TIMEOUT_SECS.to_string())
+        .arg("--timeout").arg(PROXY_TEST_TIMEOUT_SECS.to_string());
+
+    if let Some(chain_proxy) = chain_proxy {
+        command.arg("--chain-proxy").arg(chain_proxy);
+    }
+
+    let result = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1119,6 +1128,7 @@ async fn proxy_test_light(
     let mut total_verified = 0usize;
     let mut tested_candidates = 0usize;
     let mut tested_vmess_candidates = 0usize;
+    let mut eu_verified_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
 
     while tested_candidates < LIGHT_CANDIDATE_BUDGET {
         let non_vmess_verified: usize = verified_by_scheme
@@ -1183,7 +1193,7 @@ async fn proxy_test_light(
         }
 
         let batches = stream::iter(jobs.into_iter().map(|(scheme, candidates, offset)| {
-            run_proxy_check_batch(&checker, output_dir, scheme, candidates, offset)
+            run_proxy_check_batch(&checker, output_dir, scheme, candidates, offset, None)
         }))
         .buffer_unordered(PROXY_TEST_PROTOCOL_CONCURRENCY)
         .collect::<Vec<(String, Vec<String>)>>()
@@ -1194,9 +1204,9 @@ async fn proxy_test_light(
             let before = entry.len();
             let mut seen: HashSet<String> = entry.iter().cloned().collect();
 
-            for config in verified {
+            for config in &verified {
                 if seen.insert(config.clone()) {
-                    entry.push(config);
+                    entry.push(config.clone());
                 }
             }
 
@@ -1207,6 +1217,45 @@ async fn proxy_test_light(
                 "[INFO] Proxy-tested {} batch: {} new verified, {} total verified.",
                 scheme, added, total_verified
             );
+
+            if let Ok(chain_proxy) = env::var("EU_TEST_PROXY") {
+                if !chain_proxy.trim().is_empty() {
+                    let eu_candidates = verified
+                        .iter()
+                        .take(EU_TEST_MAX_CANDIDATES_PER_BATCH)
+                        .cloned()
+                        .collect::<Vec<_>>();
+
+                    if !eu_candidates.is_empty() {
+                        let (_, eu_verified) = run_proxy_check_batch(
+                            &checker,
+                            output_dir,
+                            scheme.clone(),
+                            eu_candidates,
+                            0,
+                            Some(chain_proxy),
+                        )
+                        .await;
+
+                        let eu_entry = eu_verified_by_scheme.entry(scheme.clone()).or_default();
+                        let before_eu = eu_entry.len();
+                        let mut eu_seen: HashSet<String> = eu_entry.iter().cloned().collect();
+
+                        for config in eu_verified {
+                            if eu_seen.insert(config.clone()) {
+                                eu_entry.push(config);
+                            }
+                        }
+
+                        println!(
+                            "[INFO] EU relay verification {} batch: {} new EU-reachable configs, {} total EU-reachable for protocol.",
+                            scheme,
+                            eu_entry.len() - before_eu,
+                            eu_entry.len()
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1247,7 +1296,11 @@ async fn proxy_test_light(
     let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
     let mut vmess_count = 0usize;
 
-    for pools in [&eu_by_scheme, &non_eu_by_scheme] {
+    for pools in [
+        &eu_verified_by_scheme,
+        &eu_by_scheme,
+        &non_eu_by_scheme,
+    ] {
         let mut index = 0usize;
 
         while verified.len() < LIGHT_LIMIT {
@@ -1260,6 +1313,10 @@ async fn proxy_test_light(
 
                 if let Some(config) = items.get(index) {
                     if config_scheme(config) == "vmess" && vmess_count >= LIGHT_VMESS_SOFT_LIMIT {
+                        continue;
+                    }
+
+                    if verified.iter().any(|item| item == config) {
                         continue;
                     }
 
@@ -1317,9 +1374,12 @@ async fn proxy_test_light(
         verified
             .iter()
             .filter(|config| {
-                endpoint(config)
-                    .and_then(|key| eu_by_endpoint.get(&key).copied())
-                    .unwrap_or(false)
+                eu_verified_by_scheme
+                    .values()
+                    .any(|items| items.iter().any(|item| item == *config))
+                    || endpoint(config)
+                        .and_then(|key| eu_by_endpoint.get(&key).copied())
+                        .unwrap_or(false)
             })
             .count(),
         verified.iter().filter(|config| config_scheme(config) == "vmess").count()
