@@ -96,11 +96,20 @@ jobs:
           curl -fsS --max-time 10 https://www.gstatic.com/generate_204 -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
+      - name: Preserve previous Light pool
+        run: |
+          mkdir -p /tmp/proxy-harvester
+          if [ -s subscriptions/light.txt ]; then
+            cp subscriptions/light.txt /tmp/proxy-harvester/previous-light.txt
+          else
+            : > /tmp/proxy-harvester/previous-light.txt
+          fi
+
       - name: Build
         run: |
-          # The proxy pool contains many slow-but-usable endpoints. Give the
-          # Cloudflare protocol test enough time to complete handshakes, and
-          # let it examine a much larger candidate pool before Light selection.
+          # Rust performs source collection, normalization and the cheap global
+          # TCP reachability pass. Final Light selection is done once, globally,
+          # after that pass so weak protocols cannot consume the Light quota.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("src/main.rs")
@@ -109,7 +118,8 @@ jobs:
               "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 500;": "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 3000;",
               "const PROXY_TEST_TIMEOUT_SECS: u64 = 3;": "const PROXY_TEST_TIMEOUT_SECS: u64 = 6;",
               "const PROXY_TEST_WORKERS: usize = 10;": "const PROXY_TEST_WORKERS: usize = 12;",
-              "const LIGHT_CANDIDATE_BUDGET: usize = 12000;": "const LIGHT_CANDIDATE_BUDGET: usize = 30000;",
+              "const LIGHT_CANDIDATE_BUDGET: usize = 12000;": "const LIGHT_CANDIDATE_BUDGET: usize = 0;",
+              "const GEO_PER_PROTOCOL_LIMIT: usize = 1000;": "const GEO_PER_PROTOCOL_LIMIT: usize = 0;",
           }
           for old, new in replacements.items():
               if old not in s:
@@ -119,20 +129,37 @@ jobs:
           PY
           cargo build --release
 
-      - name: Collect and test configs
+      - name: Collect and TCP-test configs
         run: ./target/release/proxy-harvester
+
+      - name: Polish Recommended Light subscription
+        run: |
+          python3 scripts/polish_light.py \
+            --all subscriptions/all.txt \
+            --seed /tmp/proxy-harvester/previous-light.txt \
+            --output subscriptions/light.txt \
+            --checker scripts/check_proxies.py \
+            --budget 16000
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("subscriptions/light.txt")
+          lines = [x.strip() for x in p.read_text().splitlines() if x.strip()]
+          if lines:
+              p.write_text("\n".join(lines[:200]) + "\n")
+          print(f"Recommended Light contains {len(lines[:200])} configs")
+          PY
 
       - name: Commit changes
         run: |
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions/ scripts/check_proxies.py .github/workflows/update.yml
+          git add subscriptions/ scripts/check_proxies.py scripts/polish_light.py .github/workflows/update.yml
 
           if git diff --cached --quiet; then
             echo "No changes."
             exit 0
           fi
 
-          git commit -m "Improve proxy verification reliability"
+          git commit -m "Polish Light with global stability-first selection"
           git push
