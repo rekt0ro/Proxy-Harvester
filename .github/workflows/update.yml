@@ -7,7 +7,6 @@ on:
 
 concurrency:
   group: update-configs
-  queue: single
   cancel-in-progress: false
 
 permissions:
@@ -29,6 +28,20 @@ jobs:
           test -n "$PROXY_SOURCES"
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -45,30 +58,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-singbox-
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-rust-
-
       - name: Cache Python packages
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-singbox2proxy
+          key: ${{ runner.os }}-pip-singbox2proxy-0.3.4
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-pip-singbox2proxy-
 
       - name: Cache sing-box binary
-        id: sing-box-cache
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/sing-box
@@ -76,20 +74,31 @@ jobs:
 
       - name: Install proxy tester
         run: |
-          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]'
+          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]==0.3.4'
           mkdir -p "$HOME/.local/bin"
+
           if [ ! -x "$HOME/.local/bin/sing-box" ]; then
             git clone --depth 1 --branch v1.14.2 https://github.com/SagerNet/sing-box.git /tmp/sing-box
             cd /tmp/sing-box
             TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
             install -m 0755 sing-box "$HOME/.local/bin/sing-box"
           fi
+
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/sing-box" version
+          "$HOME/.local/bin/sing-box" version | grep -q '1.14.2' || {
+            echo "Unexpected sing-box version"
+            exit 1
+          }
           "$HOME/.local/bin/sing-box" version | grep -q 'with_utls' || {
             echo "sing-box was built without with_utls"
             exit 1
           }
+
+      - name: Validate scripts
+        run: |
+          python3 -m py_compile scripts/check_proxies.py scripts/polish_light.py
+          git diff --check
 
       - name: Check runner network
         run: |
@@ -105,59 +114,63 @@ jobs:
             : > /tmp/proxy-harvester/previous-light.txt
           fi
 
-      - name: Build
-        run: |
-          # Rust performs source collection, normalization and the cheap global
-          # TCP reachability pass. Final global Light selection is protocol-
-          # agnostic and writes light-global.txt. A separate regional workflow
-          # can replace light.txt after validating from the target network.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("src/main.rs")
-          s = p.read_text()
-          replacements = {
-              "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 500;": "const PROXY_TEST_LIMIT_PER_PROTOCOL: usize = 3000;",
-              "const PROXY_TEST_TIMEOUT_SECS: u64 = 3;": "const PROXY_TEST_TIMEOUT_SECS: u64 = 8;",
-              "const PROXY_TEST_WORKERS: usize = 10;": "const PROXY_TEST_WORKERS: usize = 12;",
-              "const LIGHT_CANDIDATE_BUDGET: usize = 12000;": "const LIGHT_CANDIDATE_BUDGET: usize = 0;",
-              "const GEO_PER_PROTOCOL_LIMIT: usize = 1000;": "const GEO_PER_PROTOCOL_LIMIT: usize = 0;",
-          }
-          for old, new in replacements.items():
-              if old not in s:
-                  raise SystemExit(f"expected source constant not found: {old}")
-              s = s.replace(old, new, 1)
-          p.write_text(s)
-          PY
-          cargo build --release
+      - name: Build collector
+        run: cargo build --release
 
       - name: Collect and TCP-test configs
         run: ./target/release/proxy-harvester
 
-      - name: Polish global Light candidate pool
+      - name: Build Light subscription
         run: |
-          python3 scripts/polish_light.py             --all subscriptions/all.txt             --seed /tmp/proxy-harvester/previous-light.txt             --output subscriptions/light-global.txt             --checker scripts/check_proxies.py             --metadata /tmp/proxy-harvester/light-metadata.json             --budget 16000             --workers 24             --batch-size 100             --timeout 12             --warm-timeout 5             --target-verified 250             --selection-limit 200             --final-max-per-endpoint 1
-          rm -f subscriptions/light-global.txt.candidates* subscriptions/light-global.txt.verified*
+          set +e
+          python3 scripts/polish_light.py             --all subscriptions/all.txt             --seed /tmp/proxy-harvester/previous-light.txt             --output /tmp/proxy-harvester/light.next.txt             --checker scripts/check_proxies.py             --budget 16000             --workers 24             --batch-size 100             --timeout 12             --warm-timeout 5             --target-verified 500             --final-recheck-limit 500             --final-workers 12             --final-batch-size 1             --primary-target http://cp.cloudflare.com/             --secondary-target https://www.google.com/generate_204             --selection-limit 200             --max-per-endpoint 1             --max-per-family 1
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxy-harvester/light.next.txt ]; then
+            cp /tmp/proxy-harvester/light.next.txt subscriptions/light.txt
+            echo "Published refreshed Light subscription."
+          elif [ "$status" -ne 0 ]; then
+            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
+          else
+            echo "Light validation produced no configs; preserving the previous Light subscription."
+          fi
+
+      - name: Generate Base64 subscriptions
+        run: |
           python3 - <<'PY'
+          import base64
           from pathlib import Path
-          p = Path("subscriptions/light-global.txt")
-          lines = [x.strip() for x in p.read_text().splitlines() if x.strip()]
-          print(f"Global Light candidate pool contains {len(lines)} configs")
-          if not Path("subscriptions/light.txt").exists() and lines:
-              Path("subscriptions/light.txt").write_text(p.read_text())
-              print("Initialized light.txt from the global pool because no regional Light exists yet.")
+
+          for name in ("all", "light"):
+              path = Path("subscriptions") / f"{name}.txt"
+              if not path.exists():
+                  continue
+              payload = path.read_bytes().rstrip(b"\r\n")
+              encoded = base64.b64encode(payload).decode("ascii")
+              (Path("subscriptions") / f"{name}-base64.txt").write_text(
+                  encoded + "\n",
+                  encoding="ascii",
+              )
           PY
+
+      - name: Clean generated temporary files
+        if: always()
+        run: |
+          rm -rf /tmp/proxy-harvester
+          rm -f subscriptions/.*.txt subscriptions/.*.json
 
       - name: Commit changes
         run: |
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions/ scripts/check_proxies.py scripts/polish_light.py .github/workflows/update.yml
+          git add subscriptions scripts/check_proxies.py scripts/polish_light.py src/main.rs .github/workflows/update.yml README.md .gitignore
 
           if git diff --cached --quiet; then
             echo "No changes."
             exit 0
           fi
 
-          git commit -m "Split global and regional Light validation"
+          git commit -m "Harden and simplify proxy validation"
           git push
