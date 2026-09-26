@@ -199,7 +199,7 @@ jobs:
             --timeout 1 \
             --final-recheck-limit 500 \
             --final-workers 12 \
-            --final-batch-size 1 \
+            --final-batch-size 50 \
             --primary-target http://cp.cloudflare.com:80/ \
             --selection-limit 200 \
             --max-per-endpoint 1
