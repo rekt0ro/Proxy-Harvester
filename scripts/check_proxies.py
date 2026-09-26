@@ -17,6 +17,7 @@ DEFAULT_TARGETS = (
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_MEDIAN_LATENCY_MS = 3000
+DEFAULT_WARM_TIMEOUT = 5
 
 
 def load_urls(path):
@@ -26,6 +27,20 @@ def load_urls(path):
 
 def strip_fragment(url):
     return url.split("#", 1)[0]
+
+
+def configure_proxy(proxy):
+    """Disable nested automatic retries so each stability attempt is real."""
+    client = getattr(proxy, "client", None)
+    if client is None:
+        request = getattr(proxy, "request", None)
+        client = getattr(request, "__self__", None)
+    if client is None:
+        return
+    if hasattr(client, "auto_retry"):
+        client.auto_retry = False
+    if hasattr(client, "retry_times"):
+        client.retry_times = 0
 
 
 def start_group(urls, batch_size, rejected, chain_proxy=None):
@@ -51,6 +66,8 @@ def start_group(urls, batch_size, rejected, chain_proxy=None):
         return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
 
     if len(parsed) == len(urls):
+        for proxy in parsed:
+            configure_proxy(proxy)
         return [batch]
 
     batch.stop()
@@ -67,8 +84,13 @@ def check_proxy(proxy, target, timeout):
     try:
         response = proxy.get(target, timeout=timeout)
         elapsed_ms = (time.monotonic() - started) * 1000
-        if not (200 <= response.status_code < 400):
-            return False, elapsed_ms, f"HTTP {response.status_code}"
+        status = response.status_code
+        try:
+            response.close()
+        except Exception:
+            pass
+        if not (200 <= status < 400):
+            return False, elapsed_ms, f"HTTP {status}"
         return True, elapsed_ms, ""
     except Exception as exc:
         return False, (time.monotonic() - started) * 1000, str(exc)[:160]
@@ -80,7 +102,18 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=50)
-    parser.add_argument("--timeout", type=float, default=8)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=8,
+        help="Maximum time for the first/cold request.",
+    )
+    parser.add_argument(
+        "--warm-timeout",
+        type=float,
+        default=DEFAULT_WARM_TIMEOUT,
+        help="Maximum time for subsequent warm stability requests.",
+    )
     parser.add_argument("--chain-proxy", default=None)
     parser.add_argument("--metadata", default=None)
     args = parser.parse_args()
@@ -121,6 +154,7 @@ def main():
 
         latencies = collections.defaultdict(list)
         success_counts = collections.Counter()
+        attempt_counts = collections.Counter()
         active_proxies = list(proxies)
 
         for target in DEFAULT_TARGETS:
@@ -134,11 +168,25 @@ def main():
                     break
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(args.workers, len(active_proxies)))) as pool:
-                    futures = {pool.submit(check_proxy, proxy, target, args.timeout): proxy for proxy in active_proxies}
+                    request_timeout = (
+                        args.timeout
+                        if attempt == 1
+                        else min(args.timeout, args.warm_timeout)
+                    )
+                    futures = {
+                        pool.submit(
+                            check_proxy,
+                            proxy,
+                            target,
+                            request_timeout,
+                        ): proxy
+                        for proxy in active_proxies
+                    }
                     for future in concurrent.futures.as_completed(futures):
                         proxy = futures[future]
                         ok, latency_ms, _ = future.result()
                         original_url = original_by_test_url.get(proxy.url, proxy.url)
+                        attempt_counts[original_url] += 1
                         if ok:
                             success_counts[original_url] += 1
                             latencies[original_url].append(latency_ms)
@@ -155,7 +203,13 @@ def main():
                 active_proxies = remaining
 
                 stable = sum(1 for count in success_counts.values() if count >= MIN_SUCCESSFUL_TARGETS)
-                print(f"  attempt {attempt}/{STABILITY_ATTEMPTS}: {stable}/{len(proxies)} stable so far; {len(active_proxies)} still testing", flush=True)
+                print(
+                    f"  attempt {attempt}/{STABILITY_ATTEMPTS}: "
+                    f"{stable}/{len(proxies)} stable so far; "
+                    f"{len(active_proxies)} still testing; "
+                    f"timeout={request_timeout:g}s",
+                    flush=True,
+                )
 
         eligible = {}
         for url, values in latencies.items():
@@ -164,7 +218,12 @@ def main():
             median_latency = statistics.median(values)
             min_latency = min(values)
             if median_latency <= MAX_MEDIAN_LATENCY_MS:
-                eligible[url] = (median_latency, success_counts[url], min_latency)
+                eligible[url] = (
+                median_latency,
+                success_counts[url],
+                min_latency,
+                attempt_counts[url],
+            )
 
         print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and <= {MAX_MEDIAN_LATENCY_MS}ms median latency", flush=True)
 
@@ -179,16 +238,18 @@ def main():
                 handle.write(url + "\n")
 
         print(f"{len(ordered)}/{len(proxies)} verified configs with stability-tested Cloudflare reachability across {len(DEFAULT_TARGETS)} target(s)", flush=True)
-        distribution = collections.Counter(success_counts[url] for url in eligible)
+        distribution = collections.Counter(
+            (success_counts[url], attempt_counts[url]) for url in eligible
+        )
         print("success distribution:", flush=True)
-        for count, number in sorted(distribution.items()):
-            print(f"  {count}/{STABILITY_ATTEMPTS}: {number}", flush=True)
+        for (successes, attempts), number in sorted(distribution.items()):
+            print(f"  {successes}/{attempts}: {number}", flush=True)
 
         if args.metadata:
             metadata = {
                 url: {
                     "successes": success_counts[url],
-                    "attempts": STABILITY_ATTEMPTS,
+                    "attempts": eligible[url][3],
                     "median_ms": eligible[url][0],
                     "min_ms": eligible[url][2],
                 }
