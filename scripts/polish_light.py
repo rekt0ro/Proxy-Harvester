@@ -209,8 +209,8 @@ def main():
     ranked.sort()
     final = []
     for item in ranked:
-        config = item[5]
-        ep = item[6]
+        config = item[4]
+        ep = item[5]
         if ep is not None and endpoint_counts[ep] >= 2:
             continue
         final.append(config)
@@ -224,7 +224,7 @@ def main():
     if len(final) < 200:
         chosen = set(final)
         for item in ranked:
-            config = item[5]
+            config = item[4]
             if config in chosen:
                 continue
             final.append(config)
