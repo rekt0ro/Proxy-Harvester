@@ -16,7 +16,6 @@ DISCOVERY_CHUNK_SIZE = 4000
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
-DEFAULT_MAX_PER_FAMILY = 1
 PRIMARY_TARGET = "http://cp.cloudflare.com/"
 SECONDARY_TARGET = "https://www.google.com/generate_204"
 
@@ -56,56 +55,6 @@ def endpoint(config):
         return parsed.hostname.lower(), parsed.port
     except ValueError:
         return None
-
-
-def family_key(config):
-    """Group obvious aliases of the same proxy service without imposing protocol quotas."""
-    s = scheme(config)
-
-    if s == "vmess":
-        value = vmess_object(config)
-        if not value:
-            return ("invalid", config)
-        try:
-            port = int(value.get("port", 0) or 0)
-        except (TypeError, ValueError):
-            port = 0
-        return (
-            "vmess",
-            str(value.get("id", "")).lower(),
-            port,
-            str(value.get("net", "")).lower(),
-            str(value.get("tls", "")).lower(),
-            str(value.get("host", "")).lower(),
-            str(value.get("path", "")),
-        )
-
-    try:
-        parsed = urlsplit(config)
-    except ValueError:
-        return ("invalid", config)
-
-    query = {
-        key.lower(): values[0]
-        for key, values in parse_qs(parsed.query, keep_blank_values=True).items()
-        if values
-    }
-
-    user = parsed.username or ""
-    transport = query.get("type", "").lower()
-    security = query.get("security", "").lower()
-    host = query.get("host", "").lower()
-    path = query.get("path", "")
-
-    return (
-        s,
-        user,
-        parsed.port or 0,
-        transport,
-        security,
-        host,
-        path,
-    )
 
 
 def read_lines(path):
@@ -217,26 +166,18 @@ def global_rank(config, metadata, position):
     )
 
 
-def diversified(configs, limit, max_per_endpoint, max_per_family):
+def diversified(configs, limit, max_per_endpoint):
     final = []
     endpoint_counts = defaultdict(int)
-    family_counts = defaultdict(int)
 
     for config in configs:
         ep = endpoint(config)
-        family = family_key(config)
-
         if ep is not None and endpoint_counts[ep] >= max_per_endpoint:
             continue
-        if family_counts[family] >= max_per_family:
-            continue
-
         final.append(config)
 
         if ep is not None:
             endpoint_counts[ep] += 1
-        family_counts[family] += 1
-
         if len(final) >= limit:
             break
 
@@ -259,7 +200,6 @@ def main():
     parser.add_argument("--secondary-target", default=SECONDARY_TARGET)
     parser.add_argument("--selection-limit", type=int, default=DEFAULT_SELECTION_LIMIT)
     parser.add_argument("--max-per-endpoint", type=int, default=DEFAULT_MAX_PER_ENDPOINT)
-    parser.add_argument("--max-per-family", type=int, default=DEFAULT_MAX_PER_FAMILY)
     args = parser.parse_args()
 
     budget = max(1, args.budget)
@@ -435,7 +375,6 @@ def main():
             ranked_final,
             max(1, args.selection_limit),
             max(1, args.max_per_endpoint),
-            max(1, args.max_per_family),
         )
 
         if not final:
