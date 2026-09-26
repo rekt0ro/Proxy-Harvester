@@ -108,8 +108,9 @@ jobs:
       - name: Build
         run: |
           # Rust performs source collection, normalization and the cheap global
-          # TCP reachability pass. Final Light selection is done once, globally,
-          # after that pass so weak protocols cannot consume the Light quota.
+          # TCP reachability pass. Final global Light selection is protocol-
+          # agnostic and writes light-global.txt. A separate regional workflow
+          # can replace light.txt after validating from the target network.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("src/main.rs")
@@ -132,23 +133,18 @@ jobs:
       - name: Collect and TCP-test configs
         run: ./target/release/proxy-harvester
 
-      - name: Polish Recommended Light subscription
+      - name: Polish global Light candidate pool
         run: |
-          python3 scripts/polish_light.py \
-            --all subscriptions/all.txt \
-            --seed /tmp/proxy-harvester/previous-light.txt \
-            --output subscriptions/light.txt \
-            --checker scripts/check_proxies.py \
-            --metadata /tmp/proxy-harvester/light-metadata.json \
-            --budget 16000
-          rm -f subscriptions/light.txt.candidates* subscriptions/light.txt.verified*
+          python3 scripts/polish_light.py             --all subscriptions/all.txt             --seed /tmp/proxy-harvester/previous-light.txt             --output subscriptions/light-global.txt             --checker scripts/check_proxies.py             --metadata /tmp/proxy-harvester/light-metadata.json             --budget 16000             --workers 24             --batch-size 100             --timeout 12             --warm-timeout 5             --target-verified 250             --selection-limit 200             --final-max-per-endpoint 1
+          rm -f subscriptions/light-global.txt.candidates* subscriptions/light-global.txt.verified*
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("subscriptions/light.txt")
+          p = Path("subscriptions/light-global.txt")
           lines = [x.strip() for x in p.read_text().splitlines() if x.strip()]
-          if lines:
-              p.write_text("\n".join(lines[:200]) + "\n")
-          print(f"Recommended Light contains {len(lines[:200])} configs")
+          print(f"Global Light candidate pool contains {len(lines)} configs")
+          if not Path("subscriptions/light.txt").exists() and lines:
+              Path("subscriptions/light.txt").write_text(p.read_text())
+              print("Initialized light.txt from the global pool because no regional Light exists yet.")
           PY
 
       - name: Commit changes
@@ -163,5 +159,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Polish Light with global stability-first selection"
+          git commit -m "Split global and regional Light validation"
           git push
