@@ -10,9 +10,15 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::fs;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{timeout, Duration, Instant};
 use url::Url;
+use quinn::crypto::rustls::QuicClientConfig;
+use quinn::{ClientConfig as QuicClientConfig, Endpoint};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use wireguard_sans_io::{Config as WireGuardConfig, Encapsulated, EntropyError, EntropySource, Now as WireGuardNow, PresharedKey, PublicKey, Received, StaticSecret, Tunnel};
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 const TEST_CONCURRENCY: usize = 8;
@@ -98,40 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
-    let mut endpoint_groups: HashMap<(String, u16), Vec<String>> = HashMap::new();
-    let mut endpoint_representatives = Vec::new();
-    let mut transport_passthrough = Vec::new();
-
-    for config in &configs {
-        let scheme = config_scheme(config);
-
-        if matches!(scheme.as_str(), "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg") {
-            transport_passthrough.push(config.clone());
-            continue;
-        }
-
-        let Some(endpoint) = endpoint(config) else {
-            continue;
-        };
-
-        if !endpoint_groups.contains_key(&endpoint) {
-            endpoint_representatives.push(config.clone());
-        }
-        endpoint_groups
-            .entry(endpoint)
-            .or_default()
-            .push(config.clone());
-    }
-
-    let total_testable_configs: usize = endpoint_groups.values().map(Vec::len).sum();
-    println!(
-        "[INFO] TCP endpoint deduplication: {} TCP configs -> {} unique TCP endpoints; {} UDP/transport configs passed through.",
-        total_testable_configs,
-        endpoint_representatives.len(),
-        transport_passthrough.len()
-    );
-
-    let mut chunk_results = stream::iter(endpoint_representatives.chunks(CHUNK_SIZE).enumerate())
+    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
         .map(|(index, chunk)| {
             async move { test_chunk(index, format!("{index}"), chunk.to_vec()).await }
         })
@@ -142,10 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     chunk_results.sort_by_key(|(index, _)| *index);
 
     let mut ranked_working_configs = Vec::new();
-    let mut reachable_endpoints = 0usize;
+    let mut reachable_probes = 0usize;
 
     for (_, working) in chunk_results {
-        reachable_endpoints += working.len();
+        reachable_probes += working.len();
 
         for (representative, latency_ms) in working {
             let Some(endpoint_key) = endpoint(&representative) else {
@@ -159,8 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    if ranked_working_configs.is_empty() && transport_passthrough.is_empty() {
-        println!("[WARN] No usable configs remained after transport filtering and TCP reachability screening.");
+    if ranked_working_configs.is_empty() {
+        println!("[WARN] No usable configs remained after transport-aware reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
     }
@@ -208,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
     let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(
-        ranked_working_configs.len() + transport_passthrough.len(),
+        ranked_working_configs.len(),
     ));
     let mut seen = HashSet::new();
 
@@ -221,17 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    if working_configs.len() < MAX_ALL_CONFIGS {
-        transport_passthrough.sort_unstable();
-        for config in transport_passthrough {
-            if seen.insert(config.clone()) {
-                working_configs.push(config);
-                if working_configs.len() >= MAX_ALL_CONFIGS {
-                    break;
-                }
-            }
-        }
-    }
+
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
@@ -239,13 +202,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::rename(&temporary_all, &all_path).await?;
 
     println!(
-        "[INFO] Published {} configs to All, prioritizing the fastest TCP-reachable configs ({} reachable endpoints; cap {}).",
+        "[INFO] Published {} configs to All, prioritizing the fastest transport-reachable configs ({} successful probes; cap {}).",
         working_configs.len(),
-        reachable_endpoints,
+        reachable_probes,
         MAX_ALL_CONFIGS
     );
     println!(
-        "[INFO] Prepared {} TCP-reachable Light candidates (cap {}).",
+        "[INFO] Prepared {} transport-reachable Light candidates (cap {}).",
         light_candidates.len(),
         MAX_LIGHT_CANDIDATES
     );
@@ -832,25 +795,35 @@ async fn tcp_reachable(config: &str) -> bool {
     tcp_latency(config).await.is_some()
 }
 
-async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
-    let mut by_endpoint: HashMap<(String, u16), Vec<String>> = HashMap::new();
+async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
+    let mut tcp_by_endpoint: HashMap<(String, u16), Vec<String>> = HashMap::new();
+    let mut transport_configs = Vec::new();
 
     for config in configs {
+        let scheme = config_scheme(&config);
+        if matches!(scheme.as_str(), "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg") {
+            transport_configs.push(config);
+            continue;
+        }
+
         if let Some(endpoint) = endpoint(&config) {
-            by_endpoint.entry(endpoint).or_default().push(config);
+            tcp_by_endpoint
+                .entry(endpoint)
+                .or_default()
+                .push(config);
         }
     }
 
-    let endpoint_count = by_endpoint.len();
-    let config_count: usize = by_endpoint.values().map(Vec::len).sum();
-    if endpoint_count < config_count {
+    let tcp_config_count: usize = tcp_by_endpoint.values().map(Vec::len).sum();
+    if tcp_config_count > 0 {
         println!(
             "[INFO] TCP endpoint deduplication: {} configs -> {} unique endpoints.",
-            config_count, endpoint_count
+            tcp_config_count,
+            tcp_by_endpoint.len()
         );
     }
 
-    let endpoint_results = stream::iter(by_endpoint.keys().cloned())
+    let tcp_results = stream::iter(tcp_by_endpoint.keys().cloned())
         .map(|(host, port)| async move {
             tcp_latency_endpoint(&host, port)
                 .await
@@ -862,35 +835,369 @@ async fn test_tcp_configs(configs: Vec<String>) -> Vec<(String, u64)> {
         .await;
 
     let mut working = Vec::new();
-    for ((host, port), latency_ms) in endpoint_results {
-        if let Some(configs) = by_endpoint.get(&(host, port)) {
-            working.extend(configs.iter().cloned().map(|config| (config, latency_ms)));
+
+    for ((host, port), latency_ms) in tcp_results {
+        if let Some(configs) = tcp_by_endpoint.get(&(host, port)) {
+            working.extend(
+                configs
+                    .iter()
+                    .cloned()
+                    .map(|config| (config, latency_ms)),
+            );
         }
+    }
+
+    if !transport_configs.is_empty() {
+        println!(
+            "[INFO] Protocol-aware UDP probing: {} transport configs.",
+            transport_configs.len()
+        );
+
+        let udp_results = stream::iter(transport_configs)
+            .map(|config| async move {
+                let latency = transport_latency(&config).await?;
+                Some((config, latency))
+            })
+            .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
+            .filter_map(async move |result| result)
+            .collect::<Vec<_>>()
+            .await;
+
+        working.extend(udp_results);
     }
 
     working
 }
+
 async fn test_chunk(
     index: usize,
     label: String,
     configs: Vec<String>,
 ) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
     println!(
-        "[INFO] Testing chunk {}: {} configs with TCP reachability.",
+        "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
         label,
         configs.len()
     );
 
-    let working = test_tcp_configs(configs.clone()).await;
+    let working = test_transport_configs(configs.clone()).await;
 
     println!(
-        "[INFO] Chunk {} complete: {}/{} TCP reachable.",
+        "[INFO] Chunk {} complete: {}/{} transport-reachable.",
         label,
         working.len(),
         configs.len()
     );
 
     Ok((index, working))
+}
+
+#[derive(Debug)]
+struct ProbeCertVerifier;
+
+impl ServerCertVerifier for ProbeCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+fn quic_client_config(alpn: &[String]) -> Option<QuicClientConfig> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(ProbeCertVerifier))
+        .with_no_client_auth();
+
+    tls.alpn_protocols = alpn
+        .iter()
+        .map(|value| value.as_bytes().to_vec())
+        .collect();
+
+    let crypto = QuicClientConfig::try_from(tls).ok()?;
+    Some(quinn::ClientConfig::new(Arc::new(crypto)))
+}
+
+fn query_values(config: &str, key: &str) -> Vec<String> {
+    Url::parse(config)
+        .ok()
+        .map(|url| {
+            url.query_pairs()
+                .filter(|(name, _)| name.eq_ignore_ascii_case(key))
+                .map(|(_, value)| value.into_owned())
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn query_value(config: &str, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| query_values(config, key).into_iter().next())
+}
+
+fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
+    let url = Url::parse(config).ok()?;
+    let host = url.host_str()?.to_string();
+    let port = url.port()?;
+
+    if query_value(config, &["obfs"]).is_some() {
+        return None;
+    }
+
+    let sni = query_value(config, &["sni", "server_name"])
+        .unwrap_or_else(|| host.clone());
+
+    let alpn = {
+        let values = query_values(config, "alpn");
+        if values.is_empty() {
+            vec!["h3".to_string()]
+        } else {
+            values
+        }
+    };
+
+    Some((host, port, sni, alpn))
+}
+
+async fn quic_latency(config: &str) -> Option<u64> {
+    let (host, port, sni, alpn) = quic_params(config)?;
+
+    let mut addresses = timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .ok()?
+    .ok()?
+    .collect::<Vec<_>>();
+
+    addresses.sort_by_key(|address| !address.is_ipv4());
+
+    for address in addresses {
+        let local = if address.ip().is_ipv4() {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+        } else {
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+        };
+
+        let mut endpoint = Endpoint::client(local).ok()?;
+        let config = quic_client_config(&alpn)?;
+
+        let connecting = endpoint.connect_with(config, address, &sni).ok()?;
+        let start = Instant::now();
+
+        let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
+            Ok(Ok(connection)) => connection,
+            _ => {
+                endpoint.close(0u32.into(), b"probe timeout");
+                continue;
+            }
+        };
+
+        let latency = start.elapsed().as_millis() as u64;
+        connected.close(0u32.into(), b"probe complete");
+        endpoint.close(0u32.into(), b"probe complete");
+        return Some(latency);
+    }
+
+    None
+}
+
+struct OsEntropy;
+
+impl EntropySource for OsEntropy {
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), EntropyError> {
+        getrandom::fill(buf).map_err(|_| EntropyError)
+    }
+}
+
+fn wireguard_query_value(config: &str, keys: &[&str]) -> Option<String> {
+    query_value(config, keys)
+}
+
+fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
+    let encoded = wireguard_query_value(config, keys)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    bytes.try_into().ok()
+}
+
+fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
+    if let Some(key) = wireguard_key(
+        config,
+        &["privatekey", "private-key", "private_key"],
+    ) {
+        return Some(key);
+    }
+
+    let url = Url::parse(config).ok()?;
+    let username = percent_decode_str(url.username()).decode_utf8().ok()?;
+    if username.is_empty() {
+        return None;
+    }
+
+    base64::engine::general_purpose::STANDARD
+        .decode(username.as_bytes())
+        .ok()?
+        .try_into()
+        .ok()
+}
+
+async fn wireguard_latency(config: &str) -> Option<u64> {
+    let (host, port) = endpoint(config)?;
+    let private_key = wireguard_private_key(config)?;
+    let public_key = wireguard_key(
+        config,
+        &["publickey", "public-key", "public_key", "peer-public-key"],
+    )?;
+
+    let psk = wireguard_key(
+        config,
+        &["presharedkey", "preshared-key", "preshared_key", "psk"],
+    );
+
+    let mut wg_config = WireGuardConfig::new(
+        StaticSecret::from_bytes(private_key),
+        PublicKey::from_bytes(public_key),
+    );
+    if let Some(psk) = psk {
+        wg_config.psk = PresharedKey::from_bytes(psk);
+    }
+
+    let mut tunnel = Tunnel::new(wg_config).ok()?;
+    let mut addresses = timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .ok()?
+    .ok()?
+    .collect::<Vec<_>>();
+
+    addresses.sort_by_key(|address| !address.is_ipv4());
+
+    for address in addresses {
+        let local = if address.ip().is_ipv4() {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+        } else {
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+        };
+
+        let socket = UdpSocket::bind(local).await.ok()?;
+        socket.connect(address).await.ok()?;
+
+        let start = std::time::Instant::now();
+        let mut rng = OsEntropy;
+        let mut send_buf = [0u8; 256];
+        let init = tunnel
+            .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
+            .ok()?
+            .to_vec();
+
+        socket.send(&init).await.ok()?;
+
+        let deadline = start + std::time::Duration::from_secs(TCP_TIMEOUT_SECS);
+        let remote = address.to_string().into_bytes();
+        let mut recv_buf = [0u8; 2048];
+
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+
+            let remaining = deadline.duration_since(now);
+            let received = match timeout(remaining, socket.recv(&mut recv_buf)).await {
+                Ok(Ok(size)) => size,
+                _ => break,
+            };
+
+            match tunnel.decapsulate(
+                wireguard_now(start),
+                &remote,
+                false,
+                &recv_buf[..received],
+                &mut send_buf,
+                &mut rng,
+            ) {
+                Ok(Received::HandshakeComplete) => {
+                    let latency = start.elapsed().as_millis() as u64;
+                    socket.shutdown().await.ok();
+                    return Some(latency);
+                }
+                Ok(Received::CookieStored) => {
+                    let retry = tunnel
+                        .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
+                        .ok()?
+                        .to_vec();
+                    socket.send(&retry).await.ok()?;
+                }
+                Ok(Received::Reply(reply)) => {
+                    socket.send(reply).await.ok()?;
+                }
+                Ok(Received::Keepalive) | Ok(Received::Data(_)) => {}
+                Err(_) => {}
+            }
+        }
+    }
+
+    None
+}
+
+fn wireguard_now(start: std::time::Instant) -> WireGuardNow {
+    let elapsed = start.elapsed();
+    let ticks = elapsed
+        .as_secs()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::from(elapsed.subsec_nanos()));
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+
+    WireGuardNow::new(ticks, wall.as_secs(), wall.subsec_nanos())
+}
+
+async fn transport_latency(config: &str) -> Option<u64> {
+    match config_scheme(config).as_str() {
+        "hysteria" | "hysteria2" | "hy2" | "tuic" => quic_latency(config).await,
+        "wg" => wireguard_latency(config).await,
+        _ => {
+            let (host, port) = endpoint(config)?;
+            tcp_latency_endpoint(&host, port).await
+        }
+    }
 }
 
 async fn diagnose_configs(configs: &[String]) {
