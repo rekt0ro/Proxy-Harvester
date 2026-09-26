@@ -121,7 +121,6 @@ jobs:
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxy-harvester/light.next.txt \
             --checker scripts/check_proxies.py \
-            --budget 5000 \
             --workers 24 \
             --batch-size 100 \
             --timeout 1 \
