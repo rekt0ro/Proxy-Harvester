@@ -21,7 +21,6 @@ const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 1000;
-const MAX_LIGHT_CANDIDATES: usize = 5000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -169,36 +168,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         latency_a.cmp(latency_b).then_with(|| config_a.cmp(config_b))
     });
 
-    let mut light_candidates = Vec::with_capacity(
-        MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len()),
-    );
-    let mut light_candidate_endpoints = HashSet::new();
-
-    for (config, _) in &ranked_working_configs {
-        if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
-            break;
-        }
-
-        if let Some(endpoint) = endpoint(config) {
-            if light_candidate_endpoints.insert(endpoint) {
-                light_candidates.push(config.clone());
-            }
-        }
-    }
-
-    if light_candidates.len() < MAX_LIGHT_CANDIDATES {
-        let mut seen_configs = light_candidates.iter().cloned().collect::<HashSet<_>>();
-
-        for (config, _) in &ranked_working_configs {
-            if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
-                break;
-            }
-
-            if seen_configs.insert(config.clone()) {
-                light_candidates.push(config.clone());
-            }
-        }
-    }
+    let light_candidates: Vec<String> = ranked_working_configs
+        .iter()
+        .map(|(config, _)| config.clone())
+        .collect();
     let light_candidates_path = output_dir.join(".light-candidates.txt");
     let light_candidates_subscription = if light_candidates.is_empty() {
         String::new()
@@ -245,9 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         MAX_ALL_CONFIGS
     );
     println!(
-        "[INFO] Prepared {} TCP-reachable Light candidates (cap {}).",
-        light_candidates.len(),
-        MAX_LIGHT_CANDIDATES
+        "[INFO] Prepared {} TCP-reachable Light candidates.",
+        light_candidates.len()
     );
     println!("[INFO] Done.");
 
