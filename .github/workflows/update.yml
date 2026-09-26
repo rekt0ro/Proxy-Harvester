@@ -198,45 +198,6 @@ jobs:
       - name: Collect and transport-test configs
         run: ./target/release/proxy-harvester
 
-      - name: Clean obsolete caches
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
-          current_build_key="${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}"
-          current_go_key="${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}"
-          current_pip_key="${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}"
-          current_sing_box_key="${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor"
-
-          cleanup_prefix() {
-            local prefix="$1"
-            local current_key="$2"
-
-            gh cache list \
-              --repo "${GH_REPO}" \
-              --key "${prefix}" \
-              --ref refs/heads/main \
-              --limit 100 \
-              --json id,key \
-              --jq ".[] | select(.key != ${current_key@Q}) | .id" |
-            while read -r cache_id; do
-              [ -z "${cache_id}" ] && continue
-              echo "Deleting obsolete cache ${cache_id} (${prefix}*)"
-              gh api --method DELETE "/repos/${GH_REPO}/actions/caches/${cache_id}"
-            done
-          }
-
-          cleanup_prefix "${{ runner.os }}-cargo-registry-" "${current_registry_key}"
-          cleanup_prefix "${{ runner.os }}-cargo-build-" "${current_build_key}"
-          cleanup_prefix "${{ runner.os }}-go-singbox-" "${current_go_key}"
-          cleanup_prefix "${{ runner.os }}-pip-singbox2proxy-" "${current_pip_key}"
-          cleanup_prefix "${{ runner.os }}-sing-box-" "${current_sing_box_key}"
-
       - name: Build Light subscription
         run: |
           set +e
@@ -283,6 +244,49 @@ jobs:
                   encoding="ascii",
               )
           PY
+
+      - name: Clean obsolete caches
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
+          current_build_key="${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}"
+          current_go_key="${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}"
+          current_pip_key="${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}"
+          current_sing_box_key="${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor"
+
+          cleanup_prefix() {
+            local prefix="$1"
+            local current_key="$2"
+
+            gh cache list \
+              --repo "${GH_REPO}" \
+              --key "${prefix}" \
+              --ref refs/heads/main \
+              --limit 100 \
+              --json id,key \
+              --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r cache_id cache_key; do
+              [ -z "${cache_id}" ] && continue
+              if [ "${cache_key}" = "${current_key}" ]; then
+                continue
+              fi
+              echo "Deleting obsolete cache ${cache_id} (${cache_key})"
+              gh api --method DELETE "/repos/${GH_REPO}/actions/caches/${cache_id}"
+            done
+          }
+
+          cleanup_prefix "${{ runner.os }}-cargo-registry-" "${current_registry_key}"
+          cleanup_prefix "${{ runner.os }}-cargo-build-" "${current_build_key}"
+          cleanup_prefix "${{ runner.os }}-go-singbox-" "${current_go_key}"
+          cleanup_prefix "${{ runner.os }}-pip-singbox2proxy-" "${current_pip_key}"
+          cleanup_prefix "${{ runner.os }}-sing-box-" "${current_sing_box_key}"
 
       - name: Clean generated temporary files
         if: always()
