@@ -26,7 +26,11 @@ jobs:
           set -euo pipefail
 
           mapfile -t prs < <(
-            gh pr list               --repo "${GITHUB_REPOSITORY}"               --state open               --json number,author,isDraft               --jq '.[] | select(.author.login == "dependabot[bot]" and .isDraft == false) | .number'
+            gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --json number,author,isDraft \
+              --jq '.[] | select(.author.login == "dependabot[bot]" and .isDraft == false) | .number'
           )
 
           if [ "${#prs[@]}" -eq 0 ]; then
@@ -38,7 +42,10 @@ jobs:
             echo "Inspecting Dependabot PR #${pr}"
 
             mapfile -t files < <(
-              gh pr view "${pr}"                 --repo "${GITHUB_REPOSITORY}"                 --json files                 --jq '.files[].path'
+              gh pr view "${pr}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json files \
+                --jq '.files[].path'
             )
 
             if [ "${#files[@]}" -eq 0 ]; then
@@ -79,5 +86,8 @@ jobs:
             fi
 
             echo "All reported checks passed for PR #${pr}; merging."
-            gh pr merge "${pr}"               --repo "${GITHUB_REPOSITORY}"               --squash               --delete-branch
+            gh pr merge "${pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --squash \
+              --delete-branch
           done
