@@ -46,7 +46,7 @@ VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS
 
 ## Validation model
 
-The GitHub-hosted workflow is intentionally self-contained. It uses the hosted runner only and does not require a personal machine, self-hosted runner, VPS, or other private infrastructure.
+The GitHub-hosted workflow is intentionally self-contained. It uses hosted Actions infrastructure and does not require a personal machine, VPS, or other private infrastructure.
 
 The validation pipeline is:
 
