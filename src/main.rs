@@ -781,6 +781,161 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+
+fn client_compatibility_score(config: &str) -> i32 {
+    let scheme = config_scheme(config);
+
+    if scheme == "vmess" {
+        let Some(encoded) = config.split_once("://").and_then(|(_, rest)| rest.split('#').next()) else {
+            return 0;
+        };
+        let Some(decoded) = decode_vmess_payload(encoded.trim()) else {
+            return 0;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&decoded) else {
+            return 0;
+        };
+
+        let net = value
+            .get("net")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let tls = value
+            .get("tls")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("tls");
+        let host = value.get("host").and_then(Value::as_str).unwrap_or_default().trim();
+        let sni = value.get("sni").and_then(Value::as_str).unwrap_or_default().trim();
+        let path = value.get("path").and_then(Value::as_str).unwrap_or_default().trim();
+
+        let mut score = 0;
+        if net == "ws" {
+            score += 2;
+        }
+        if tls {
+            score += 2;
+        }
+        if !host.is_empty() {
+            score += 1;
+        }
+        if !sni.is_empty() {
+            score += 1;
+        }
+        if !host.is_empty() && host.eq_ignore_ascii_case(sni) {
+            score += 2;
+        }
+        if !path.is_empty() {
+            score += 1;
+        }
+        if value
+            .get("add")
+            .and_then(Value::as_str)
+            .is_some_and(|add| add.parse::<std::net::IpAddr>().is_ok())
+            && !sni.is_empty()
+        {
+            score += 1;
+        }
+        return score;
+    }
+
+    let Ok(url) = Url::parse(config) else {
+        return 0;
+    };
+
+    let query = |key: &str| {
+        url.query_pairs()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_default()
+    };
+
+    let transport = query("type").to_ascii_lowercase();
+    let security = query("security").to_ascii_lowercase();
+    let host = query("host");
+    let sni = query("sni");
+    let path = query("path");
+    let port = url.port().unwrap_or(0);
+
+    let mut score = 0;
+
+    match scheme.as_str() {
+        "vless" | "trojan" => {
+            if transport == "ws" {
+                score += 2;
+            }
+            if security == "tls" {
+                score += 2;
+            }
+            if transport == "grpc" {
+                score += 1;
+            }
+            if transport == "httpupgrade" {
+                score += 1;
+            }
+            if transport == "xhttp" {
+                score -= 1;
+            }
+            if !host.is_empty() {
+                score += 1;
+            }
+            if !sni.is_empty() {
+                score += 1;
+            }
+            if !host.is_empty() && host.eq_ignore_ascii_case(&sni) {
+                score += 2;
+            }
+            if !path.is_empty() && path != "/" {
+                score += 1;
+            }
+            if url.host_str()
+                .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                .is_some()
+                && !sni.is_empty()
+            {
+                score += 1;
+            }
+            if query("flow").is_empty() && transport == "ws" {
+                score += 1;
+            }
+            if query("allowInsecure") == "1"
+                || query("allowInsecure").eq_ignore_ascii_case("true")
+                || query("insecure") == "1"
+                || query("insecure").eq_ignore_ascii_case("true")
+            {
+                score -= 1;
+            }
+        }
+        "hysteria2" | "hy2" => {
+            if !sni.is_empty() {
+                score += 2;
+            }
+            if security == "tls" {
+                score += 1;
+            }
+            if !query("insecure").eq_ignore_ascii_case("1")
+                && !query("insecure").eq_ignore_ascii_case("true")
+            {
+                score += 1;
+            }
+            if query("obfs").eq_ignore_ascii_case("salamander") {
+                score += 1;
+            }
+        }
+        "ss" => {
+            score += 1;
+        }
+        _ => {}
+    }
+
+    if matches!(port, 443 | 2053 | 2083 | 2087 | 2096 | 8443) {
+        score += 1;
+    }
+
+    score
+}
+
 fn light_candidate_supported(config: &str) -> bool {
     let scheme = config_scheme(config);
 
@@ -1357,10 +1512,11 @@ async fn proxy_test_light(
     let mut prioritized_by_scheme = by_scheme.clone();
     for (scheme, configs) in prioritized_by_scheme.iter_mut() {
         configs.sort_by_key(|(config, latency_ms)| {
+            let compatibility = client_compatibility_score(config);
             let is_eu = endpoint(config)
                 .and_then(|key| eu_by_endpoint.get(&key).copied())
                 .unwrap_or(false);
-            (!is_eu, *latency_ms)
+            (std::cmp::Reverse(compatibility), !is_eu, *latency_ms)
         });
 
         let eu_count = configs
@@ -1520,10 +1676,12 @@ async fn proxy_test_light(
             let is_eu = endpoint(config)
                 .and_then(|key| eu_by_endpoint.get(&key).copied())
                 .unwrap_or(false);
+            let compatibility = client_compatibility_score(config);
             let latency_ms = candidate_latency.get(config).copied().unwrap_or(u64::MAX);
 
             (
                 std::cmp::Reverse(regional_score),
+                std::cmp::Reverse(compatibility),
                 !is_eu,
                 latency_ms,
                 config.clone(),
