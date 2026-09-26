@@ -212,7 +212,6 @@ jobs:
             --final-workers 12 \
             --final-batch-size 1 \
             --primary-target http://cp.cloudflare.com:80/ \
-            --secondary-target https://www.google.com/generate_204 \
             --selection-limit 200 \
             --max-per-endpoint 1
           status=$?
