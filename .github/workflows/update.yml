@@ -123,7 +123,7 @@ jobs:
             --checker scripts/check_proxies.py \
             --workers 24 \
             --batch-size 100 \
-            --timeout 1 \
+            --timeout 5 \
             --final-recheck-limit 500 \
             --final-workers 12 \
             --final-batch-size 1 \
