@@ -13,7 +13,7 @@ SUPPORTED = {"vmess", "vless", "trojan", "ss", "hysteria", "hysteria2", "hy2", "
 DEFAULT_BUDGET = 16000
 MAX_PER_ENDPOINT = 4
 TEST_CHUNK_SIZE = 4000
-TARGET_VERIFIED = 300
+TARGET_VERIFIED = 250
 
 
 def scheme(config):
@@ -94,6 +94,17 @@ def build_candidates(all_configs, seed_configs, budget):
 
     def add(config):
         if config in seen or scheme(config) not in SUPPORTED:
+            return False
+        try:
+            parsed = urlsplit(config)
+            query = {
+                key.lower(): values[0].lower()
+                for key, values in parse_qs(parsed.query).items()
+                if values
+            }
+            if query.get("flow", "") in {"xtls-rprx-direct-udp443", "xtls-rprx-origin"}:
+                return False
+        except Exception:
             return False
         ep = endpoint(config)
         if ep is None or endpoint_counts[ep] >= MAX_PER_ENDPOINT:
