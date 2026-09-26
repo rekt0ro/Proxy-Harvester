@@ -24,7 +24,7 @@ Light validation uses a broad first pass followed by an individual per-profile r
 
 ### All
 
-All configurations whose endpoints pass the collector's TCP reachability prefilter:
+Broad pool after normalization and transport-aware endpoint screening:
 
 ```text
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
@@ -36,7 +36,7 @@ Base64:
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
 ```
 
-The All subscription is a broad reachability pool, not a guarantee that every individual protocol profile is usable end-to-end.
+The All subscription is a broad candidate pool. TCP-based endpoints pass a cheap TCP reachability screen; UDP/QUIC-style protocols pass through to protocol-level validation.
 
 Both plain-text and Base64 formats are provided for compatibility with different clients.
 
