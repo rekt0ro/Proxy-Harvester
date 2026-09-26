@@ -11,7 +11,7 @@ import tempfile
 from collections import defaultdict
 from urllib.parse import parse_qs, urlsplit
 
-DEFAULT_BUDGET = 16000
+DEFAULT_BUDGET = 5000
 DISCOVERY_CHUNK_SIZE = 4000
 TARGET_GLOBAL_VERIFIED = 500
 FINAL_RECHECK_LIMIT = 500
