@@ -781,8 +781,8 @@ async fn tcp_latency(config: &str) -> Option<u64> {
     let (host, port) = endpoint(config)?;
     tcp_latency_endpoint(&host, port).await
 }
-async fn tcp_reachable(config: &str) -> bool {
-    tcp_latency(config).await.is_some()
+async fn transport_reachable(config: &str) -> bool {
+    transport_latency(config).await.is_some()
 }
 
 async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
@@ -1207,7 +1207,7 @@ async fn diagnose_configs(configs: &[String]) {
         }
     }
 
-    println!("[DIAG] TCP testing {} protocol samples.", samples.len());
+    println!("[DIAG] Transport testing {} protocol samples.", samples.len());
 
     for (index, config) in samples.iter().enumerate() {
         println!(
@@ -1217,8 +1217,8 @@ async fn diagnose_configs(configs: &[String]) {
             config
         );
         println!(
-            "[DIAG] TCP result: {}",
-            if tcp_reachable(config).await { "PASS" } else { "FAIL" }
+            "[DIAG] Transport result: {}",
+            if transport_reachable(config).await { "PASS" } else { "FAIL" }
         );
     }
 }
