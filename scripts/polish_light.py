@@ -203,7 +203,7 @@ def main():
     parser.add_argument("--checker", required=True)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=100)
-    parser.add_argument("--timeout", type=float, default=5)
+    parser.add_argument("--timeout", type=float, default=1)
     parser.add_argument("--final-recheck-limit", type=int, default=FINAL_RECHECK_LIMIT)
     parser.add_argument("--final-workers", type=int, default=12)
     parser.add_argument("--final-batch-size", type=int, default=1)
