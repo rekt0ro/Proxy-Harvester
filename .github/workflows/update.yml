@@ -182,4 +182,5 @@ jobs:
           fi
 
           git commit -m "Update subscriptions"
+          git pull --rebase origin main
           git push
