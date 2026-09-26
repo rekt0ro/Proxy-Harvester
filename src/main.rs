@@ -14,7 +14,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{timeout, Duration, Instant};
 use url::Url;
 use quinn::crypto::rustls::QuicClientConfig;
-use quinn::{ClientConfig as QuicClientConfig, Endpoint};
+use quinn::Endpoint;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -1007,6 +1007,16 @@ async fn quic_latency(config: &str) -> Option<u64> {
     addresses.sort_by_key(|address| !address.is_ipv4());
 
     for address in addresses {
+        let mut wg_config = WireGuardConfig::new(
+            StaticSecret::from_bytes(private_key),
+            PublicKey::from_bytes(public_key),
+        );
+        if let Some(psk) = psk {
+            wg_config.psk = PresharedKey::from_bytes(psk);
+        }
+
+        let mut tunnel = Tunnel::new(wg_config).ok()?;
+
         let local = if address.ip().is_ipv4() {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
         } else {
@@ -1088,15 +1098,6 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
         &["presharedkey", "preshared-key", "preshared_key", "psk"],
     );
 
-    let mut wg_config = WireGuardConfig::new(
-        StaticSecret::from_bytes(private_key),
-        PublicKey::from_bytes(public_key),
-    );
-    if let Some(psk) = psk {
-        wg_config.psk = PresharedKey::from_bytes(psk);
-    }
-
-    let mut tunnel = Tunnel::new(wg_config).ok()?;
     let mut addresses = timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
         tokio::net::lookup_host((host.as_str(), port)),
@@ -1154,7 +1155,6 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
             ) {
                 Ok(Received::HandshakeComplete) => {
                     let latency = start.elapsed().as_millis() as u64;
-                    socket.shutdown().await.ok();
                     return Some(latency);
                 }
                 Ok(Received::CookieStored) => {
