@@ -31,7 +31,7 @@ def strip_fragment(url):
     return url.split("#", 1)[0]
 
 
-def start_group(urls, batch_size, rejected):
+def start_group(urls, batch_size, rejected, chain_proxy=None):
     """Start a group, recursively isolating configs that poison a sing-box batch."""
     if not urls:
         return []
@@ -40,6 +40,7 @@ def start_group(urls, batch_size, rejected):
         batch = SingBoxBatch(
             urls,
             batch_size=batch_size,
+            chain_proxy=chain_proxy,
             log_level="error",
         )
     except Exception as exc:
@@ -48,8 +49,8 @@ def start_group(urls, batch_size, rejected):
             return []
         midpoint = len(urls) // 2
         return (
-            start_group(urls[:midpoint], batch_size, rejected)
-            + start_group(urls[midpoint:], batch_size, rejected)
+            start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
+            + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
         )
 
     try:
@@ -104,6 +105,7 @@ def main():
     parser.add_argument("--workers", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--timeout", type=float, default=8)
+    parser.add_argument("--chain-proxy", default=None)
     args = parser.parse_args()
 
     original_urls = load_urls(args.input)
@@ -129,7 +131,9 @@ def main():
 
     try:
         for group in groups:
-            batches.extend(start_group(group, max(1, args.batch_size), rejected))
+            batches.extend(
+            start_group(group, max(1, args.batch_size), rejected, args.chain_proxy)
+        )
 
         proxies = [proxy for batch in batches for proxy in batch]
         print(
