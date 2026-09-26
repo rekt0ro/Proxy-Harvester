@@ -21,6 +21,7 @@ const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 1000;
+const MAX_LIGHT_CANDIDATES: usize = 5000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -168,6 +169,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         latency_a.cmp(latency_b).then_with(|| config_a.cmp(config_b))
     });
 
+    let light_candidates: Vec<String> = ranked_working_configs
+        .iter()
+        .take(MAX_LIGHT_CANDIDATES)
+        .map(|(config, _)| config.clone())
+        .collect();
+    let light_candidates_path = output_dir.join(".light-candidates.txt");
+    let light_candidates_subscription = if light_candidates.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", light_candidates.join("\n"))
+    };
+    fs::write(&light_candidates_path, light_candidates_subscription).await?;
+
     let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(
         ranked_working_configs.len() + transport_passthrough.len(),
     ));
@@ -200,10 +214,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::rename(&temporary_all, &all_path).await?;
 
     println!(
-        "[INFO] Published {} configs, prioritizing the fastest TCP-reachable endpoints ({} reachable endpoints; cap {}).",
+        "[INFO] Published {} configs to All, prioritizing the fastest TCP-reachable configs ({} reachable endpoints; cap {}).",
         working_configs.len(),
         reachable_endpoints,
         MAX_ALL_CONFIGS
+    );
+    println!(
+        "[INFO] Prepared {} TCP-reachable Light candidates (cap {}).",
+        light_candidates.len(),
+        MAX_LIGHT_CANDIDATES
     );
     println!("[INFO] Done.");
 
