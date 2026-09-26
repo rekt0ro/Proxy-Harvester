@@ -78,8 +78,8 @@ def start_group(urls, batch_size, rejected, chain_proxy=None):
 
     midpoint = len(urls) // 2
     return (
-        start_group(urls[:midpoint], batch_size, rejected)
-        + start_group(urls[midpoint:], batch_size, rejected)
+        start_group(urls[:midpoint], batch_size, rejected, chain_proxy)
+        + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
     )
 
 
