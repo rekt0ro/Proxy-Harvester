@@ -984,7 +984,7 @@ async fn run_proxy_check_batch(
 
     let _ = fs::remove_file(&output_path).await;
     println!(
-        "[INFO] Proxy-testing {} {} candidates (offset {}..{}) until {} verified configs are reached.",
+        "[INFO] Proxy-testing {} {} candidates (offset {}..{}) toward a balanced Light pool.",
         scheme,
         candidates.len(),
         offset,
