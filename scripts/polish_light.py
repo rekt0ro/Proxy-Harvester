@@ -11,7 +11,6 @@ import tempfile
 from collections import defaultdict
 from urllib.parse import urlsplit
 
-DEFAULT_BUDGET = 5000
 DISCOVERY_CHUNK_SIZE = 4000
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
@@ -60,27 +59,17 @@ def endpoint(config):
 def read_lines(path):
     try:
         with open(path, encoding="utf-8") as handle:
-            return [line.strip() for line in handle if line.strip()]
+            lines = [line.strip() for line in handle if line.strip()]
     except FileNotFoundError:
         return []
 
-
-def build_candidates(candidate_configs, budget):
-    selected = []
+    unique = []
     seen = set()
-
-    for config in candidate_configs:
-        config = config.strip()
-        if not config or config in seen:
-            continue
-
-        seen.add(config)
-        selected.append(config)
-
-        if len(selected) >= budget:
-            break
-
-    return selected
+    for config in lines:
+        if config not in seen:
+            seen.add(config)
+            unique.append(config)
+    return unique
 
 
 def write_lines(path, values):
@@ -212,7 +201,6 @@ def main():
     parser.add_argument("--candidates", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--checker", required=True)
-    parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=1)
@@ -225,11 +213,7 @@ def main():
     parser.add_argument("--max-per-endpoint", type=int, default=DEFAULT_MAX_PER_ENDPOINT)
     args = parser.parse_args()
 
-    budget = max(1, args.budget)
-    candidates = build_candidates(
-        read_lines(args.candidates),
-        budget,
-    )
+    candidates = read_lines(args.candidates)
 
     if not candidates:
         print("[WARN] No Light candidates available.")
