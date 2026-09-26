@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::rename(&temporary_all, &all_path).await?;
 
     println!(
-        "[INFO] Published {} configs to All, prioritizing the fastest transport-reachable configs ({} successful probes; cap {}).",
+        "[INFO] Published {} configs to All, prioritizing the fastest transport-reachable configs ({} reachable configs; cap {}).",
         working_configs.len(),
         reachable_probes,
         MAX_ALL_CONFIGS
@@ -1039,17 +1039,18 @@ impl EntropySource for OsEntropy {
 
 fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
     let encoded = query_value(config, keys)?;
-    let mut bytes = STANDARD.decode(encoded.as_bytes()).ok()?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    Some(bytes.try_into().ok()?)
+    let decoded = STANDARD
+        .decode(encoded.as_bytes())
+        .or_else(|_| URL_SAFE_NO_PAD.decode(encoded.as_bytes()))
+        .ok()?;
+
+    decoded.try_into().ok()
 }
 
 fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
     if let Some(key) = wireguard_key(
         config,
-        &["privatekey", "private-key", "private_key"],
+        &["privatekey", "private-key", "private_key", "private_key_base64"],
     ) {
         return Some(key);
     }
@@ -1060,13 +1061,12 @@ fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
         return None;
     }
 
-    let mut bytes = STANDARD
+    let decoded = STANDARD
         .decode(username.as_bytes())
+        .or_else(|_| URL_SAFE_NO_PAD.decode(username.as_bytes()))
         .ok()?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    Some(bytes.try_into().ok()?)
+
+    decoded.try_into().ok()
 }
 
 async fn wireguard_latency(config: &str) -> Option<u64> {
@@ -1074,7 +1074,7 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
     let private_key = wireguard_private_key(config)?;
     let public_key = wireguard_key(
         config,
-        &["publickey", "public-key", "public_key", "peer-public-key"],
+        &["publickey", "public-key", "public_key", "peer-public-key", "peer_public_key", "pubkey"],
     )?;
 
     let psk = wireguard_key(
