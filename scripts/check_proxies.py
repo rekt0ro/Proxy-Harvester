@@ -2,12 +2,15 @@
 """Protocol-level proxy checker using the same Cloudflare URL used by Throne."""
 
 import argparse
+import base64
 import collections
 import concurrent.futures
 import json
 import logging
+import socket
 import statistics
 import time
+from urllib.parse import urlsplit
 
 from singbox2proxy import SingBoxBatch
 
@@ -25,6 +28,8 @@ STABILITY_ATTEMPTS = 3
 MAX_MEDIAN_LATENCY_MS = 3000
 DEFAULT_WARM_TIMEOUT = 5
 
+TCP_SCHEMES = {"vmess", "vless", "trojan", "ss", "socks", "socks5", "socks5h"}
+
 
 def load_urls(path):
     with open(path, encoding="utf-8") as handle:
@@ -33,6 +38,86 @@ def load_urls(path):
 
 def strip_fragment(url):
     return url.split("#", 1)[0]
+
+
+def endpoint(url):
+    scheme = url.split("://", 1)[0].lower()
+    if scheme == "vmess":
+        try:
+            raw = url.split("://", 1)[1].split("#", 1)[0]
+            raw += "=" * (-len(raw) % 4)
+            obj = json.loads(base64.urlsafe_b64decode(raw).decode())
+            host = str(obj.get("add", "")).strip()
+            port = int(obj.get("port", 0))
+            if host and port:
+                return host, port
+        except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return None
+
+    try:
+        parsed = urlsplit(url)
+        if parsed.hostname and parsed.port:
+            return parsed.hostname, parsed.port
+    except ValueError:
+        pass
+    return None
+
+
+def tcp_prefilter(urls, timeout, workers):
+    """Drop TCP proxy URLs whose endpoint cannot accept a TCP connection.
+
+    This is a safe prefilter: a failed TCP connect means a TCP-based proxy
+    cannot establish its proxy session. UDP/QUIC protocols are left untouched.
+    Each endpoint is probed once even when several configs share it.
+    """
+    endpoint_to_urls = collections.defaultdict(list)
+    passthrough = []
+
+    for url in urls:
+        scheme = url.split("://", 1)[0].lower()
+        if scheme not in TCP_SCHEMES:
+            passthrough.append(url)
+            continue
+        ep = endpoint(url)
+        if ep is None:
+            continue
+        endpoint_to_urls[ep].append(url)
+
+    def probe(ep):
+        host, port = ep
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return ep, True, ""
+        except OSError as exc:
+            return ep, False, str(exc)[:120]
+
+    reachable = set()
+    failures = 0
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, min(workers, len(endpoint_to_urls) or 1))
+    ) as pool:
+        futures = [pool.submit(probe, ep) for ep in endpoint_to_urls]
+        for future in concurrent.futures.as_completed(futures):
+            ep, ok, _ = future.result()
+            if ok:
+                reachable.add(ep)
+            else:
+                failures += 1
+
+    filtered = passthrough[:]
+    for ep, ep_urls in endpoint_to_urls.items():
+        if ep in reachable:
+            filtered.extend(ep_urls)
+
+    print(
+        f"TCP prefilter: {len(urls)} input URLs -> {len(filtered)} URLs; "
+        f"{len(endpoint_to_urls)} unique TCP endpoints, "
+        f"{len(reachable)} reachable, {failures} unreachable; "
+        f"UDP/QUIC URLs passed through {len(passthrough)}",
+        flush=True,
+    )
+    return filtered
 
 
 def configure_proxy(proxy):
@@ -80,7 +165,6 @@ def start_group(urls, batch_size, rejected, chain_proxy=None):
     if len(urls) == 1:
         rejected.append((urls[0], f"sing-box accepted {len(parsed)}/1 proxy handles"))
         return []
-
     midpoint = len(urls) // 2
     return start_group(urls[:midpoint], batch_size, rejected, chain_proxy) + start_group(urls[midpoint:], batch_size, rejected, chain_proxy)
 
@@ -122,6 +206,11 @@ def main():
     )
     parser.add_argument("--chain-proxy", default=None)
     parser.add_argument("--metadata", default=None)
+    parser.add_argument(
+        "--tcp-prefilter",
+        action="store_true",
+        help="Before sing-box validation, drop TCP configs whose endpoint cannot accept TCP connections.",
+    )
     args = parser.parse_args()
 
     original_urls = load_urls(args.input)
@@ -137,6 +226,13 @@ def main():
         if test_url not in original_by_test_url:
             original_by_test_url[test_url] = original
             test_urls.append(test_url)
+
+    if args.tcp_prefilter:
+        test_urls = tcp_prefilter(
+            test_urls,
+            timeout=3.0,
+            workers=max(1, min(args.workers, 50)),
+        )
 
     rejected = []
     batches = []
@@ -225,16 +321,14 @@ def main():
             min_latency = min(values)
             if median_latency <= MAX_MEDIAN_LATENCY_MS:
                 eligible[url] = (
-                median_latency,
-                success_counts[url],
-                min_latency,
-                attempt_counts[url],
-            )
+                    median_latency,
+                    success_counts[url],
+                    min_latency,
+                    attempt_counts[url],
+                )
 
         print(f"  {len(eligible)}/{len(latencies)} verified configs meet {MIN_SUCCESSFUL_TARGETS}/{STABILITY_ATTEMPTS} successful attempts and <= {MAX_MEDIAN_LATENCY_MS}ms median latency", flush=True)
 
-        # Reliability comes before raw latency. A repeatable 3/3 proxy is
-        # preferred over a faster proxy that failed one of its three probes.
         ordered = sorted(
             eligible,
             key=lambda url: (-eligible[url][1], eligible[url][0], eligible[url][2], url),
