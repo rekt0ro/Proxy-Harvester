@@ -22,7 +22,7 @@ DEFAULT_TARGETS = (
 
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
-MAX_LATENCY_MS = 400
+MAX_LATENCY_MS = 600
 
 
 def load_urls(path):
@@ -109,7 +109,7 @@ def main():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=5,
+        default=1,
         help="Maximum time allowed for each validation request.",
     )
     parser.add_argument("--metadata", default=None)
