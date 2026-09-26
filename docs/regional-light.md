@@ -1,35 +1,81 @@
 # Regional Light validation
 
-The global GitHub-hosted workflow validates proxies from the GitHub runner network. That is useful as a broad prefilter but it is not equivalent to validating from a user's ISP.
+GitHub-hosted Actions provide a useful global proxy prefilter, but that network is not equivalent to the network where users consume the subscription. The regional Light workflow therefore runs the final Light validation on an external probe machine in the target region.
 
-The regional workflow therefore runs on a self-hosted GitHub Actions runner located on the target network. It writes the network-specific result to `subscriptions/light-regional.txt` and publishes the same result as `subscriptions/light.txt`.
+The current design uses an Iranian VPS or other dedicated Iranian probe that is reached over SSH from GitHub Actions. Your personal Fedora machine is not used as a GitHub runner.
 
-## Runner requirements
+## Regional probe requirements
 
-Register the runner with these labels:
+The probe machine should have:
 
-- `self-hosted`
-- `linux`
-- `x64`
-- `proxy-harvester-regional`
+- Linux x86_64
+- Python 3 with `venv` support
+- `sing-box 1.14.2` available as `sing-box`
+- outbound Internet access to the public proxy endpoints
+- an SSH account that GitHub Actions can use
+- a network location in Iran that is reasonably representative of the target users
 
-The runner must have:
+The workflow installs the pinned `singbox2proxy==0.3.4` package into an isolated virtual environment on each run.
 
-- Python 3
-- sing-box 1.14.2 available as `sing-box`
-- normal outbound Internet access
+## GitHub Actions secrets
 
-The workflow creates its own temporary Python virtual environment and installs `singbox2proxy[socks]` on each run.
+Create these repository Actions secrets:
 
-## Public-repository security
+- `REGIONAL_SSH_HOST`: hostname or IP address of the Iranian probe
+- `REGIONAL_SSH_USER`: dedicated SSH username
+- `REGIONAL_SSH_KEY`: private ED25519 key used only for this probe
+- `REGIONAL_SSH_KNOWN_HOSTS`: the exact known-hosts line for the probe
+- `REGIONAL_SSH_PORT`: optional SSH port; defaults to `22`
 
-Because this repository is public, a self-hosted runner should not be treated like an ordinary personal shell. Keep it isolated and run it under a dedicated account with only the permissions it needs. Do not store unrelated credentials, SSH keys, browser profiles, or other sensitive material on the runner.
+Generate the key on a trusted machine, not inside GitHub Actions:
 
-The regional workflow intentionally only runs from the repository's configured branch. Review workflow changes before they are merged or otherwise made runnable on the regional runner.
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/proxy-harvester-regional -C proxy-harvester-regional
+```
+
+Install the public key in the probe account's `~/.ssh/authorized_keys`. Obtain the host key separately and store its exact line as `REGIONAL_SSH_KNOWN_HOSTS`, for example:
+
+```bash
+ssh-keyscan -H YOUR_PROBE_HOST
+```
+
+Verify the fingerprint through your VPS provider or console before saving it as a secret. Do not use `StrictHostKeyChecking=no`.
+
+The private key should belong only to the dedicated probe account. Do not reuse a personal SSH key.
+
+## Workflow behavior
+
+The normal `Update Configs` workflow still runs on GitHub-hosted infrastructure and produces `subscriptions/light-global.txt`.
+
+After a successful global run, `Update Regional Light` starts automatically. It copies `subscriptions/all.txt` and the validator scripts to the Iranian probe, then runs:
+
+```text
+TCP prefilter
+    ↓
+individual sing-box validation
+    ↓
+2 of 3 successful requests
+    ↓
+12s cold / 5s warm timeout
+    ↓
+hard one-config-per-endpoint Light selection
+    ↓
+subscriptions/light.txt
+```
+
+If the regional run produces fewer than 200 verified configs, it publishes fewer than 200. It never pads the subscription with unverified entries.
+
+If the regional probe is not configured, the regional workflow exits cleanly and leaves `light.txt` unchanged.
+
+## Security
+
+The probe is not a GitHub Actions runner. GitHub only connects to it over SSH for the specific validation job.
+
+Still use a dedicated, minimally privileged account and a dedicated machine. Do not keep personal credentials, SSH keys, browser profiles, or unrelated data on the probe. Because the repository is public, treat workflow changes on `main` as code that can eventually be executed on the probe.
 
 ## Manual local equivalent
 
-The same regional selection can be tested directly from the target machine:
+The exact regional validation can still be tested from an Iranian machine:
 
 ```bash
 python3 scripts/polish_light.py \
@@ -48,5 +94,3 @@ python3 scripts/polish_light.py \
   --final-max-per-endpoint 1 \
   --tcp-prefilter
 ```
-
-The output contains only configs that actually pass the protocol-level stability test from that network. It may contain fewer than 200 configs. That is intentional: unverified entries are never added just to fill the subscription.
