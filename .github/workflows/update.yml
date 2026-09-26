@@ -31,16 +31,52 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust dependencies and build
-        uses: actions/cache@v6
+      - name: Restore Rust registry cache
+        id: cargo-registry-restore
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rust-
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Resolve latest tool versions
+        id: tool-versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sing_box_version="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))')"
+          singbox2proxy_version="$(curl -fsSL https://pypi.org/pypi/singbox2proxy/json | python3 -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])')"
+
+          echo "sing_box=$sing_box_version" >> "$GITHUB_OUTPUT"
+          echo "singbox2proxy=$singbox2proxy_version" >> "$GITHUB_OUTPUT"
+
+          echo "Latest sing-box: $sing_box_version"
+          echo "Latest singbox2proxy: $singbox2proxy_version"
+
+      - name: Update Rust dependencies
+        run: |
+          set -euo pipefail
+          test -f Cargo.toml
+          cargo update
+
+          if git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
+            echo "Cargo.lock is tracked and was refreshed to the latest compatible versions."
+          else
+            echo "Cargo.lock created with the latest compatible versions."
+          fi
+
+      - name: Restore Rust build cache
+        id: cargo-build-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -54,7 +90,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: ${{ runner.os }}-go-singbox-v1.14.2
+          key: ${{ runner.os }}-go-singbox-${{ steps.tool-versions.outputs.sing_box }}
           restore-keys: |
             ${{ runner.os }}-go-singbox-
 
@@ -62,7 +98,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-singbox2proxy-0.3.4
+          key: ${{ runner.os }}-pip-singbox2proxy-${{ steps.tool-versions.outputs.singbox2proxy }}
           restore-keys: |
             ${{ runner.os }}-pip-singbox2proxy-
 
@@ -70,15 +106,20 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.local/bin/sing-box
-          key: ${{ runner.os }}-sing-box-v1.14.2-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
+          key: ${{ runner.os }}-sing-box-${{ steps.tool-versions.outputs.sing_box }}-with_quic-with_wireguard-with_utls-with_clash_api-with_gvisor
 
       - name: Install proxy tester
+        env:
+          SING_BOX_VERSION: ${{ steps.tool-versions.outputs.sing_box }}
+          SINGBOX2PROXY_VERSION: ${{ steps.tool-versions.outputs.singbox2proxy }}
         run: |
-          python3 -m pip install --disable-pip-version-check 'singbox2proxy[socks]==0.3.4'
+          set -euo pipefail
+
+          python3 -m pip install --disable-pip-version-check --upgrade "singbox2proxy[socks]==$SINGBOX2PROXY_VERSION"
           mkdir -p "$HOME/.local/bin"
 
           if [ ! -x "$HOME/.local/bin/sing-box" ]; then
-            git clone --depth 1 --branch v1.14.2 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+            git clone --depth 1 --branch "v$SING_BOX_VERSION" https://github.com/SagerNet/sing-box.git /tmp/sing-box
             cd /tmp/sing-box
             TAGS="with_quic with_wireguard with_utls with_clash_api with_gvisor" make
             install -m 0755 sing-box "$HOME/.local/bin/sing-box"
@@ -86,7 +127,7 @@ jobs:
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/sing-box" version
-          "$HOME/.local/bin/sing-box" version | grep -q '1.14.2' || {
+          "$HOME/.local/bin/sing-box" version | grep -q "$SING_BOX_VERSION" || {
             echo "Unexpected sing-box version"
             exit 1
           }
@@ -110,6 +151,22 @@ jobs:
 
       - name: Build collector
         run: cargo build --release
+
+      - name: Save Rust registry cache
+        if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Rust build cache
+        if: steps.cargo-build-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
 
       - name: Collect and transport-test configs
         run: ./target/release/proxy-harvester
@@ -172,7 +229,7 @@ jobs:
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions
+          git add subscriptions Cargo.lock
 
           if git diff --cached --quiet; then
             echo "No changes."
