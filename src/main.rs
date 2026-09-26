@@ -21,6 +21,7 @@ const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 1000;
+const MAX_LIGHT_CANDIDATES: usize = 5000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
