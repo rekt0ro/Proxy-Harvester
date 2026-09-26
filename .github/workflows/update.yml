@@ -124,12 +124,11 @@ jobs:
             --budget 5000 \
             --workers 24 \
             --batch-size 100 \
-            --timeout 12 \
-            --warm-timeout 5 \
+            --timeout 1 \
             --final-recheck-limit 500 \
             --final-workers 12 \
             --final-batch-size 1 \
-            --primary-target http://cp.cloudflare.com/ \
+            --primary-target https://cp.cloudflare.com/ \
             --secondary-target https://www.google.com/generate_204 \
             --selection-limit 200 \
             --max-per-endpoint 1 \
