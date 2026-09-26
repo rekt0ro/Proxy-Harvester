@@ -15,6 +15,7 @@ DEFAULT_TARGETS = (
 
 MIN_SUCCESSFUL_TARGETS = 1
 MAX_MEDIAN_LATENCY_MS = 3000
+CHECK_RETRIES = 2
 
 
 def load_urls(path):
@@ -165,41 +166,44 @@ def main():
             targets_used += 1
             print(
                 f"target {targets_used}/{len(DEFAULT_TARGETS)}: {target} "
-                f"({len(active_proxies)} active proxies)",
+                f"({len(active_proxies)} active proxies, up to {CHECK_RETRIES} attempts)",
                 flush=True,
             )
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, min(args.workers, len(active_proxies)))
-            ) as pool:
-                futures = {
-                    pool.submit(check_proxy, proxy, target, args.timeout): proxy
-                    for proxy in active_proxies
-                }
+            for attempt in range(1, CHECK_RETRIES + 1):
+                if not active_proxies:
+                    break
 
-                next_active = []
-                for future in concurrent.futures.as_completed(futures):
-                    proxy = futures[future]
-                    ok, latency_ms, error = future.result()
-                    original_url = original_by_test_url.get(proxy.url, proxy.url)
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, min(args.workers, len(active_proxies)))
+                ) as pool:
+                    futures = {
+                        pool.submit(check_proxy, proxy, target, args.timeout): proxy
+                        for proxy in active_proxies
+                    }
 
-                    if ok:
-                        if not latencies[original_url]:
-                            first_success_counts[target] += 1
-                        latencies[original_url].append(latency_ms)
-                    else:
-                        failures[error or "unknown error"] += 1
+                    next_active = []
+                    for future in concurrent.futures.as_completed(futures):
+                        proxy = futures[future]
+                        ok, latency_ms, error = future.result()
+                        original_url = original_by_test_url.get(proxy.url, proxy.url)
 
-                    if len(latencies[original_url]) < MIN_SUCCESSFUL_TARGETS:
-                        next_active.append(proxy)
+                        if ok:
+                            if not latencies[original_url]:
+                                first_success_counts[target] += 1
+                            latencies[original_url].append(latency_ms)
+                        else:
+                            failures[error or "unknown error"] += 1
+                            next_active.append(proxy)
 
-                active_proxies = next_active
+                    active_proxies = next_active
 
-            working = sum(bool(values) for values in latencies.values())
-            print(
-                f"  {working}/{len(proxies)} working after this target",
-                flush=True,
-            )
+                working = sum(bool(values) for values in latencies.values())
+                print(
+                    f"  attempt {attempt}/{CHECK_RETRIES}: {working}/{len(proxies)} working; "
+                    f"{len(active_proxies)} remain for retry",
+                    flush=True,
+                )
 
         eligible = {}
         for url, values in latencies.items():
@@ -243,7 +247,7 @@ def main():
 
         print(
             f"{len(ordered)}/{len(proxies)} verified configs with reliable "
-            f"multi-target latency across {targets_used} targets",
+            f"retry-backed latency across {targets_used} targets",
             flush=True,
         )
         print("first-success by target:", flush=True)
