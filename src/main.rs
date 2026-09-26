@@ -33,7 +33,6 @@ const LIGHT_CANDIDATE_BUDGET: usize = 12000;
 const LIGHT_NON_VMESS_TARGET: usize = 150;
 const LIGHT_VMESS_CANDIDATE_BUDGET: usize = 750;
 const LIGHT_VMESS_SOFT_LIMIT: usize = 75;
-const EU_TEST_MAX_CANDIDATES_PER_BATCH: usize = 100;
 const GEO_PER_PROTOCOL_LIMIT: usize = 1000;
 const GEO_BATCH_SIZE: usize = 100;
 const GEO_RESOLUTION_CONCURRENCY: usize = 64;
@@ -1128,7 +1127,6 @@ async fn proxy_test_light(
     let mut total_verified = 0usize;
     let mut tested_candidates = 0usize;
     let mut tested_vmess_candidates = 0usize;
-    let mut eu_verified_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
 
     while tested_candidates < LIGHT_CANDIDATE_BUDGET {
         let non_vmess_verified: usize = verified_by_scheme
@@ -1218,44 +1216,6 @@ async fn proxy_test_light(
                 scheme, added, total_verified
             );
 
-            if let Ok(chain_proxy) = env::var("EU_TEST_PROXY") {
-                if !chain_proxy.trim().is_empty() {
-                    let eu_candidates = verified
-                        .iter()
-                        .take(EU_TEST_MAX_CANDIDATES_PER_BATCH)
-                        .cloned()
-                        .collect::<Vec<_>>();
-
-                    if !eu_candidates.is_empty() {
-                        let (_, eu_verified) = run_proxy_check_batch(
-                            &checker,
-                            output_dir,
-                            scheme.clone(),
-                            eu_candidates,
-                            0,
-                            Some(chain_proxy),
-                        )
-                        .await;
-
-                        let eu_entry = eu_verified_by_scheme.entry(scheme.clone()).or_default();
-                        let before_eu = eu_entry.len();
-                        let mut eu_seen: HashSet<String> = eu_entry.iter().cloned().collect();
-
-                        for config in eu_verified {
-                            if eu_seen.insert(config.clone()) {
-                                eu_entry.push(config);
-                            }
-                        }
-
-                        println!(
-                            "[INFO] EU relay verification {} batch: {} new EU-reachable configs, {} total EU-reachable for protocol.",
-                            scheme,
-                            eu_entry.len() - before_eu,
-                            eu_entry.len()
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -1266,123 +1226,109 @@ async fn proxy_test_light(
     let mut verified_schemes: Vec<String> = verified_by_scheme.keys().cloned().collect();
     verified_schemes.sort_unstable();
 
-    let mut eu_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
-    let mut non_eu_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+    let mut candidate_latency = HashMap::new();
+    for configs in by_scheme.values() {
+        for (config, latency_ms) in configs {
+            candidate_latency.insert(config.clone(), *latency_ms);
+        }
+    }
+
+    let active_protocols = verified_schemes.len();
+    let protocol_cap = if active_protocols == 0 {
+        0
+    } else {
+        ((LIGHT_LIMIT + active_protocols - 1) / active_protocols).max(50)
+    };
+
+    let mut preferred_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+    let mut selected_by_scheme: HashMap<String, usize> = HashMap::new();
+    let mut offsets_by_scheme: HashMap<String, usize> = HashMap::new();
 
     for scheme in &verified_schemes {
         let Some(items) = verified_by_scheme.get(scheme) else {
             continue;
         };
 
-        for config in items {
+        let mut preferred = items.clone();
+        preferred.sort_by_key(|config| {
             let is_eu = endpoint(config)
                 .and_then(|key| eu_by_endpoint.get(&key).copied())
                 .unwrap_or(false);
+            let latency_ms = candidate_latency.get(config).copied().unwrap_or(u64::MAX);
+            (!is_eu, latency_ms, config.clone())
+        });
 
-            if is_eu {
-                eu_by_scheme
-                    .entry(scheme.clone())
-                    .or_default()
-                    .push(config.clone());
-            } else {
-                non_eu_by_scheme
-                    .entry(scheme.clone())
-                    .or_default()
-                    .push(config.clone());
-            }
+        if !preferred.is_empty() {
+            preferred_by_scheme.insert(scheme.clone(), preferred);
+            selected_by_scheme.insert(scheme.clone(), 0);
+            offsets_by_scheme.insert(scheme.clone(), 0);
         }
     }
 
     let mut verified = Vec::with_capacity(total_verified.min(LIGHT_LIMIT));
-    let mut vmess_count = 0usize;
 
-    for pools in [
-        &eu_verified_by_scheme,
-        &eu_by_scheme,
-        &non_eu_by_scheme,
-    ] {
-        let mut index = 0usize;
+    while verified.len() < LIGHT_LIMIT {
+        let mut selected_scheme = None;
+        let mut selected_count = usize::MAX;
 
-        while verified.len() < LIGHT_LIMIT {
-            let mut added = false;
+        for scheme in &verified_schemes {
+            let Some(items) = preferred_by_scheme.get(scheme) else {
+                continue;
+            };
 
-            for scheme in &verified_schemes {
-                let Some(items) = pools.get(scheme) else {
-                    continue;
-                };
+            let count = *selected_by_scheme.get(scheme).unwrap_or(&0);
+            let offset = *offsets_by_scheme.get(scheme).unwrap_or(&0);
 
-                if let Some(config) = items.get(index) {
-                    if config_scheme(config) == "vmess" && vmess_count >= LIGHT_VMESS_SOFT_LIMIT {
-                        continue;
-                    }
-
-                    if verified.iter().any(|item| item == config) {
-                        continue;
-                    }
-
-                    verified.push(config.clone());
-                    if config_scheme(config) == "vmess" {
-                        vmess_count += 1;
-                    }
-                    added = true;
-
-                    if verified.len() >= LIGHT_LIMIT {
-                        break;
-                    }
-                }
+            if count >= protocol_cap || offset >= items.len() {
+                continue;
             }
 
-            if !added {
-                break;
+            if count < selected_count {
+                selected_count = count;
+                selected_scheme = Some(scheme);
             }
-
-            index += 1;
         }
+
+        let Some(scheme) = selected_scheme else {
+            break;
+        };
+
+        let items = preferred_by_scheme.get(scheme).expect("preferred scheme exists");
+        let offset = offsets_by_scheme.entry(scheme.clone()).or_insert(0);
+        let config = items[*offset].clone();
+        *offset += 1;
+
+        *selected_by_scheme.entry(scheme.clone()).or_insert(0) += 1;
+        verified.push(config);
     }
 
     if verified.len() < LIGHT_LIMIT {
-        let mut fallback = Vec::new();
-        for scheme in &verified_schemes {
-            if let Some(items) = verified_by_scheme.get(scheme) {
-                fallback.extend(items.iter().cloned());
-            }
-        }
+        println!(
+            "[WARN] Protocol-balance cap limited Light to {} configs; {} verified configs were available.",
+            verified.len(),
+            total_verified
+        );
+    }
 
-        for config in fallback {
-            if verified.contains(&config) {
-                continue;
-            }
-
-            if config_scheme(&config) == "vmess" && vmess_count >= LIGHT_VMESS_SOFT_LIMIT {
-                continue;
-            }
-
-            let is_vmess = config_scheme(&config) == "vmess";
-            verified.push(config);
-            if is_vmess {
-                vmess_count += 1;
-            }
-            if verified.len() >= LIGHT_LIMIT {
-                break;
-            }
-        }
+    let mut final_counts: Vec<(&String, usize)> = selected_by_scheme.iter().collect();
+    final_counts.sort_by_key(|(scheme, _)| (*scheme).clone());
+    for (scheme, count) in final_counts {
+        println!("[INFO] Light protocol balance: {scheme}={count}");
     }
 
     println!(
-        "[INFO] Proxy-level testing completed with {} fully verified configs ({} EU, {} VMess).",
+        "[INFO] Proxy-level testing completed with {} fully verified configs ({} EU endpoints, {} VMess, cap {} per protocol).",
         verified.len(),
         verified
             .iter()
             .filter(|config| {
-                eu_verified_by_scheme
-                    .values()
-                    .any(|items| items.iter().any(|item| item == *config))
-                    || endpoint(config)
-                        .and_then(|key| eu_by_endpoint.get(&key).copied())
-                        .unwrap_or(false)
+                endpoint(config)
+                    .and_then(|key| eu_by_endpoint.get(&key).copied())
+                    .unwrap_or(false)
             })
             .count(),
-        verified.iter().filter(|config| config_scheme(config) == "vmess").count()
+        verified.iter().filter(|config| config_scheme(config) == "vmess").count(),
+        protocol_cap
     );
 
     Some(verified)
