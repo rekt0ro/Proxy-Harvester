@@ -166,6 +166,31 @@ def global_rank(config, metadata, position):
     )
 
 
+def diversify_recheck_candidates(configs, limit):
+    selected = []
+    seen_endpoints = set()
+    deferred = []
+
+    for config in configs:
+        ep = endpoint(config)
+
+        if ep is None:
+            selected.append(config)
+        elif ep not in seen_endpoints:
+            seen_endpoints.add(ep)
+            selected.append(config)
+        else:
+            deferred.append(config)
+
+        if len(selected) >= limit:
+            return selected
+
+    if len(selected) < limit:
+        selected.extend(deferred[:limit - len(selected)])
+
+    return selected
+
+
 def diversified(configs, limit, max_per_endpoint):
     final = []
     endpoint_counts = defaultdict(int)
@@ -289,11 +314,20 @@ def main():
             ),
         )
 
-        final_candidates = ranked_global[:max(1, args.final_recheck_limit)]
+        final_candidates = diversify_recheck_candidates(
+            ranked_global,
+            max(1, args.final_recheck_limit),
+        )
+        final_recheck_endpoints = {
+            ep
+            for config in final_candidates
+            if (ep := endpoint(config)) is not None
+        }
 
         print(
             f"[INFO] Final Light recheck: {len(final_candidates)} "
-            "individually tested candidates."
+            f"individually tested candidates covering "
+            f"{len(final_recheck_endpoints)} unique parsed endpoints."
         )
 
         primary_output = os.path.join(work_dir, "primary.txt")
@@ -377,6 +411,12 @@ def main():
             max(1, args.max_per_endpoint),
         )
 
+        final_endpoints = {
+            ep
+            for config in final
+            if (ep := endpoint(config)) is not None
+        }
+
         if not final:
             print("[WARN] Diversity filtering left no verified configs.")
             return 1
@@ -386,6 +426,7 @@ def main():
         print(
             f"[INFO] Published {len(final)} Light configs from "
             f"{len(global_verified)} globally verified candidates; "
+            f"{len(final_endpoints)} unique parsed endpoints; "
             "final validation required both targets."
         )
         return 0
