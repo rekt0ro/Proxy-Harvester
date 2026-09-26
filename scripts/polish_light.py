@@ -192,8 +192,6 @@ def run_checker(
             str(max(1, batch_size)),
             "--timeout",
             str(timeout),
-            "--warm-timeout",
-            str(warm_timeout),
             "--target",
             target,
         ]
@@ -311,8 +309,6 @@ def main():
                 args.workers,
                 args.batch_size,
                 args.timeout,
-                args.warm_timeout,
-                False,
             )
 
             if not ok:
@@ -372,7 +368,6 @@ def main():
             primary_metadata_path,
             args.final_workers,
             args.final_batch_size,
-            args.timeout,
             args.timeout,
         ):
             print("[WARN] Final primary validation failed.")
