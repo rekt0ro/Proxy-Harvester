@@ -13,7 +13,7 @@ import tempfile
 import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
-DEFAULT_TARGET = "http://cp.cloudflare.com:80/"
+DEFAULT_TARGET = "http://cp.cloudflare.com"
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_LATENCY_MS = 800
@@ -382,13 +382,25 @@ def start_xray(binary, config_path, log_path):
 
 def wait_ports(process, values):
     deadline = time.monotonic() + CORE_START_TIMEOUT
-    while time.monotonic() < deadline:
+    pending = set(values)
+    workers = max(1, min(64, len(pending)))
+
+    while pending and time.monotonic() < deadline:
         if process.poll() is not None:
             return False
-        if all(_port_ready(port) for port in values):
-            return True
-        time.sleep(0.05)
-    return False
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            ready = pool.map(_port_ready, pending)
+            pending = {
+                port
+                for port, is_ready in zip(pending, ready)
+                if not is_ready
+            }
+
+        if pending:
+            time.sleep(0.05)
+
+    return not pending
 
 
 def _port_ready(port):
@@ -401,7 +413,8 @@ def _port_ready(port):
 
 def probe(port, target, timeout_seconds):
     p = urlsplit(target)
-    host, target_port = endpoint(p)
+    default_port = {"http": 80, "https": 443}.get(p.scheme.lower())
+    host, target_port = endpoint(p, default_port)
     started = time.monotonic()
     sock = socket.create_connection(("127.0.0.1", port), timeout=timeout_seconds)
     sock.settimeout(timeout_seconds)
@@ -435,9 +448,14 @@ def probe(port, target, timeout_seconds):
         path = p.path or "/"
         if p.query:
             path += "?" + p.query
+        host_header = host
+        if target_port != default_port:
+            host_header = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            host_header = f"{host_header}:{target_port}"
+
         request = (
             f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}\r\n"
+            f"Host: {host_header}\r\n"
             "Connection: close\r\n"
             "User-Agent: Proxy-Harvester/3.0\r\n"
             "\r\n"
