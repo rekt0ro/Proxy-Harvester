@@ -182,5 +182,6 @@ jobs:
           fi
 
           git commit -m "Update subscriptions"
-          git pull --rebase origin main
-          git push
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
