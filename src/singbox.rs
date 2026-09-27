@@ -154,7 +154,18 @@ fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String>
     if let Some(alpn) = xray_tls.get("alpn").filter(|value| value.is_array()) {
         tls["alpn"] = alpn.clone();
     }
-    if let Some(fp) = xray_tls
+    if security == "reality" {
+        let fingerprint = xray_tls
+            .get("fingerprint")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("chrome");
+
+        tls["utls"] = json!({
+            "enabled": true,
+            "fingerprint": fingerprint,
+        });
+    } else if let Some(fp) = xray_tls
         .get("fingerprint")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
@@ -164,8 +175,6 @@ fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String>
             "fingerprint": fp,
         });
     }
-
-    if security == "reality" {
         let reality = stream
             .get("realitySettings")
             .ok_or_else(|| "missing Reality settings".to_string())?;
@@ -308,6 +317,7 @@ fn transport_settings(stream: &Value) -> Result<Option<Value>, String> {
             Ok(Some(transport))
         }
         "xhttp" => Err("sing-box standard build does not support XHTTP".to_string()),
+        "hysteria" => Ok(None),
         "tcp" => Ok(None),
         _ => Err(format!("unsupported sing-box transport {network}")),
     }
@@ -894,6 +904,26 @@ mod tests {
         assert_eq!(outbound["network"], "tcp");
         assert_eq!(outbound["transport"]["type"], "ws");
         assert_eq!(outbound["transport"]["path"], "/proxy");
+        assert_eq!(outbound["tls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["server_name"], "example.com");
+    }
+
+    #[test]
+    fn uses_chrome_for_vless_reality_without_fingerprint() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=raw&security=reality&sni=example.com&pbk=test-public-key&sid=01234567";
+        let outbound = singbox_outbound(config).expect("VLESS Reality without fp should map");
+        assert_eq!(outbound["tls"]["utls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn maps_hysteria2_to_native_singbox_outbound() {
+        let config = "hysteria2://password@example.com:443?sni=example.com";
+        let outbound = singbox_outbound(config).expect("Hysteria2 should map");
+        assert_eq!(outbound["type"], "hysteria2");
+        assert_eq!(outbound["server"], "example.com");
+        assert_eq!(outbound["server_port"], 443);
+        assert_eq!(outbound["password"], "password");
         assert_eq!(outbound["tls"]["enabled"], true);
         assert_eq!(outbound["tls"]["server_name"], "example.com");
     }
