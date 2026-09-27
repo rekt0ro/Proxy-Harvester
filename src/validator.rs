@@ -1038,11 +1038,11 @@ fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
-        PRIMARY_TARGET => body.len() == 16_384,
-        "https://www.google.com/robots.txt" => body
-            .windows(b"User-agent:".len())
-            .any(|window| window == b"User-agent:"),
-        "https://detectportal.firefox.com/success.txt" => body == b"success",
+        PRIMARY_TARGET
+        | "https://www.google.com/generate_204"
+        | "https://www.gstatic.com/generate_204" => body.is_empty(),
+        "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
+        "https://www.cloudflare.com/cdn-cgi/trace" => !body.is_empty(),
         _ => true,
     }
 }
@@ -1347,8 +1347,10 @@ async fn validate_candidates_targets_inner(
         .map(|target| Url::parse(target).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
 
-    if targets.len() < 2 {
-        return Err("Light validation requires at least two targets".to_string());
+    if targets.len() < min_successful_targets {
+        return Err(format!(
+            "Light validation requires at least {min_successful_targets} targets"
+        ));
     }
 
     let (parsed, rejected) = unique_parsed(candidates);

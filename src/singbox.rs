@@ -701,11 +701,11 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
+        "http://cp.cloudflare.com/" 
+        | "https://www.google.com/generate_204"
+        | "https://www.gstatic.com/generate_204" => body.is_empty(),
         "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
-        "https://www.google.com/robots.txt" => body
-            .windows(b"User-agent:".len())
-            .any(|window| window == b"User-agent:"),
-        "https://detectportal.firefox.com/success.txt" => body == b"success",
+        "https://www.cloudflare.com/cdn-cgi/trace" => !body.is_empty(),
         _ => true,
     }
 }
@@ -1120,8 +1120,10 @@ async fn validate_candidates_with_targets_policy(
     let mut rejected = Vec::new();
     let mut seen = HashSet::new();
 
-    if targets.len() < 2 {
-        return Err("Light validation requires at least two targets".to_string());
+    if targets.len() < min_successful_targets {
+        return Err(format!(
+            "Light validation requires at least {min_successful_targets} targets"
+        ));
     }
 
     for config in candidates {
