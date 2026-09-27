@@ -474,7 +474,10 @@ fn urlencoding(value: &str) -> String {
 fn parse_trojan(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let (host, port) = endpoint_from_url(&url, None)?;
-    let password_source = url.password().filter(|value| !value.is_empty()).unwrap_or(url.username());
+    let password_source = url
+        .password()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(url.username());
     let password = decode_component(password_source);
     if password.is_empty() {
         return Err("Trojan password missing".to_string());
@@ -1400,20 +1403,18 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::parse_trojan;
 
     #[test]
     fn parses_standard_trojan_password() {
-        let config = parse_trojan("trojan://MiTiVPN@167.82.96.58:443?type=ws&security=tls&sni=ssl.fastly.com")
-            .expect("standard Trojan URI should parse");
+        let config = parse_trojan(
+            "trojan://MiTiVPN@167.82.96.58:443?type=ws&security=tls&sni=ssl.fastly.com",
+        )
+        .expect("standard Trojan URI should parse");
 
-        assert_eq!(
-            config["settings"]["servers"][0]["password"],
-            "MiTiVPN"
-        );
+        assert_eq!(config["settings"]["servers"][0]["password"], "MiTiVPN");
     }
 
     #[test]
@@ -1421,10 +1422,7 @@ mod tests {
         let config = parse_trojan("trojan://%4D%49%54%49%56%50%4E@104.26.14.137:2096?type=ws&security=tls&sni=de-ms.App-Cloud.ir")
             .expect("percent-encoded Trojan URI should parse");
 
-        assert_eq!(
-            config["settings"]["servers"][0]["password"],
-            "MITIVPN"
-        );
+        assert_eq!(config["settings"]["servers"][0]["password"], "MITIVPN");
     }
 
     #[test]
@@ -1432,9 +1430,6 @@ mod tests {
         let config = parse_trojan("trojan://user:secret@127.0.0.1:443?security=tls")
             .expect("user/password Trojan URI should parse");
 
-        assert_eq!(
-            config["settings"]["servers"][0]["password"],
-            "secret"
-        );
+        assert_eq!(config["settings"]["servers"][0]["password"], "secret");
     }
 }
