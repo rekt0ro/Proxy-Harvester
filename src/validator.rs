@@ -1108,7 +1108,6 @@ async fn functional_attempt(
     {
         probe_request(client, compatibility_target.clone()).await?;
     }
-    }
 
     probe_request(client, target.clone()).await
 }

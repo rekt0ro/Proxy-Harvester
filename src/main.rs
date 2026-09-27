@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
         .buffer_unordered(TEST_CONCURRENCY)
         .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
-        .await?
+        .await?;
 
     chunk_results.sort_by_key(|(index, _)| *index);
 
