@@ -1016,10 +1016,6 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
 
     if response.status().as_u16() == 429 {
         extend_rate_limit(rate_limit_wait(response.headers()));
-    }
-
-    if response.status().as_u16() == 429 {
-        extend_rate_limit(rate_limit_wait(response.headers()));
         return Err(ProbeError::Failed);
     }
 
@@ -1133,7 +1129,7 @@ async fn check_batch(
         let mut attempts = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
 
-        for attempt in 0..stability_attempts {
+        for attempt in 0..STABILITY_ATTEMPTS {
             if active.is_empty() {
                 break;
             }
@@ -1162,11 +1158,11 @@ async fn check_batch(
                 }
             }
 
-            let remaining_attempts = stability_attempts - attempt - 1;
+            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < min_successful_attempts
-                    && wins + remaining_attempts >= min_successful_attempts
+                wins < MIN_SUCCESSFUL_TARGETS
+                    && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
             });
         }
 
@@ -1468,7 +1464,7 @@ async fn check_batch_targets(
         let mut latencies = HashMap::<String, Vec<f64>>::new();
         let mut successful_targets = HashMap::<String, HashSet<String>>::new();
 
-        for attempt in 0..STABILITY_ATTEMPTS {
+        for attempt in 0..stability_attempts {
             if active.is_empty() {
                 break;
             }
@@ -1500,10 +1496,11 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            let remaining_attempts = stability_attempts - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+                wins < min_successful_attempts
+                    && wins + remaining_attempts >= min_successful_attempts
             });
         }
 
