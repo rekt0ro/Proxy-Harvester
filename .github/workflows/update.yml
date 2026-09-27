@@ -132,6 +132,38 @@ jobs:
           path: ~/.local/bin/xray
           key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}
 
+      - name: Restore sing-box binary cache
+        id: singbox-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ runner.os }}-sing-box-1.14.1
+
+      - name: Install sing-box
+        env:
+          SINGBOX_VERSION: "1.14.1"
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/singbox-download
+
+          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
+            asset_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+            curl -fsSL "$asset_url" -o /tmp/singbox-download/sing-box.tar.gz
+            tar -xzf /tmp/singbox-download/sing-box.tar.gz -C /tmp/singbox-download
+            install -m 0755 "/tmp/singbox-download/sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" "$HOME/.local/bin/sing-box"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/sing-box" version
+          "$HOME/.local/bin/sing-box" check --help >/dev/null
+
+      - name: Save sing-box binary cache
+        if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ runner.os }}-sing-box-1.14.1
       - name: Validate Rust
         run: |
           cargo fmt --all -- --check
@@ -178,12 +210,13 @@ jobs:
             --output /tmp/proxy-harvester/light.next.txt \
             --workers 32 \
             --batch-size 1000 \
-            --timeout 1 \
+            --timeout 3 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
             --selected-workers 16 \
             --selected-batch-size 500 \
             --primary-target https://speed.cloudflare.com \
+            --singbox "$HOME/.local/bin/sing-box" \
             --selection-limit 200 \
             --max-per-endpoint 1
           status=$?
@@ -245,11 +278,12 @@ jobs:
           cleanup_prefix "${{ runner.os }}-cargo-registry-" "$current_registry_key"
           cleanup_prefix "${{ runner.os }}-cargo-build-rust-" "$current_build_key"
           cleanup_prefix "${{ runner.os }}-xray-" "$current_xray_key"
+          cleanup_prefix "${{ runner.os }}-sing-box-" "${{ runner.os }}-sing-box-1.14.1"
 
       - name: Clean generated temporary files
         if: always()
         run: |
-          rm -rf /tmp/proxy-harvester /tmp/xray-build /tmp/xray-download
+          rm -rf /tmp/proxy-harvester /tmp/xray-build /tmp/xray-download /tmp/singbox-download
           rm -f subscriptions/.*.txt
 
       - name: Commit changes
