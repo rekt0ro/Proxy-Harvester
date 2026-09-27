@@ -699,6 +699,169 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
+
+async fn check_batch_targets(
+    binary: &str,
+    entries: &[(String, Value)],
+    targets: &[String],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    if entries.is_empty() || targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut pending = vec![entries.to_vec()];
+    let mut verified = HashMap::new();
+
+    while let Some(batch_entries) = pending.pop() {
+        let work = make_temp_dir()?;
+        let config_path = work.join("sing-box.json");
+        let log_path = work.join("sing-box.log");
+        let (config, local_ports) = singbox_config(&batch_entries)?;
+
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+
+        if let Err(error) = check_singbox_config(binary, &config_path) {
+            let _ = fs::remove_dir_all(&work);
+
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending.push(batch_entries[..mid].to_vec());
+                pending.push(batch_entries[mid..].to_vec());
+                continue;
+            }
+
+            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
+            continue;
+        }
+
+        let mut child = start_singbox(binary, &config_path, &log_path)?;
+
+        if !ports_ready(&mut child, &local_ports).await {
+            let _ = child.kill();
+            let _ = child.wait();
+
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending.push(batch_entries[..mid].to_vec());
+                pending.push(batch_entries[mid..].to_vec());
+                let _ = fs::remove_dir_all(&work);
+                continue;
+            }
+
+            let tail = fs::read_to_string(&log_path)
+                .unwrap_or_default()
+                .chars()
+                .rev()
+                .take(700)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            println!("[WARN] sing-box failed to start: {}", batch_entries[0].0);
+            if !tail.is_empty() {
+                println!("[WARN] sing-box log: {tail}");
+            }
+            let _ = fs::remove_dir_all(&work);
+            continue;
+        }
+
+        let mut active = Vec::with_capacity(batch_entries.len());
+        for (index, (config, _)) in batch_entries.iter().enumerate() {
+            match client_for_port(local_ports[index], request_timeout) {
+                Ok(client) => active.push((config.clone(), client, index)),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&work);
+                    return Err(error);
+                }
+            }
+        }
+
+        let mut successes = HashMap::<String, usize>::new();
+        let mut attempts = HashMap::<String, usize>::new();
+        let mut latencies = HashMap::<String, Vec<f64>>::new();
+        let mut successful_targets = HashMap::<String, HashSet<String>>::new();
+
+        for attempt in 0..STABILITY_ATTEMPTS {
+            let results = stream::iter(active.clone())
+                .map(|(config, client, entry_index)| {
+                    let target = targets[(entry_index + attempt) % targets.len()].clone();
+                    async move {
+                        let result = request_url(&client, &target).await;
+                        (config, target, result)
+                    }
+                })
+                .buffer_unordered(workers.max(1))
+                .collect::<Vec<_>>()
+                .await;
+
+            for (config, target, result) in results {
+                *attempts.entry(config.clone()).or_insert(0) += 1;
+                if let Ok(latency) = result {
+                    *successes.entry(config.clone()).or_insert(0) += 1;
+                    latencies.entry(config.clone()).or_default().push(latency);
+                    successful_targets
+                        .entry(config)
+                        .or_default()
+                        .insert(target);
+                }
+            }
+
+            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            active.retain(|(config, _, _)| {
+                let wins = successes.get(config).copied().unwrap_or(0);
+                wins < MIN_SUCCESSFUL_ATTEMPTS
+                    && wins + remaining_attempts >= MIN_SUCCESSFUL_ATTEMPTS
+            });
+        }
+
+        for (config, _) in &batch_entries {
+            let wins = successes.get(config).copied().unwrap_or(0);
+            let values = latencies.get(config).cloned().unwrap_or_default();
+            let destinations = successful_targets.get(config).map_or(0, HashSet::len);
+
+            if wins >= MIN_SUCCESSFUL_ATTEMPTS
+                && destinations >= 2
+                && !values.is_empty()
+                && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
+            {
+                let mut values = values;
+                values.sort_by(f64::total_cmp);
+                let median = if values.len() % 2 == 1 {
+                    values[values.len() / 2]
+                } else {
+                    let right = values.len() / 2;
+                    (values[right - 1] + values[right]) / 2.0
+                };
+
+                verified.insert(
+                    config.clone(),
+                    ProxyMetrics {
+                        successes: wins,
+                        attempts: attempts.get(config).copied().unwrap_or(0),
+                        median_ms: median,
+                        min_ms: values[0],
+                    },
+                );
+            }
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    Ok(verified)
+}
+
 async fn check_batch(
     binary: &str,
     entries: &[(String, Value)],
@@ -855,6 +1018,94 @@ async fn check_batch(
     }
 
     Ok(verified)
+}
+
+
+pub async fn validate_candidates_with_targets(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let mut parsed = Vec::new();
+    let mut rejected = Vec::new();
+    let mut seen = HashSet::new();
+
+    if targets.len() < 2 {
+        return Err("Light validation requires at least two targets".to_string());
+    }
+
+    for config in candidates {
+        let cleaned = clean(config).to_string();
+        if !seen.insert(cleaned) {
+            continue;
+        }
+
+        match singbox_outbound(config) {
+            Ok(outbound) => parsed.push((config.clone(), outbound)),
+            Err(error) => rejected.push((config.clone(), error)),
+        }
+    }
+
+    println!(
+        "loaded {} input URLs, accepted {} for sing-box, rejected {}",
+        candidates.len(),
+        parsed.len(),
+        rejected.len()
+    );
+
+    for (config, reason) in rejected.iter().take(8) {
+        println!("sing-box rejected: {config} :: {reason}");
+    }
+
+    if parsed.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let target_values = targets
+        .iter()
+        .map(|target| target.to_string())
+        .collect::<Vec<_>>();
+    let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
+    let total_batches = (parsed.len() + batch_size - 1) / batch_size;
+    let mut metadata = HashMap::new();
+
+    for (index, batch) in parsed.chunks(batch_size).enumerate() {
+        println!(
+            "targets {:?}: batch {}/{} testing {} configs with sing-box; requiring {}/{} successful attempts across at least 2 destinations",
+            target_values,
+            index + 1,
+            total_batches,
+            batch.len(),
+            MIN_SUCCESSFUL_ATTEMPTS,
+            STABILITY_ATTEMPTS
+        );
+
+        metadata.extend(
+            check_batch_targets(
+                binary,
+                batch,
+                &target_values,
+                workers.max(1),
+                request_timeout,
+                max_latency_ms,
+            )
+            .await?,
+        );
+    }
+
+    println!(
+        "{}/{} verified by sing-box against {} targets with {}/{} successful GET attempts and at least 2 distinct successful destinations",
+        metadata.len(),
+        candidates.len(),
+        targets.len(),
+        MIN_SUCCESSFUL_ATTEMPTS,
+        STABILITY_ATTEMPTS
+    );
+
+    Ok(metadata)
 }
 
 pub async fn validate_candidates_with_settings(
