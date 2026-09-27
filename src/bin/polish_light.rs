@@ -1,8 +1,5 @@
 use proxy_harvester::singbox::validate_candidates as validate_singbox_candidates;
-use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
-    COMPATIBILITY_TARGET, PRIMARY_TARGET,
-};
+use proxy_harvester::validator::{endpoint, read_lines, write_lines, ProxyMetrics};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 
@@ -157,46 +154,16 @@ fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec
 }
 
 async fn dual_validate(
-    xray: &str,
     singbox: &str,
     candidates: &[String],
-    primary_target: &str,
     workers: usize,
-    batch_size: usize,
-    timeout: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
-    let xray_metadata = validate_candidates_with_compatibility(
-        xray,
-        candidates,
-        primary_target,
-        COMPATIBILITY_TARGET,
-        workers,
-        batch_size,
-        timeout,
-    )
-    .await?;
-
-    if xray_metadata.is_empty() {
-        println!("[INFO] Dual-core Light: Xray verified 0 candidates.");
-        return Ok(HashMap::new());
-    }
-
-    let xray_candidates = xray_metadata.keys().cloned().collect::<Vec<_>>();
-    let singbox_metadata =
-        validate_singbox_candidates(singbox, &xray_candidates, workers.min(16).max(1)).await?;
-
-    let mut verified = HashMap::new();
-    for (config, metrics) in xray_metadata {
-        if singbox_metadata.contains_key(&config) {
-            verified.insert(config, metrics);
-        }
-    }
+    let verified = validate_singbox_candidates(singbox, candidates, workers.min(32).max(1)).await?;
 
     println!(
-        "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
-        xray_candidates.len(),
-        singbox_metadata.len(),
-        verified.len()
+        "[INFO] Light: sing-box verified {} of {} candidates.",
+        verified.len(),
+        candidates.len()
     );
 
     Ok(verified)
@@ -245,7 +212,6 @@ async fn main() -> Result<(), String> {
     let final_batch_size = value(&args, "--selected-batch-size", "500")
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
-    let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
     let selection_limit = value(
         &args,
         "--selection-limit",
@@ -262,7 +228,6 @@ async fn main() -> Result<(), String> {
     .parse::<usize>()
     .map_err(|_| "invalid --max-per-endpoint".to_string())?
     .max(1);
-    let xray = value(&args, "--xray", "xray");
     let singbox = value(&args, "--singbox", "sing-box");
 
     let candidates = read_lines(&candidates_path)?;
@@ -294,16 +259,7 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = dual_validate(
-            &xray,
-            &singbox,
-            &chunk_vec,
-            &primary_target,
-            workers,
-            batch_size,
-            timeout,
-        )
-        .await?;
+        let chunk_metadata = dual_validate(&singbox, &chunk_vec, workers).await?;
 
         for config in chunk_metadata.keys() {
             if global_seen.insert(config.clone()) {
@@ -363,16 +319,7 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata = dual_validate(
-            &xray,
-            &singbox,
-            &final_candidates,
-            &primary_target,
-            final_workers,
-            final_batch_size,
-            timeout,
-        )
-        .await?;
+        let primary_metadata = dual_validate(&singbox, &final_candidates, final_workers).await?;
 
         for (config, metrics) in primary_metadata {
             if !final_metadata.contains_key(&config) {
@@ -404,10 +351,9 @@ async fn main() -> Result<(), String> {
             println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
             write_lines(&output, &selected)?;
             println!(
-                "[INFO] Published {} Light configs from {} globally verified candidates; selected validation used {}.",
+                "[INFO] Published {} Light configs from {} globally verified candidates.",
                 selected.len(),
-                global_verified.len(),
-                primary_target
+                global_verified.len()
             );
             return Ok(());
         }

@@ -626,18 +626,24 @@ fn client_for_port(port: u16) -> Result<Client, String> {
         .map_err(|error| error.to_string())
 }
 
-async fn request_url(client: &Client, url: &str, head: bool) -> Result<f64, String> {
+async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     let started = std::time::Instant::now();
-    let response = if head {
-        client.head(url)
-    } else {
-        client.get(url)
-    }
-    .send()
-    .await
-    .map_err(|error| error.to_string())?;
+    let response = client
+        .get(url)
+        .header("Accept-Encoding", "identity")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
 
-    let _ = response;
+    if !response.status().is_success() {
+        return Err(format!("HTTP status {}", response.status()));
+    }
+
+    let body = response.bytes().await.map_err(|error| error.to_string())?;
+    if body.len() < 4096 {
+        return Err(format!("response body too small: {} < 4096", body.len()));
+    }
+
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
@@ -737,14 +743,7 @@ async fn check_batch(
         for attempt in 0..STABILITY_ATTEMPTS {
             let results = stream::iter(active.clone())
                 .map(|(config, client)| async move {
-                    let started = std::time::Instant::now();
-                    let result = match request_url(&client, TARGET, false).await {
-                        Ok(_) => match request_url(&client, TARGET, true).await {
-                            Ok(_) => Ok(started.elapsed().as_secs_f64() * 1000.0),
-                            Err(error) => Err(error),
-                        },
-                        Err(error) => Err(error),
-                    };
+                    let result = request_url(&client, TARGET).await;
                     (config, result)
                 })
                 .buffer_unordered(workers.max(1))
