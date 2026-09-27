@@ -16,6 +16,7 @@ const MAX_DISCOVERY_CANDIDATES: usize = 10000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
+const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -503,7 +504,7 @@ async fn main() -> Result<(), String> {
     let mut global_seen = HashSet::<String>::new();
     let mut global_metadata = HashMap::<String, ProxyMetrics>::new();
     let mut final_verified = Vec::<String>::new();
-    let mut final_seen = HashSet::<String>::new();
+    let mut final_attempts = HashMap::<String, usize>::new();
     let mut final_metadata = HashMap::<String, ProxyMetrics>::new();
 
     let chunk_count = (candidates.len() + DISCOVERY_CHUNK_SIZE - 1) / DISCOVERY_CHUNK_SIZE;
@@ -562,7 +563,10 @@ async fn main() -> Result<(), String> {
         );
         let untested = ranked_global
             .into_iter()
-            .filter(|config| !final_seen.contains(config))
+            .filter(|config| {
+                !final_metadata.contains_key(config)
+                    && final_attempts.get(config).copied().unwrap_or(0) < MAX_FINAL_RECHECK_ATTEMPTS
+            })
             .collect::<Vec<_>>();
         let final_candidates = diversify_recheck_candidates(&untested, dynamic_limit);
 
@@ -570,7 +574,9 @@ async fn main() -> Result<(), String> {
             continue;
         }
 
-        final_seen.extend(final_candidates.iter().cloned());
+        for config in &final_candidates {
+            *final_attempts.entry(config.clone()).or_default() += 1;
+        }
 
         println!(
             "[INFO] Final Light recheck wave {wave}: {} candidates ({} slots remaining).",
