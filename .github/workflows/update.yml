@@ -204,7 +204,7 @@ jobs:
             --timeout 3 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
-            --selected-workers 10 \
+            --selected-workers 32 \
             --selected-batch-size 500 \
             --primary-target http://cp.cloudflare.com/ \
             --singbox "$HOME/.local/bin/sing-box" \
