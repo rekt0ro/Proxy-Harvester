@@ -1,4 +1,4 @@
-use proxy_harvester::singbox::validate_candidates as validate_singbox_candidates;
+use proxy_harvester::singbox::validate_candidates_with_settings as validate_singbox_candidates;
 use proxy_harvester::validator::{endpoint, read_lines, write_lines, ProxyMetrics};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -157,8 +157,17 @@ async fn dual_validate(
     singbox: &str,
     candidates: &[String],
     workers: usize,
+    timeout_seconds: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
-    let verified = validate_singbox_candidates(singbox, candidates, workers.min(32).max(1)).await?;
+    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
+    let verified = validate_singbox_candidates(
+        singbox,
+        candidates,
+        workers.min(32).max(1),
+        request_timeout,
+        timeout_seconds * 1000.0,
+    )
+    .await?;
 
     println!(
         "[INFO] Light: sing-box verified {} of {} candidates.",
@@ -188,9 +197,12 @@ async fn main() -> Result<(), String> {
     let batch_size = value(&args, "--batch-size", "1000")
         .parse::<usize>()
         .map_err(|_| "invalid --batch-size".to_string())?;
-    let timeout = value(&args, "--timeout", "3")
+    let timeout = value(&args, "--timeout", "5")
         .parse::<f64>()
         .map_err(|_| "invalid --timeout".to_string())?;
+    if !timeout.is_finite() || timeout <= 0.0 {
+        return Err("invalid --timeout: must be a positive finite number".to_string());
+    }
     let final_recheck_limit = value(
         &args,
         "--selected-recheck-limit",
@@ -259,7 +271,7 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = dual_validate(&singbox, &chunk_vec, workers).await?;
+        let chunk_metadata = dual_validate(&singbox, &chunk_vec, workers, timeout).await?;
 
         for config in chunk_metadata.keys() {
             if global_seen.insert(config.clone()) {
@@ -319,7 +331,8 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata = dual_validate(&singbox, &final_candidates, final_workers).await?;
+        let primary_metadata =
+            dual_validate(&singbox, &final_candidates, final_workers, timeout).await?;
 
         for (config, metrics) in primary_metadata {
             if !final_metadata.contains_key(&config) {
