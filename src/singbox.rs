@@ -175,6 +175,8 @@ fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String>
             "fingerprint": fp,
         });
     }
+
+    if security == "reality" {
         let reality = stream
             .get("realitySettings")
             .ok_or_else(|| "missing Reality settings".to_string())?;
