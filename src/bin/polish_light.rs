@@ -586,7 +586,7 @@ async fn main() -> Result<(), String> {
                 protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
             write_experimental_output(
                 experimental_output.as_deref(),
-                &ranked_final,
+                &ranked_global,
                 selection_limit,
                 max_per_endpoint,
             )?;
