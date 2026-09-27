@@ -1,4 +1,4 @@
-use proxy_harvester::validator::{
+use proxyrift::validator::{
     read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, PRIMARY_TARGET,
 };
 use std::env;
