@@ -1,5 +1,6 @@
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates, write_lines, ProxyMetrics, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
+    COMPATIBILITY_TARGET, PRIMARY_TARGET,
 };
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -203,10 +204,11 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = validate_candidates(
+        let chunk_metadata = validate_candidates_with_compatibility(
             &xray,
             &chunk_vec,
             &primary_target,
+            COMPATIBILITY_TARGET,
             workers,
             batch_size,
             timeout,
@@ -271,10 +273,11 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata = validate_candidates(
+        let primary_metadata = validate_candidates_with_compatibility(
             &xray,
             &final_candidates,
             &primary_target,
+            COMPATIBILITY_TARGET,
             final_workers,
             final_batch_size,
             timeout,

@@ -14,6 +14,7 @@ use tokio::time::{sleep, timeout};
 use url::Url;
 
 pub const PRIMARY_TARGET: &str = "https://speed.cloudflare.com";
+pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
 pub const DOWNLOAD_BYTES: usize = 4096;
 pub const UPLOAD_BYTES: usize = 1024;
 pub const MAX_RESPONSE_BYTES: usize = 65536;
@@ -1008,8 +1009,25 @@ fn target_with(target: &Url, path: &str, query: Option<&str>) -> Url {
     url
 }
 
-async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeError> {
+async fn functional_attempt(
+    client: &Client,
+    target: &Url,
+    compatibility_target: Option<&Url>,
+) -> Result<f64, ProbeError> {
     for retry in 0..=RATE_LIMIT_RETRIES {
+        let compatibility_latency = if let Some(compatibility_target) = compatibility_target {
+            match probe_request(client, compatibility_target.clone(), None).await {
+                Ok((latency, _)) => Some(latency),
+                Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
+                    wait_for_rate_limit().await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+
         let download_url = target_with(target, "/__down", Some(&format!("bytes={DOWNLOAD_BYTES}")));
 
         let (download_latency, download_len) = match probe_request(client, download_url, None).await
@@ -1040,7 +1058,12 @@ async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeE
             Err(error) => return Err(error),
         };
 
-        return Ok(download_latency.max(upload_latency));
+        let mut latency = download_latency.max(upload_latency);
+        if let Some(compatibility_latency) = compatibility_latency {
+            latency = latency.max(compatibility_latency);
+        }
+
+        return Ok(latency);
     }
 
     Err(ProbeError::Failed(
@@ -1052,6 +1075,7 @@ async fn check_batch(
     binary: &str,
     entries: &[(String, Value)],
     target: &Url,
+    compatibility_target: Option<&Url>,
     workers: usize,
     timeout_seconds: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
@@ -1140,7 +1164,7 @@ async fn check_batch(
                 .map(|(config, port, client)| {
                     let target = target.clone();
                     async move {
-                        let result = functional_attempt(&client, &target).await;
+                        let result = functional_attempt(&client, &target, compatibility_target).await;
                         (config, port, result)
                     }
                 })
@@ -1217,6 +1241,48 @@ pub async fn validate_candidates(
     batch_size: usize,
     timeout_seconds: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_inner(
+        binary,
+        candidates,
+        target,
+        None,
+        workers,
+        batch_size,
+        timeout_seconds,
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_compatibility(
+    binary: &str,
+    candidates: &[String],
+    target: &str,
+    compatibility_target: &str,
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_inner(
+        binary,
+        candidates,
+        target,
+        Some(compatibility_target),
+        workers,
+        batch_size,
+        timeout_seconds,
+    )
+    .await
+}
+
+async fn validate_candidates_inner(
+    binary: &str,
+    candidates: &[String],
+    target: &str,
+    compatibility_target: Option<&str>,
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
     let (parsed, rejected) = unique_parsed(candidates);
 
     println!(
@@ -1246,33 +1312,68 @@ pub async fn validate_candidates(
     }
 
     let target = Url::parse(target).map_err(|error| error.to_string())?;
+    let compatibility_target = compatibility_target
+        .map(Url::parse)
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let batch_size = batch_size.max(1);
     let total_batches = (parsed.len() + batch_size - 1) / batch_size;
     let mut metadata = HashMap::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
-        println!(
-            "target {target}: batch {}/{} testing {} configs with Xray core; requiring {}/{}",
-            index + 1,
-            total_batches,
-            batch.len(),
-            MIN_SUCCESSFUL_TARGETS,
-            STABILITY_ATTEMPTS
-        );
+        if let Some(compatibility_target) = compatibility_target.as_ref() {
+            println!(
+                "targets {target} + {compatibility_target}: batch {}/{} testing {} configs with Xray core; requiring {}/{}",
+                index + 1,
+                total_batches,
+                batch.len(),
+                MIN_SUCCESSFUL_TARGETS,
+                STABILITY_ATTEMPTS
+            );
+        } else {
+            println!(
+                "target {target}: batch {}/{} testing {} configs with Xray core; requiring {}/{}",
+                index + 1,
+                total_batches,
+                batch.len(),
+                MIN_SUCCESSFUL_TARGETS,
+                STABILITY_ATTEMPTS
+            );
+        }
 
-        let batch_metadata =
-            check_batch(binary, batch, &target, workers.max(1), timeout_seconds).await?;
+        let batch_metadata = check_batch(
+            binary,
+            batch,
+            &target,
+            compatibility_target.as_ref(),
+            workers.max(1),
+            timeout_seconds,
+        )
+        .await?;
         metadata.extend(batch_metadata);
     }
 
-    println!(
-        "{}/{} verified by Xray with {}/{} successful attempts and every measured latency <= {}ms",
-        metadata.len(),
-        candidates.len(),
-        MIN_SUCCESSFUL_TARGETS,
-        STABILITY_ATTEMPTS,
-        MAX_LATENCY_MS
-    );
+    if let Some(compatibility_target) = compatibility_target.as_ref() {
+        println!(
+            "{}/{} verified by Xray against {} and {} with {}/{} successful attempts and every measured latency <= {}ms",
+            metadata.len(),
+            candidates.len(),
+            target,
+            compatibility_target,
+            MIN_SUCCESSFUL_TARGETS,
+            STABILITY_ATTEMPTS,
+            MAX_LATENCY_MS
+        );
+    } else {
+        println!(
+            "{}/{} verified by Xray with {}/{} successful attempts and every measured latency <= {}ms",
+            metadata.len(),
+            candidates.len(),
+            MIN_SUCCESSFUL_TARGETS,
+            STABILITY_ATTEMPTS,
+            MAX_LATENCY_MS
+        );
+    }
 
     Ok(metadata)
 }

@@ -179,10 +179,10 @@ jobs:
             --workers 32 \
             --batch-size 1000 \
             --timeout 1 \
-            --final-recheck-limit 500 \
+            --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
-            --final-workers 16 \
-            --final-batch-size 500 \
+            --selected-workers 16 \
+            --selected-batch-size 500 \
             --primary-target https://speed.cloudflare.com \
             --selection-limit 200 \
             --max-per-endpoint 1
