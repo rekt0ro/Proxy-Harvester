@@ -447,7 +447,8 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
+            let selected =
+                select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
             write_lines(&output, &selected)?;
             println!(
                 "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",
