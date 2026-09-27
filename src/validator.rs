@@ -1259,3 +1259,77 @@ pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> R
     )
     .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::STANDARD;
+
+    #[test]
+    fn vless_percent_encoded_username_is_decoded() {
+        let config = "vless://user%40name@example.com:443?security=tls&sni=edge.example";
+        let parsed = parse_config(config).expect("VLESS should parse");
+        assert_eq!(parsed["settings"]["vnext"][0]["users"][0]["id"], "user@name");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["serverName"],
+            "edge.example"
+        );
+    }
+
+    #[test]
+    fn vmess_tcp_http_preserves_path_and_host() {
+        let payload = json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "aid": 0,
+            "scy": "auto",
+            "net": "tcp",
+            "tls": "tls",
+            "type": "http",
+            "host": "origin.example",
+            "path": "/proxy",
+        });
+        let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+        let parsed = parse_config(&config).expect("VMess should parse");
+
+        assert_eq!(
+            parsed["streamSettings"]["rawSettings"]["header"]["type"],
+            "http"
+        );
+        assert_eq!(
+            parsed["streamSettings"]["rawSettings"]["header"]["request"]["path"][0],
+            "/proxy"
+        );
+        assert_eq!(
+            parsed["streamSettings"]["rawSettings"]["header"]["request"]["headers"]["Host"][0],
+            "origin.example"
+        );
+    }
+
+    #[test]
+    fn basic_proxy_endpoint_defaults_are_preserved() {
+        assert_eq!(
+            endpoint("socks5://127.0.0.1").expect("SOCKS endpoint"),
+            ("127.0.0.1".to_string(), 1080)
+        );
+        assert_eq!(
+            endpoint("http://127.0.0.1").expect("HTTP endpoint"),
+            ("127.0.0.1".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn vmess_endpoint_comes_from_decoded_payload() {
+        let payload = json!({
+            "add": "proxy.example",
+            "port": 8443,
+            "id": "00000000-0000-0000-0000-000000000001"
+        });
+        let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+        assert_eq!(
+            endpoint(&config).expect("VMess endpoint"),
+            ("proxy.example".to_string(), 8443)
+        );
+    }
+}
