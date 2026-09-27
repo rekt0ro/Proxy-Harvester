@@ -1,6 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use proxy_harvester::singbox::{
+use proxyrift::singbox::{
     validate_candidates_with_targets as validate_singbox_targets,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
