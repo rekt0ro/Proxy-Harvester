@@ -1197,7 +1197,7 @@ async fn check_batch(
         let mut attempts = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
 
-        for attempt in 0..STABILITY_ATTEMPTS {
+        for _ in 0..STABILITY_ATTEMPTS {
             if active.is_empty() {
                 break;
             }
