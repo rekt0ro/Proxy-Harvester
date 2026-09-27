@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use std::borrow::Cow;
 use futures::stream::{self, StreamExt, TryStreamExt};
+use std::borrow::Cow;
 use percent_encoding::percent_decode_str;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::Endpoint;
