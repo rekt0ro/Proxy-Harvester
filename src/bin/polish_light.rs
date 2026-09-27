@@ -465,8 +465,9 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata =
-            validate_light_batch(&xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout)
+        let chunk_metadata = validate_light_batch(
+            &xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout,
+        )
         .await?;
 
         for config in chunk_metadata.keys() {
