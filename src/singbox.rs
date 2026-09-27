@@ -699,7 +699,6 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
-
 async fn check_batch_targets(
     binary: &str,
     entries: &[(String, Value)],
