@@ -1,5 +1,8 @@
 use proxy_harvester::singbox::validate_candidates_with_settings as validate_singbox_candidates;
-use proxy_harvester::validator::{endpoint, read_lines, write_lines, ProxyMetrics};
+use proxy_harvester::validator::{
+    endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
+    COMPATIBILITY_TARGET, PRIMARY_TARGET,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 
@@ -154,25 +157,53 @@ fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec
 }
 
 async fn dual_validate(
+    xray: &str,
     singbox: &str,
     candidates: &[String],
+    primary_target: &str,
     workers: usize,
+    batch_size: usize,
     timeout_seconds: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
-    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-    let verified = validate_singbox_candidates(
-        singbox,
+    let xray_metadata = validate_candidates_with_compatibility(
+        xray,
         candidates,
+        primary_target,
+        COMPATIBILITY_TARGET,
+        workers,
+        batch_size,
+        timeout_seconds,
+    )
+    .await?;
+
+    if xray_metadata.is_empty() {
+        println!("[INFO] Dual-core Light: Xray verified 0 candidates.");
+        return Ok(HashMap::new());
+    }
+
+    let xray_candidates = xray_metadata.keys().cloned().collect::<Vec<_>>();
+    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
+    let singbox_metadata = validate_singbox_candidates(
+        singbox,
+        &xray_candidates,
         workers.min(32).max(1),
         request_timeout,
         timeout_seconds * 1000.0,
     )
     .await?;
 
+    let mut verified = HashMap::new();
+    for (config, metrics) in xray_metadata {
+        if singbox_metadata.contains_key(&config) {
+            verified.insert(config, metrics);
+        }
+    }
+
     println!(
-        "[INFO] Light: sing-box verified {} of {} candidates.",
-        verified.len(),
-        candidates.len()
+        "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
+        xray_candidates.len(),
+        singbox_metadata.len(),
+        verified.len()
     );
 
     Ok(verified)
@@ -224,6 +255,8 @@ async fn main() -> Result<(), String> {
     let final_batch_size = value(&args, "--selected-batch-size", "500")
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
+    let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
+    let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
         "--selection-limit",
@@ -271,7 +304,16 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = dual_validate(&singbox, &chunk_vec, workers, timeout).await?;
+        let chunk_metadata = dual_validate(
+            &xray,
+            &singbox,
+            &chunk_vec,
+            &primary_target,
+            workers,
+            batch_size,
+            timeout,
+        )
+        .await?;
 
         for config in chunk_metadata.keys() {
             if global_seen.insert(config.clone()) {
@@ -331,8 +373,16 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata =
-            dual_validate(&singbox, &final_candidates, final_workers, timeout).await?;
+        let primary_metadata = dual_validate(
+            &xray,
+            &singbox,
+            &final_candidates,
+            &primary_target,
+            final_workers,
+            final_batch_size,
+            timeout,
+        )
+        .await?;
 
         for (config, metrics) in primary_metadata {
             if !final_metadata.contains_key(&config) {
