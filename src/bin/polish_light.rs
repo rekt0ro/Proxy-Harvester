@@ -581,11 +581,9 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let selected = protocol_round_robin(
-                &ranked(final_verified.clone(), &final_metadata, &positions),
-                selection_limit,
-                max_per_endpoint,
-            );
+            let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
+            let selected =
+                protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
             write_experimental_output(
                 experimental_output.as_deref(),
                 &ranked_final,
