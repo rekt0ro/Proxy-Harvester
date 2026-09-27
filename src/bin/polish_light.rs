@@ -11,7 +11,6 @@ const MAX_DISCOVERY_CANDIDATES: usize = 4000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
-const DEFAULT_MAX_PER_IDENTITY: usize = 3;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -118,7 +117,6 @@ fn protocol_round_robin(
     configs: &[String],
     limit: usize,
     max_per_endpoint: usize,
-    max_per_identity: usize,
 ) -> Vec<String> {
     let mut groups = BTreeMap::<String, Vec<String>>::new();
 
@@ -142,35 +140,49 @@ fn protocol_round_robin(
             let group = groups.get(scheme).expect("protocol group exists");
             let cursor = cursors.entry(scheme.clone()).or_insert(0);
 
-            while *cursor < group.len() {
-                let config = &group[*cursor];
-                *cursor += 1;
+            let mut preferred = None;
+            let mut fallback = None;
+
+            for index in *cursor..group.len() {
+                let config = &group[index];
 
                 if let Some(ep) = endpoint(config) {
-                    let count = endpoint_counts.entry(ep).or_insert(0);
-                    if *count >= max_per_endpoint {
+                    let count = endpoint_counts.get(&ep).copied().unwrap_or(0);
+                    if count >= max_per_endpoint {
                         continue;
                     }
                 }
 
-                if let Some(identity) = identity_key(config) {
-                    let count = identity_counts.entry(identity).or_insert(0);
-                    if *count >= max_per_identity {
-                        continue;
-                    }
+                let identity_count = identity_key(config)
+                    .and_then(|identity| identity_counts.get(&identity).copied())
+                    .unwrap_or(0);
+
+                if identity_count == 0 {
+                    preferred = Some(index);
+                    break;
                 }
 
-                if let Some(ep) = endpoint(config) {
-                    *endpoint_counts.entry(ep).or_insert(0) += 1;
+                if fallback.is_none() {
+                    fallback = Some(index);
                 }
-                if let Some(identity) = identity_key(config) {
-                    *identity_counts.entry(identity).or_insert(0) += 1;
-                }
-
-                result.push(config.clone());
-                made_progress = true;
-                break;
             }
+
+            let Some(index) = preferred.or(fallback) else {
+                continue;
+            };
+
+            let config = &group[index];
+            *cursor = index + 1;
+
+            if let Some(ep) = endpoint(config) {
+                *endpoint_counts.entry(ep).or_insert(0) += 1;
+            }
+            if let Some(identity) = identity_key(config) {
+                *identity_counts.entry(identity).or_insert(0) += 1;
+            }
+
+            result.push(config.clone());
+            made_progress = true;
 
             if result.len() >= limit {
                 break;
@@ -248,7 +260,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--max-per-identity N] [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -305,14 +317,6 @@ async fn main() -> Result<(), String> {
     )
     .parse::<usize>()
     .map_err(|_| "invalid --max-per-endpoint".to_string())?
-    .max(1);
-    let max_per_identity = value(
-        &args,
-        "--max-per-identity",
-        DEFAULT_MAX_PER_IDENTITY.to_string().as_str(),
-    )
-    .parse::<usize>()
-    .map_err(|_| "invalid --max-per-identity".to_string())?
     .max(1);
     let singbox = value(&args, "--singbox", "sing-box");
 
@@ -374,8 +378,7 @@ async fn main() -> Result<(), String> {
             protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
-                max_per_endpoint,
-                max_per_identity,
+                max_per_endpoint ,
             )
             .len(),
         );
@@ -384,8 +387,7 @@ async fn main() -> Result<(), String> {
             let selected = protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
-                max_per_endpoint,
-                max_per_identity,
+                max_per_endpoint ,
             );
             write_lines(&output, &selected)?;
             println!("[INFO] Published {} Light configs.", selected.len());
@@ -445,7 +447,6 @@ async fn main() -> Result<(), String> {
             &ranked_final,
             selection_limit,
             max_per_endpoint,
-            max_per_identity,
         );
 
         println!(
@@ -480,7 +481,6 @@ async fn main() -> Result<(), String> {
             &ranked_final,
             selection_limit,
             max_per_endpoint,
-            max_per_identity,
         );
 
     if selected.is_empty() {
@@ -510,7 +510,7 @@ mod tests {
             "hysteria2://e@example.org:443".to_string(),
         ];
 
-        let selected = protocol_round_robin(&configs, 5, 1, 1);
+        let selected = protocol_round_robin(&configs, 5, 1);
 
         assert_eq!(selected.len(), 4);
         assert_eq!(selected[0], configs[4]);
@@ -529,7 +529,7 @@ mod tests {
             "hysteria2://e@example.org:443".to_string(),
         ];
 
-        let selected = protocol_round_robin(&configs, 5, 1, 1);
+        let selected = protocol_round_robin(&configs, 5, 1);
 
         assert_eq!(selected.len(), 3);
         assert!(selected.contains(&configs[0]));
