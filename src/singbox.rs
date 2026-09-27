@@ -434,7 +434,8 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                     .to_ascii_lowercase();
 
                 if let Some(extra) = source.get("throneExtra").and_then(Value::as_str) {
-                    if let Ok(extra_url) = Url::parse(&format!("https://example.invalid/?{extra}")) {
+                    if let Ok(extra_url) = Url::parse(&format!("https://example.invalid/?{extra}"))
+                    {
                         if let Some(explicit) = extra_url.query_pairs().find_map(|(key, value)| {
                             key.eq_ignore_ascii_case("packetEncoding")
                                 .then_some(value.into_owned())
