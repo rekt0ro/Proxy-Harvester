@@ -1,2 +1,2 @@
-pub mod validator;
 pub mod singbox;
+pub mod validator;
