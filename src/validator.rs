@@ -988,10 +988,9 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         extend_rate_limit(rate_limit_wait(response.headers()));
     }
 
-    // Match Throne/sing-box URL testing: receiving an HTTP response is the
-    // connectivity verdict. The status code is not a proxy reachability test.
-    // Do not force a full body transfer, which can reject otherwise usable proxy connections.
-    drop(response);
+    // Light validation is intentionally stronger than a URL-status probe: require
+    // the response body to be readable through the proxy, not just the headers.
+    response.bytes().await.map_err(|_| ProbeError::Failed)?;
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
