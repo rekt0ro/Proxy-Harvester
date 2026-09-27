@@ -280,8 +280,11 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
     if network == "ws" {
         ws_early_data = first_query(url, &["ed", "maxEarlyData", "max_early_data"], Some(""));
-        ws_early_data_header =
-            first_query(url, &["eh", "earlyDataHeaderName", "early_data_header_name"], Some(""));
+        ws_early_data_header = first_query(
+            url,
+            &["eh", "earlyDataHeaderName", "early_data_header_name"],
+            Some(""),
+        );
 
         if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
             if ws_early_data.is_empty() {
