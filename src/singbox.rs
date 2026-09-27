@@ -1312,10 +1312,7 @@ mod tests {
             "https://speed.cloudflare.com/__down?bytes=16384",
             &vec![0_u8; 16_383]
         ));
-        assert!(valid_probe_body(
-            "https://www.google.com/generate_204",
-            b""
-        ));
+        assert!(valid_probe_body("https://www.google.com/generate_204", b""));
         assert!(!valid_probe_body(
             "https://www.google.com/generate_204",
             b"blocked by upstream"
