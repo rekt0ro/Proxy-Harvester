@@ -18,7 +18,7 @@ pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
     "https://www.gstatic.com/generate_204",
-    COMPATIBILITY_TARGET,
+    "https://detectportal.firefox.com/success.txt",
 ];
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const STABILITY_ATTEMPTS: usize = 3;
