@@ -212,7 +212,7 @@ jobs:
             --output /tmp/proxy-harvester/light.next.txt \
             --workers 32 \
             --batch-size 1000 \
-            --timeout 3 \
+            --timeout 1 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
             --selected-workers 16 \
