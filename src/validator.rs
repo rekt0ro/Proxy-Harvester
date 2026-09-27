@@ -1225,7 +1225,6 @@ pub async fn validate_candidates_with_compatibility(
     .await
 }
 
-
 async fn validate_candidates_targets_inner(
     binary: &str,
     candidates: &[String],
