@@ -121,8 +121,8 @@ async fn main() -> Result<(), String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "Usage: polish_light --candidates FILE --output FILE [--workers N] \
-             [--batch-size N] [--timeout SECONDS] [--final-recheck-limit N] \
-             [--max-candidates N] [--final-workers N] [--final-batch-size N] \
+             [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
+             [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH]"
         );
         return Ok(());
@@ -139,19 +139,19 @@ async fn main() -> Result<(), String> {
     let timeout = value(&args, "--timeout", "1")
         .parse::<f64>()
         .map_err(|_| "invalid --timeout".to_string())?;
-    let final_recheck_limit = value(&args, "--final-recheck-limit", FINAL_RECHECK_LIMIT.to_string().as_str())
+    let final_recheck_limit = value(&args, "--selected-recheck-limit", FINAL_RECHECK_LIMIT.to_string().as_str())
         .parse::<usize>()
-        .map_err(|_| "invalid --final-recheck-limit".to_string())?;
+        .map_err(|_| "invalid --selected-recheck-limit".to_string())?;
     let max_candidates = value(&args, "--max-candidates", MAX_DISCOVERY_CANDIDATES.to_string().as_str())
         .parse::<usize>()
         .map_err(|_| "invalid --max-candidates".to_string())?
         .clamp(1, MAX_DISCOVERY_CANDIDATES);
-    let final_workers = value(&args, "--final-workers", "16")
+    let final_workers = value(&args, "--selected-workers", "16")
         .parse::<usize>()
-        .map_err(|_| "invalid --final-workers".to_string())?;
-    let final_batch_size = value(&args, "--final-batch-size", "500")
+        .map_err(|_| "invalid --selected-workers".to_string())?;
+    let final_batch_size = value(&args, "--selected-batch-size", "500")
         .parse::<usize>()
-        .map_err(|_| "invalid --final-batch-size".to_string())?;
+        .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
     let selection_limit = value(&args, "--selection-limit", DEFAULT_SELECTION_LIMIT.to_string().as_str())
         .parse::<usize>()
@@ -215,9 +215,9 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let final = diversified(&ranked(final_verified.clone(), &final_metadata, &positions), selection_limit, max_per_endpoint);
-            write_lines(&output, &final)?;
-            println!("[INFO] Published {} Light configs.", final.len());
+            let selected = diversified(&ranked(final_verified.clone(), &final_metadata, &positions), selection_limit, max_per_endpoint);
+            write_lines(&output, &selected)?;
+            println!("[INFO] Published {} Light configs.", selected.len());
             return Ok(());
         }
 
@@ -258,19 +258,19 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let final = diversified(&ranked_final, selection_limit, max_per_endpoint);
+        let selected = diversified(&ranked_final, selection_limit, max_per_endpoint);
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
-            final.len(),
+            selected.len(),
             selection_limit
         );
 
-        if final.len() >= selection_limit {
-            write_lines(&output, &final)?;
+        if selected.len() >= selection_limit {
+            write_lines(&output, &selected)?;
             println!(
-                "[INFO] Published {} Light configs from {} globally verified candidates; final validation used {}.",
-                final.len(),
+                "[INFO] Published {} Light configs from {} globally verified candidates; selected validation used {}.",
+                selected.len(),
                 global_verified.len(),
                 primary_target
             );
@@ -284,16 +284,16 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let final = diversified(&ranked_final, selection_limit, max_per_endpoint);
+    let selected = diversified(&ranked_final, selection_limit, max_per_endpoint);
 
-    if final.is_empty() {
-        return Err("final Light validation produced zero verified configs".to_string());
+    if selected.is_empty() {
+        return Err("selected Light validation produced zero verified configs".to_string());
     }
 
-    write_lines(&output, &final)?;
+    write_lines(&output, &selected)?;
     println!(
         "[INFO] Published {} Light configs after exhausting {} discovery candidates.",
-        final.len(),
+        selected.len(),
         candidates.len()
     );
     Ok(())
