@@ -67,8 +67,7 @@ fn boolish(value: Option<&Value>) -> bool {
 
 fn query_bool(url: &Url, names: &[&str]) -> bool {
     url.query_pairs().any(|(key, value)| {
-        names.iter()
-            .any(|name| key.eq_ignore_ascii_case(name))
+        names.iter().any(|name| key.eq_ignore_ascii_case(name))
             && matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
@@ -100,8 +99,7 @@ fn string_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, String> {
 }
 
 fn u16_at(value: &Value, path: &[&str]) -> Result<u16, String> {
-    let current =
-        value_at(value, path).ok_or_else(|| format!("missing {}", path.join(".")))?;
+    let current = value_at(value, path).ok_or_else(|| format!("missing {}", path.join(".")))?;
 
     match current {
         Value::Number(value) => value
@@ -122,10 +120,7 @@ fn first_user(value: &Value) -> Result<&Value, String> {
         .ok_or_else(|| "missing outbound user".to_string())
 }
 
-fn tls_settings(
-    stream: &Value,
-    insecure: bool,
-) -> Result<Option<Value>, String> {
+fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String> {
     let security = stream
         .get("security")
         .and_then(Value::as_str)
@@ -179,10 +174,7 @@ fn tls_settings(
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "Reality public key missing".to_string())?;
-        let short_id = reality
-            .get("shortId")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let short_id = reality.get("shortId").and_then(Value::as_str).unwrap_or("");
 
         tls["reality"] = json!({
             "enabled": true,
@@ -230,10 +222,7 @@ fn transport_settings(stream: &Value) -> Result<Option<Value>, String> {
                     transport["path"] = json!(path);
                 }
 
-                if let Some(host) = request
-                    .get("headers")
-                    .and_then(|value| value.get("Host"))
-                {
+                if let Some(host) = request.get("headers").and_then(|value| value.get("Host")) {
                     if host.is_array() {
                         transport["host"] = host.clone();
                     } else if let Some(host) = host.as_str() {
@@ -409,10 +398,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 outbound["network"] = json!("tcp");
             }
 
-            if let Some(tls) = tls_settings(
-                &stream,
-                boolish(source.get("allowInsecure")),
-            )? {
+            if let Some(tls) = tls_settings(&stream, boolish(source.get("allowInsecure")))? {
                 outbound["tls"] = tls;
             }
             if let Some(transport) = transport {
@@ -452,10 +438,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
         })),
         "hysteria2" | "hy2" => {
             let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-            let password = string_at(
-                &xray,
-                &["streamSettings", "hysteriaSettings", "auth"],
-            )?;
+            let password = string_at(&xray, &["streamSettings", "hysteriaSettings", "auth"])?;
             let mut outbound = json!({
                 "type": "hysteria2",
                 "server": string_at(&xray, &["settings", "address"])?,
@@ -463,10 +446,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": password,
             });
 
-            if let Some(tls) = tls_settings(
-                &stream,
-                query_bool(&url, &["insecure"]),
-            )? {
+            if let Some(tls) = tls_settings(&stream, query_bool(&url, &["insecure"]))? {
                 outbound["tls"] = tls;
             } else {
                 return Err("Hysteria2 TLS settings missing".to_string());
