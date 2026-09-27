@@ -6,7 +6,6 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
-      - "scripts/**"
       - ".github/workflows/**"
       - ".github/dependabot.yml"
 
@@ -24,11 +23,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate Rust
-        run: cargo check --release
+      - name: Format check
+        run: cargo fmt --all -- --check
 
-      - name: Validate Python
-        run: python3 -m py_compile scripts/check_proxies.py scripts/polish_light.py
+      - name: Validate Rust
+        run: cargo check --release --bins
 
       - name: Check whitespace
         run: git diff --check
