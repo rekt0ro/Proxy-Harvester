@@ -1734,7 +1734,8 @@ mod tests {
 
         let trace =
             Url::parse("https://www.cloudflare.com/cdn-cgi/trace").expect("Cloudflare trace");
-        assert!(valid_probe_body(&trace, b""));
+        assert!(valid_probe_body(&trace, b"fl=1"));
+        assert!(!valid_probe_body(&trace, b""));
     }
 
     #[test]

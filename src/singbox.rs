@@ -1313,20 +1313,24 @@ mod tests {
             &vec![0_u8; 16_383]
         ));
         assert!(valid_probe_body(
-            "https://www.google.com/robots.txt",
-            b"User-agent: *\nDisallow: /"
+            "https://www.google.com/generate_204",
+            b""
         ));
         assert!(!valid_probe_body(
-            "https://www.google.com/robots.txt",
+            "https://www.google.com/generate_204",
             b"blocked by upstream"
         ));
         assert!(valid_probe_body(
-            "https://detectportal.firefox.com/success.txt",
-            b"success"
+            "https://www.gstatic.com/generate_204",
+            b""
+        ));
+        assert!(valid_probe_body(
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            b"fl=1"
         ));
         assert!(!valid_probe_body(
-            "https://detectportal.firefox.com/success.txt",
-            b"success page"
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            b""
         ));
     }
 
