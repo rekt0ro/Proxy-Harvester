@@ -701,7 +701,7 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
-        "http://cp.cloudflare.com/" 
+        "http://cp.cloudflare.com/"
         | "https://www.google.com/generate_204"
         | "https://www.gstatic.com/generate_204" => body.is_empty(),
         "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
