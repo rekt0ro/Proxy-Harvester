@@ -155,8 +155,9 @@ jobs:
           fi
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/sing-box" version
-          "$HOME/.local/bin/sing-box" check --help >/dev/null
+          singbox_version="$("$HOME/.local/bin/sing-box" version | head -n 1)"
+          echo "$singbox_version"
+          grep -F "1.14.1" <<< "$singbox_version" >/dev/null
 
       - name: Save sing-box binary cache
         if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
@@ -164,6 +165,7 @@ jobs:
         with:
           path: ~/.local/bin/sing-box
           key: ${{ runner.os }}-sing-box-1.14.1
+
       - name: Validate Rust
         run: |
           cargo fmt --all -- --check
