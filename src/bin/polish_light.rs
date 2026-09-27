@@ -1,7 +1,10 @@
-use proxy_harvester::singbox::validate_candidates_with_targets as validate_singbox_targets;
+use proxy_harvester::singbox::{
+    validate_candidates_with_targets as validate_singbox_targets,
+    validate_candidates_with_targets_strict as validate_singbox_targets_strict,
+};
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_targets, write_lines, ProxyMetrics,
-    LIGHT_TARGETS, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates_with_targets, validate_candidates_with_targets_strict,
+    write_lines, ProxyMetrics, LIGHT_TARGETS, PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -238,32 +241,57 @@ async fn merge_dual(
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
+    strict: bool,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if candidates.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let xray_metadata = validate_candidates_with_targets(
-        xray,
-        candidates,
-        targets,
-        workers,
-        batch_size,
-        timeout_seconds,
-    )
-    .await?;
+    let xray_metadata = if strict {
+        validate_candidates_with_targets_strict(
+            xray,
+            candidates,
+            targets,
+            workers,
+            batch_size,
+            timeout_seconds,
+        )
+        .await?
+    } else {
+        validate_candidates_with_targets(
+            xray,
+            candidates,
+            targets,
+            workers,
+            batch_size,
+            timeout_seconds,
+        )
+        .await?
+    };
     let xray_verified = xray_metadata.len();
 
     let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-    let singbox_metadata = validate_singbox_targets(
-        singbox,
-        candidates,
-        targets,
-        workers.min(32).max(1),
-        request_timeout,
-        timeout_seconds * 1000.0,
-    )
-    .await?;
+    let singbox_metadata = if strict {
+        validate_singbox_targets_strict(
+            singbox,
+            candidates,
+            targets,
+            workers.min(32).max(1),
+            request_timeout,
+            timeout_seconds * 1000.0,
+        )
+        .await?
+    } else {
+        validate_singbox_targets(
+            singbox,
+            candidates,
+            targets,
+            workers.min(32).max(1),
+            request_timeout,
+            timeout_seconds * 1000.0,
+        )
+        .await?
+    };
 
     let mut verified = HashMap::new();
     for (config, mut metrics) in xray_metadata {
@@ -294,6 +322,7 @@ async fn validate_light_batch(
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
+    strict: bool,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut singbox_candidates = Vec::new();
     let mut xray_candidates = Vec::new();
@@ -318,7 +347,17 @@ async fn validate_light_batch(
 
     if !singbox_candidates.is_empty() {
         let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-        verified.extend(
+        let metadata = if strict {
+            validate_singbox_targets_strict(
+                singbox,
+                &singbox_candidates,
+                targets,
+                workers.min(32).max(1),
+                request_timeout,
+                timeout_seconds * 1000.0,
+            )
+            .await?
+        } else {
             validate_singbox_targets(
                 singbox,
                 &singbox_candidates,
@@ -327,12 +366,23 @@ async fn validate_light_batch(
                 request_timeout,
                 timeout_seconds * 1000.0,
             )
-            .await?,
-        );
+            .await?
+        };
+        verified.extend(metadata);
     }
 
     if !xray_candidates.is_empty() {
-        verified.extend(
+        let metadata = if strict {
+            validate_candidates_with_targets_strict(
+                xray,
+                &xray_candidates,
+                targets,
+                workers,
+                batch_size,
+                timeout_seconds,
+            )
+            .await?
+        } else {
             validate_candidates_with_targets(
                 xray,
                 &xray_candidates,
@@ -341,8 +391,9 @@ async fn validate_light_batch(
                 batch_size,
                 timeout_seconds,
             )
-            .await?,
-        );
+            .await?
+        };
+        verified.extend(metadata);
     }
 
     if !dual_candidates.is_empty() {
@@ -355,6 +406,7 @@ async fn validate_light_batch(
                 workers,
                 batch_size,
                 timeout_seconds,
+                strict,
             )
             .await?,
         );
@@ -466,7 +518,14 @@ async fn main() -> Result<(), String> {
 
         let chunk_vec = chunk.to_vec();
         let chunk_metadata = validate_light_batch(
-            &xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout,
+            &xray,
+            &singbox,
+            &chunk_vec,
+            &targets,
+            workers,
+            batch_size,
+            timeout,
+            false,
         )
         .await?;
 
@@ -533,6 +592,7 @@ async fn main() -> Result<(), String> {
             final_workers,
             final_batch_size,
             timeout,
+            true,
         )
         .await?;
 
