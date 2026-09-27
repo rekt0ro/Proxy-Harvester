@@ -1,4 +1,4 @@
-# Proxy-Harvester
+# ProxyRift
 
 Automated collection, validation, and publishing of publicly available proxy configurations.
 
