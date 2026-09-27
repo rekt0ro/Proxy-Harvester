@@ -272,11 +272,32 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         out["realitySettings"] = reality;
     }
 
-    let path = first_query(url, &["path"], Some(""));
+    let mut path = first_query(url, &["path"], Some(""));
     let host_header = first_query(url, &["host"], Some(""));
 
     if network == "ws" {
-        let early_data = first_query(url, &["ed", "maxEarlyData"], Some(""));
+        let mut early_data = first_query(
+            url,
+            &["ed", "maxEarlyData", "max_early_data"],
+            Some(""),
+        );
+        let mut early_data_header =
+            first_query(url, &["eh", "earlyDataHeaderName", "early_data_header_name"], Some(""));
+
+        if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
+            if early_data.is_empty() {
+                early_data = encoded_early_data
+                    .split('&')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+            }
+            if early_data_header.is_empty() {
+                early_data_header = "Sec-WebSocket-Protocol".to_string();
+            }
+            path = base_path.to_string();
+        }
+
         if !early_data.is_empty() {
             let early_data = early_data
                 .parse::<u64>()
@@ -285,7 +306,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
-        let early_data_header = first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
         if early_data.is_empty() && !early_data_header.is_empty() {
             return Err("WebSocket early-data header is set without early data".to_string());
         }
@@ -329,15 +349,23 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !host_header.is_empty() {
                 settings["headers"] = json!({ "Host": host_header });
             }
-            let early_data = first_query(url, &["ed", "maxEarlyData"], Some(""));
+            let early_data = first_query(
+                url,
+                &["ed", "maxEarlyData", "max_early_data"],
+                Some(""),
+            );
+            let early_data_header = first_query(
+                url,
+                &["eh", "earlyDataHeaderName", "early_data_header_name"],
+                Some(""),
+            );
             if !early_data.is_empty() {
                 settings["maxEarlyData"] = json!(early_data
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
-                let early_data_header = first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
-                if !early_data_header.is_empty() {
-                    settings["earlyDataHeaderName"] = json!(early_data_header);
-                }
+            }
+            if !early_data_header.is_empty() {
+                settings["earlyDataHeaderName"] = json!(early_data_header);
             }
             out["wsSettings"] = settings;
         }
