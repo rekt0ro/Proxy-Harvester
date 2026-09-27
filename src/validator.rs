@@ -1564,7 +1564,10 @@ async fn check_batch_targets(
                 });
             }
 
-            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
+            if !active.is_empty()
+                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
                 sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
@@ -1596,7 +1599,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if result.is_ok() {
+                    if matches!(result, Ok(latency) if latency <= MAX_LATENCY_MS) {
                         secondary_success[entry_index] = true;
                     }
                 }

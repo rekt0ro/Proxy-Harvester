@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use std::borrow::Cow;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
 use quinn::crypto::rustls::QuicClientConfig;
@@ -243,10 +244,12 @@ async fn load_sources(
     path: &Path,
 ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let content = fs::read_to_string(path).await?;
+    let mut seen = HashSet::new();
     Ok(content
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| seen.insert(*line))
         .map(ToOwned::to_owned)
         .collect())
 }
@@ -729,7 +732,7 @@ fn looks_like_base64(value: &str) -> bool {
 fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
 
-    if !text.contains("://") {
+    if !text.contains("://") && text.len() <= MAX_COMPACT_BASE64_BYTES.saturating_mul(2) {
         let compact = text.split_whitespace().collect::<String>();
         if compact.len() <= MAX_COMPACT_BASE64_BYTES && looks_like_base64(&compact) {
             inputs.push(compact);
@@ -856,10 +859,6 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
         Ok(Ok(_)) => Some(start.elapsed().as_millis() as u64),
         _ => None,
     }
-}
-
-async fn transport_reachable(config: &str) -> bool {
-    transport_latency(config).await.is_some()
 }
 
 async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
