@@ -469,11 +469,7 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let selected = protocol_round_robin(
-            &ranked_final,
-            selection_limit,
-            max_per_endpoint,
-        );
+    let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
 
     if selected.is_empty() {
         return Err("selected Light validation produced zero verified configs".to_string());
