@@ -1443,9 +1443,10 @@ mod tests {
 
     #[test]
     fn ignores_removed_allow_insecure_hysteria2_option() {
-        let config =
-            parse_hy2("hysteria2://password@example.com:443?insecure=1&sni=example.com")
-                .expect("Hysteria2 TLS should parse");
+        let config = parse_hy2(
+            "hysteria2://password@example.com:443?insecure=1&sni=example.com",
+        )
+        .expect("Hysteria2 TLS should parse");
 
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
@@ -1460,5 +1461,4 @@ mod tests {
 
         assert!(result.is_err());
     }
-
 }
