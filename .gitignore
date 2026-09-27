@@ -1,5 +1,3 @@
 sources.txt
 subscriptions/.*.txt
 target/
-__pycache__/
-*.py[cod]
