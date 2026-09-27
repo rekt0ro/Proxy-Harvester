@@ -627,15 +627,31 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
 }
 
 async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
+    const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
     let started = std::time::Instant::now();
     let response = client
         .get(url)
+        .header("Accept-Encoding", "identity")
         .send()
         .await
         .map_err(|error| error.to_string())?;
 
     if !response.status().is_success() {
         return Err(format!("HTTP status {}", response.status()));
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err("response body too large".to_string());
+    }
+
+    let body = response.bytes().await.map_err(|error| error.to_string())?;
+
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err("response body too large".to_string());
     }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
