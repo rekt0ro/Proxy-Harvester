@@ -1,8 +1,5 @@
 use proxy_harvester::singbox::validate_candidates as validate_singbox_candidates;
-use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
-    COMPATIBILITY_TARGET, PRIMARY_TARGET,
-};
+use proxy_harvester::validator::{endpoint, read_lines, write_lines, ProxyMetrics};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 
@@ -161,8 +158,7 @@ async fn dual_validate(
     candidates: &[String],
     workers: usize,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
-    let verified =
-        validate_singbox_candidates(singbox, candidates, workers.min(32).max(1)).await?;
+    let verified = validate_singbox_candidates(singbox, candidates, workers.min(32).max(1)).await?;
 
     println!(
         "[INFO] Light: sing-box verified {} of {} candidates.",
@@ -323,8 +319,7 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata =
-            dual_validate(&singbox, &final_candidates, final_workers).await?;
+        let primary_metadata = dual_validate(&singbox, &final_candidates, final_workers).await?;
 
         for (config, metrics) in primary_metadata {
             if !final_metadata.contains_key(&config) {
@@ -356,10 +351,9 @@ async fn main() -> Result<(), String> {
             println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
             write_lines(&output, &selected)?;
             println!(
-                "[INFO] Published {} Light configs from {} globally verified candidates; selected validation used {}.",
+                "[INFO] Published {} Light configs from {} globally verified candidates.",
                 selected.len(),
-                global_verified.len(),
-                primary_target
+                global_verified.len()
             );
             return Ok(());
         }
