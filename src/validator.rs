@@ -1164,7 +1164,6 @@ async fn check_batch(
     Ok(combined)
 }
 
-
 pub async fn validate_candidates_with_targets(
     binary: &str,
     candidates: &[String],
