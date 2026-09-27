@@ -907,8 +907,10 @@ mod tests {
 
     #[test]
     fn rejects_xhttp() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=xhttp&security=none";
-        let error = singbox_outbound(config).expect_err("XHTTP is unsupported by standard sing-box");
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=xhttp&security=none";
+        let error =
+            singbox_outbound(config).expect_err("XHTTP is unsupported by standard sing-box");
         assert!(error.contains("XHTTP"));
     }
 }
