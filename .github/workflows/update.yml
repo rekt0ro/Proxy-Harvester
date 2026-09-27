@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))')"
+          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | sed -n 's/.*"tag_name": *"v\\([^"]*\\)".*/\\1/p' | head -n1)"
           echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
           echo "Xray version: ${xray_version}"
 
@@ -89,9 +89,7 @@ jobs:
           mkdir -p "$HOME/.local/bin" /tmp/xray-download
 
           if [ ! -x "$HOME/.local/bin/xray" ]; then
-            asset_url="$(curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/tags/v${XRAY_VERSION}" |
-              python3 -c 'import json, sys; a=json.load(sys.stdin)["assets"]; print(next(x["browser_download_url"] for x in a if x["name"] == "Xray-linux-64.zip"))')"
-
+            asset_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip"
             curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
             unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
             install -m 0755 /tmp/xray-download/extracted/xray "$HOME/.local/bin/xray"
@@ -107,21 +105,19 @@ jobs:
           path: ~/.local/bin/xray
           key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}
 
-      - name: Validate scripts
+      - name: Validate Rust
         run: |
-          python3 -m py_compile scripts/check_proxies.py scripts/polish_light.py
-          git diff --check
+          cargo fmt --all -- --check
+          cargo check --release --bins
 
+      - name: Check runner network
       - name: Check runner network
         run: |
           curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
-      - name: Prepare temporary workspace
-        run: mkdir -p /tmp/proxy-harvester
-
-      - name: Build collector
-        run: cargo build --release
+      - name: Build Rust binaries
+        run: cargo build --release --bins
 
       - name: Save Rust registry cache
         if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
@@ -145,10 +141,9 @@ jobs:
       - name: Build Light subscription
         run: |
           set +e
-          python3 scripts/polish_light.py \
+          ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
-            --output /tmp/proxy-harvester/light.next.txt \
-            --checker scripts/check_proxies.py \
+            --output subscriptions/light.txt \
             --workers 32 \
             --batch-size 1000 \
             --timeout 1 \
@@ -162,8 +157,7 @@ jobs:
           status=$?
           set -e
 
-          if [ -s /tmp/proxy-harvester/light.next.txt ]; then
-            cp /tmp/proxy-harvester/light.next.txt subscriptions/light.txt
+          if [ -s subscriptions/light.txt ]; then
             echo "Published refreshed Light subscription."
           elif [ "$status" -ne 0 ]; then
             echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
@@ -172,22 +166,7 @@ jobs:
           fi
 
       - name: Generate Base64 subscriptions
-        run: |
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-
-          for name in ("all", "light"):
-              path = Path("subscriptions") / f"{name}.txt"
-              if not path.exists():
-                  continue
-              payload = path.read_bytes().rstrip(b"\r\n")
-              encoded = base64.b64encode(payload).decode("ascii")
-              (Path("subscriptions") / f"{name}-base64.txt").write_text(
-                  encoded + "\n",
-                  encoding="ascii",
-              )
-          PY
+        run: ./target/release/encode_subscriptions
 
       - name: Clean obsolete caches
         if: success()
@@ -231,7 +210,7 @@ jobs:
       - name: Clean generated temporary files
         if: always()
         run: |
-          rm -rf /tmp/proxy-harvester /tmp/xray-build /tmp/xray-download
+          rm -rf /tmp/xray-build /tmp/xray-download
           rm -f subscriptions/.*.txt
 
       - name: Commit changes
