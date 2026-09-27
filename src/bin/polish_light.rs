@@ -231,12 +231,11 @@ fn light_backend(config: &str) -> LightBackend {
     // XHTTP is an Xray-only path in our Light validator, regardless of the
     // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
     // deterministic parser rejection.
-    let raw_http_over_tls =
-        (transport.is_empty() || transport == "tcp" || transport == "raw")
-            && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
-            && ((!security.is_empty() && security != "none")
-                || !query_value(&url, &["sni"]).is_empty()
-                || !query_value(&url, &["peer"]).is_empty());
+    let raw_http_over_tls = (transport.is_empty() || transport == "tcp" || transport == "raw")
+        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
+        && ((!security.is_empty() && security != "none")
+            || !query_value(&url, &["sni"]).is_empty()
+            || !query_value(&url, &["peer"]).is_empty());
 
     if transport == "xhttp" || raw_http_over_tls {
         return LightBackend::Xray;
@@ -670,7 +669,8 @@ mod tests {
 
     #[test]
     fn routes_vision_udp443_to_xray() {
-        let config = "vless://uuid@example.com:443?security=tls&type=tcp&flow=xtls-rprx-vision-udp443";
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=tcp&flow=xtls-rprx-vision-udp443";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
