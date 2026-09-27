@@ -284,8 +284,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
-        let early_data_header =
-            first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
+        let early_data_header = first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
         if early_data.is_empty() && !early_data_header.is_empty() {
             return Err("WebSocket early-data header is set without early data".to_string());
         }
@@ -331,11 +330,10 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             }
             let early_data = first_query(url, &["ed", "maxEarlyData"], Some(""));
             if !early_data.is_empty() {
-                settings["maxEarlyData"] = json!(
-                    early_data.parse::<u32>().expect("validated WebSocket early-data size")
-                );
-                let early_data_header =
-                    first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
+                settings["maxEarlyData"] = json!(early_data
+                    .parse::<u32>()
+                    .expect("validated WebSocket early-data size"));
+                let early_data_header = first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
                 if !early_data_header.is_empty() {
                     settings["earlyDataHeaderName"] = json!(early_data_header);
                 }
@@ -1209,8 +1207,6 @@ async fn check_batch(
                     Err(ProbeError::Failed) => {}
                 }
             }
-
-
         }
 
         for (config, _) in &batch_entries {
@@ -1543,8 +1539,6 @@ async fn check_batch_targets(
                     Err(ProbeError::Failed) => {}
                 }
             }
-
-
         }
 
         for (config, _) in &batch_entries {
@@ -1736,7 +1730,8 @@ mod tests {
             Url::parse("https://www.gstatic.com/generate_204").expect("Google static target");
         assert!(valid_probe_body(&gstatic_204, b""));
 
-        let trace = Url::parse("https://www.cloudflare.com/cdn-cgi/trace").expect("Cloudflare trace");
+        let trace =
+            Url::parse("https://www.cloudflare.com/cdn-cgi/trace").expect("Cloudflare trace");
         assert!(valid_probe_body(&trace, b""));
     }
 

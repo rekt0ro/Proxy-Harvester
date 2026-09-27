@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
+use base64::Engine;
 use proxy_harvester::singbox::{
     validate_candidates_with_targets as validate_singbox_targets,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
@@ -7,8 +9,6 @@ use proxy_harvester::validator::{
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
     PRIMARY_TARGET,
 };
-use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
-use base64::Engine;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -152,8 +152,7 @@ fn diversify_recheck_candidates(
 
     for config in configs {
         let family = family_key(config);
-        let family_available =
-            family_counts.get(&family).copied().unwrap_or(0) < max_family;
+        let family_available = family_counts.get(&family).copied().unwrap_or(0) < max_family;
         let endpoint_available = endpoint(config)
             .map(|ep| !seen_endpoints.contains(&ep))
             .unwrap_or(true);
@@ -660,13 +659,12 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let selected =
-                select_verified_configs(
-                    &ranked_final,
-                    selection_limit,
-                    max_per_endpoint,
-                    max_per_family,
-                );
+            let selected = select_verified_configs(
+                &ranked_final,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            );
             write_light_lines(&output, &selected)?;
             println!(
                 "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",

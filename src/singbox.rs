@@ -261,10 +261,7 @@ fn transport_settings(stream: &Value) -> Result<Option<Value>, String> {
             if let Some(headers) = settings.get("headers").filter(|value| value.is_object()) {
                 transport["headers"] = headers.clone();
             }
-            if let Some(early_data) = settings
-                .get("maxEarlyData")
-                .and_then(Value::as_u64)
-            {
+            if let Some(early_data) = settings.get("maxEarlyData").and_then(Value::as_u64) {
                 transport["max_early_data"] = json!(early_data);
             }
             if let Some(header) = settings
@@ -871,8 +868,6 @@ async fn check_batch_targets(
                         .insert(target_host);
                 }
             }
-
-
         }
 
         for (config, _) in &batch_entries {
@@ -1027,8 +1022,6 @@ async fn check_batch(
                     latencies.entry(config).or_default().push(latency);
                 }
             }
-
-
         }
 
         for (config, _) in &batch_entries {
