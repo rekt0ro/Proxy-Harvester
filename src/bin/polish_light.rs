@@ -222,12 +222,6 @@ fn light_backend(config: &str) -> LightBackend {
     let transport = query_value(&url, &["type", "network"]).to_ascii_lowercase();
     let security = query_value(&url, &["security"]).to_ascii_lowercase();
 
-    // Reality is checked by both cores because consumer applications can use
-    // either engine for the same profile class.
-    if security == "reality" {
-        return LightBackend::Dual;
-    }
-
     // XHTTP is an Xray-only path in our Light validator, regardless of the
     // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
     // deterministic parser rejection.
@@ -239,6 +233,12 @@ fn light_backend(config: &str) -> LightBackend {
 
     if transport == "xhttp" || raw_http_over_tls {
         return LightBackend::Xray;
+    }
+
+    // Reality is checked by both cores for transport classes that both
+    // consumer cores can represent.
+    if security == "reality" {
+        return LightBackend::Dual;
     }
 
     if url.scheme().eq_ignore_ascii_case("vless") {
@@ -665,6 +665,13 @@ mod tests {
     #[test]
     fn routes_non_vless_xhttp_to_xray() {
         let config = "trojan://pass@example.com:443?security=tls&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_reality_xhttp_to_xray_only() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=xhttp&pbk=public&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 

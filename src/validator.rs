@@ -177,7 +177,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     }
 
     match network.as_str() {
-        "raw" | "ws" | "grpc" | "httpupgrade" | "xhttp" => {}
+        "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp" => {}
         _ => return Err(format!("unsupported transport {network}")),
     }
 
@@ -255,6 +255,16 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     }
                 });
             }
+        }
+        "http" => {
+            let mut settings = json!({});
+            if !path.is_empty() {
+                settings["path"] = json!(path);
+            }
+            if !host_header.is_empty() {
+                settings["host"] = json!(csv(&host_header));
+            }
+            out["httpSettings"] = settings;
         }
         "ws" => {
             let mut settings = json!({});
@@ -387,9 +397,9 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess UUID missing".to_string())?;
 
-    let network = json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string());
+    let mut network = json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string());
     if network.eq_ignore_ascii_case("h2") {
-        return Err("VMess h2 transport unsupported".to_string());
+        network = "http".to_string();
     }
 
     let mut q = vec![
@@ -433,7 +443,9 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
     let user = json!({
         "id": uuid,
         "alterId": json_u64(value.get("aid")),
-        "security": json_text(value.get("scy")).unwrap_or_else(|| "auto".to_string()),
+        "security": json_text(value.get("scy"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string()),
     });
 
     let stream = stream_settings(&synthetic, host)?;
@@ -964,16 +976,11 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         .map_err(|_| ProbeError::Failed)?;
 
     if response.status().as_u16() == 429 {
-        let retry = rate_limit_wait(response.headers());
-        extend_rate_limit(retry);
-        return Err(ProbeError::RateLimited);
+        extend_rate_limit(rate_limit_wait(response.headers()));
     }
 
-    if !response.status().is_success() {
-        return Err(ProbeError::Failed);
-    }
-
-    // Match the consumer clients: a successful response header is the connectivity verdict.
+    // Match Throne/sing-box URL testing: receiving an HTTP response is the
+    // connectivity verdict. The status code is not a proxy reachability test.
     // Do not force a full body transfer, which can reject otherwise usable proxy connections.
     drop(response);
 

@@ -258,6 +258,27 @@ fn transport_settings(stream: &Value) -> Result<Option<Value>, String> {
 
             Ok(Some(transport))
         }
+        "http" => {
+            let settings = stream
+                .get("httpSettings")
+                .ok_or_else(|| "missing HTTP transport settings".to_string())?;
+            let mut transport = json!({
+                "type": "http",
+            });
+            if let Some(path) = settings.get("path").and_then(Value::as_str) {
+                if !path.is_empty() {
+                    transport["path"] = json!(path);
+                }
+            }
+            if let Some(host) = settings.get("host") {
+                if host.is_array() {
+                    transport["host"] = host.clone();
+                } else if let Some(host) = host.as_str().filter(|value| !value.is_empty()) {
+                    transport["host"] = json!([host]);
+                }
+            }
+            Ok(Some(transport))
+        }
         "grpc" => {
             let settings = stream
                 .get("grpcSettings")
@@ -405,6 +426,32 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 .and_then(Value::as_str)
                 .unwrap_or("raw")
                 .to_ascii_lowercase();
+            let packet_encoding = {
+                let mut value = source
+                    .get("packetEncoding")
+                    .and_then(Value::as_str)
+                    .unwrap_or("xudp")
+                    .to_ascii_lowercase();
+
+                if let Some(extra) = source.get("throneExtra").and_then(Value::as_str) {
+                    if let Ok(extra_url) = Url::parse(&format!("https://example.invalid/?{extra}")) {
+                        if let Some(explicit) = extra_url.query_pairs().find_map(|(key, value)| {
+                            key.eq_ignore_ascii_case("packetEncoding")
+                                .then_some(value.into_owned())
+                        }) {
+                            value = explicit.to_ascii_lowercase();
+                        }
+                    }
+                }
+
+                match value.as_str() {
+                    "" | "none" => "",
+                    "xudp" => "xudp",
+                    "packetaddr" => "packetaddr",
+                    other => return Err(format!("unsupported VMess packetEncoding {other}")),
+                }
+            };
+
             let mut outbound = json!({
                 "type": "vmess",
                 "server": string_at(&xray, &["settings", "vnext", "0", "address"])?,
@@ -412,6 +459,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "uuid": string_at(user, &["id"])?,
                 "security": vmess_security(string_at(user, &["security"] )?)?,
                 "alter_id": user.get("alterId").and_then(Value::as_u64).unwrap_or(0),
+                "packet_encoding": packet_encoding,
             });
 
             if network != "udp" {
@@ -642,11 +690,8 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    if !response.status().is_success() {
-        return Err(format!("HTTP status {}", response.status()));
-    }
-
-    // Match sing-box/Throne URL testing: successful HTTP response headers are enough.
+    // Match sing-box/Throne URL testing: receiving an HTTP response is enough.
+    // The response status itself is not a proxy reachability verdict.
     // Closing without draining the body avoids false negatives on quirky upstreams.
     drop(response);
 
@@ -902,6 +947,27 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_vmess_empty_security_to_auto() {
+        let payload = json!({
+            "v": "2",
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "aid": 0,
+            "net": "h2",
+            "scy": "",
+            "tls": "tls",
+            "path": "/grpc",
+            "host": "example.com",
+        });
+        let encoded = STANDARD.encode(serde_json::to_vec(&payload).expect("encode VMess JSON"));
+        let config = format!("vmess://{encoded}");
+        let outbound = singbox_outbound(&config).expect("VMess empty security should map");
+        assert_eq!(outbound["security"], "auto");
+        assert_eq!(outbound["transport"]["type"], "http");
+    }
 
     #[test]
     fn maps_vless_packet_encoding() {
