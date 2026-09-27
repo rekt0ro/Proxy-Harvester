@@ -711,7 +711,7 @@ fn parse_basic(config: &str) -> Result<Value, String> {
     }))
 }
 
-fn parse_config(config: &str) -> Result<Value, String> {
+pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
     let scheme = Url::parse(clean(config))
         .map_err(|error| error.to_string())?
         .scheme()
