@@ -137,12 +137,8 @@ async fn dual_validate(
     }
 
     let xray_candidates = xray_metadata.keys().cloned().collect::<Vec<_>>();
-    let singbox_metadata = validate_singbox_candidates(
-        singbox,
-        &xray_candidates,
-        workers.min(16).max(1),
-    )
-    .await?;
+    let singbox_metadata =
+        validate_singbox_candidates(singbox, &xray_candidates, workers.min(16).max(1)).await?;
 
     let mut verified = HashMap::new();
     for (config, metrics) in xray_metadata {
@@ -160,7 +156,6 @@ async fn dual_validate(
 
     Ok(verified)
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
