@@ -212,10 +212,10 @@ jobs:
             --output /tmp/proxy-harvester/light.next.txt \
             --workers 32 \
             --batch-size 1000 \
-            --timeout 1 \
+            --timeout 5 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
-            --selected-workers 16 \
+            --selected-workers 10 \
             --selected-batch-size 500 \
             --primary-target https://speed.cloudflare.com \
             --singbox "$HOME/.local/bin/sing-box" \
