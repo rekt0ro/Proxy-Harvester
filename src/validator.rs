@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-pub const PRIMARY_TARGET: &str = "http://cp.cloudflare.com/";
+pub const PRIMARY_TARGET: &str = "https://cp.cloudflare.com/";
 pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const STABILITY_ATTEMPTS: usize = 3;
