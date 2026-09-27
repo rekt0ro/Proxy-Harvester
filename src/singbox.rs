@@ -14,10 +14,10 @@ use tokio::time::timeout;
 use url::Url;
 
 const TARGET: &str = "http://cp.cloudflare.com/";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
-const MAX_LATENCY_MS: f64 = 3000.0;
+const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const BATCH_SIZE: usize = 250;
 
@@ -614,13 +614,13 @@ async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
     pending.is_empty()
 }
 
-fn client_for_port(port: u16) -> Result<Client, String> {
+fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, String> {
     Client::builder()
         .proxy(
             reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
                 .map_err(|error| error.to_string())?,
         )
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(request_timeout)
         .user_agent("Proxy-Harvester-Singbox/1.0")
         .build()
         .map_err(|error| error.to_string())
@@ -630,18 +630,12 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     let started = std::time::Instant::now();
     let response = client
         .get(url)
-        .header("Accept-Encoding", "identity")
         .send()
         .await
         .map_err(|error| error.to_string())?;
 
     if !response.status().is_success() {
         return Err(format!("HTTP status {}", response.status()));
-    }
-
-    let body = response.bytes().await.map_err(|error| error.to_string())?;
-    if body.len() < 4096 {
-        return Err(format!("response body too small: {} < 4096", body.len()));
     }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
@@ -651,6 +645,8 @@ async fn check_batch(
     binary: &str,
     entries: &[(String, Value)],
     workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() {
         return Ok(HashMap::new());
@@ -720,7 +716,7 @@ async fn check_batch(
         let mut client_error = None;
 
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index]) {
+            match client_for_port(local_ports[index], request_timeout) {
                 Ok(client) => active.push((config.clone(), client)),
                 Err(error) => {
                     client_error = Some(error);
@@ -772,7 +768,7 @@ async fn check_batch(
 
             if wins >= MIN_SUCCESSFUL_ATTEMPTS
                 && !values.is_empty()
-                && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+                && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
             {
                 let mut values = values;
                 values.sort_by(f64::total_cmp);
@@ -803,10 +799,12 @@ async fn check_batch(
     Ok(verified)
 }
 
-pub async fn validate_candidates(
+pub async fn validate_candidates_with_settings(
     binary: &str,
     candidates: &[String],
     workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut parsed = Vec::new();
     let mut rejected = Vec::new();
@@ -851,18 +849,43 @@ pub async fn validate_candidates(
             batch.len(),
             STABILITY_ATTEMPTS
         );
-        metadata.extend(check_batch(binary, batch, workers.max(1)).await?);
+        metadata.extend(
+            check_batch(
+                binary,
+                batch,
+                workers.max(1),
+                request_timeout,
+                max_latency_ms,
+            )
+            .await?,
+        );
     }
 
     println!(
-        "{}/{} verified by sing-box against {TARGET} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET+HEAD attempts and every measured latency <= {}ms",
+        "{}/{} verified by sing-box against {TARGET} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
         metadata.len(),
         candidates.len(),
         STABILITY_ATTEMPTS,
-        MAX_LATENCY_MS
+        max_latency_ms
     );
 
     Ok(metadata)
+}
+
+
+pub async fn validate_candidates(
+    binary: &str,
+    candidates: &[String],
+    workers: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_with_settings(
+        binary,
+        candidates,
+        workers,
+        DEFAULT_REQUEST_TIMEOUT,
+        DEFAULT_MAX_LATENCY_MS,
+    )
+    .await
 }
 
 #[cfg(test)]
