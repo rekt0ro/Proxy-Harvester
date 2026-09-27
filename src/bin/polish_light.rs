@@ -7,7 +7,7 @@ use std::env;
 use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
-const MAX_DISCOVERY_CANDIDATES: usize = 6000;
+const MAX_DISCOVERY_CANDIDATES: usize = 10000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
@@ -89,111 +89,7 @@ fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String>
     selected
 }
 
-fn protocol(config: &str) -> String {
-    config
-        .split_once("://")
-        .map(|(scheme, _)| scheme.to_ascii_lowercase())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn identity_key(config: &str) -> Option<(String, String)> {
-    let (scheme, rest) = config.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let (user, _) = authority.rsplit_once('@')?;
-
-    match scheme.to_ascii_lowercase().as_str() {
-        "vless" | "trojan" | "hy2" | "hysteria2" | "ss" => {
-            Some((scheme.to_ascii_lowercase(), user.to_string()))
-        }
-        _ => None,
-    }
-}
-
-/// Selects from the already-ranked verified pool in protocol round-robin order.
-/// Ranking is preserved within each protocol, so the best candidate for a
-/// protocol is always selected before its lower-ranked peers. Protocols with
-/// fewer candidates naturally exhaust early and their turns are redistributed.
-fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
-    let mut groups = BTreeMap::<String, Vec<String>>::new();
-
-    for config in configs {
-        groups
-            .entry(protocol(config))
-            .or_default()
-            .push(config.clone());
-    }
-
-    let protocols = groups.keys().cloned().collect::<Vec<_>>();
-    let mut cursors = HashMap::<String, usize>::new();
-    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
-    let mut identity_counts = HashMap::<(String, String), usize>::new();
-    let mut result = Vec::with_capacity(limit.min(configs.len()));
-
-    while result.len() < limit {
-        let mut made_progress = false;
-
-        for scheme in &protocols {
-            let group = groups.get(scheme).expect("protocol group exists");
-            let cursor = cursors.entry(scheme.clone()).or_insert(0);
-
-            let mut preferred = None;
-            let mut fallback = None;
-
-            for index in *cursor..group.len() {
-                let config = &group[index];
-
-                if let Some(ep) = endpoint(config) {
-                    let count = endpoint_counts.get(&ep).copied().unwrap_or(0);
-                    if count >= max_per_endpoint {
-                        continue;
-                    }
-                }
-
-                let identity_count = identity_key(config)
-                    .and_then(|identity| identity_counts.get(&identity).copied())
-                    .unwrap_or(0);
-
-                if identity_count == 0 {
-                    preferred = Some(index);
-                    break;
-                }
-
-                if fallback.is_none() {
-                    fallback = Some(index);
-                }
-            }
-
-            let Some(index) = preferred.or(fallback) else {
-                continue;
-            };
-
-            let config = &group[index];
-            *cursor = index + 1;
-
-            if let Some(ep) = endpoint(config) {
-                *endpoint_counts.entry(ep).or_insert(0) += 1;
-            }
-            if let Some(identity) = identity_key(config) {
-                *identity_counts.entry(identity).or_insert(0) += 1;
-            }
-
-            result.push(config.clone());
-            made_progress = true;
-
-            if result.len() >= limit {
-                break;
-            }
-        }
-
-        if !made_progress {
-            break;
-        }
-    }
-
-    result
-}
-
-fn quality_first_selection(
+fn select_verified_configs(
     configs: &[String],
     limit: usize,
     max_per_endpoint: usize,
@@ -218,30 +114,6 @@ fn quality_first_selection(
     }
 
     result
-}
-
-fn write_experimental_output(
-    path: Option<&str>,
-    ranked_configs: &[String],
-    selection_limit: usize,
-    max_per_endpoint: usize,
-) -> Result<(), String> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-
-    let selected = quality_first_selection(ranked_configs, selection_limit, max_per_endpoint);
-    if selected.is_empty() {
-        return Ok(());
-    }
-
-    write_lines(path, &selected)?;
-    println!(
-        "[INFO] Experimental Light quality-first selection: {} configs written.",
-        selected.len()
-    );
-
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -455,7 +327,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--experimental-output FILE] [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -496,8 +368,6 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let experimental_output = value(&args, "--experimental-output", "");
-    let experimental_output = (!experimental_output.is_empty()).then_some(experimental_output);
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -571,26 +441,19 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_global = ranked(global_verified.clone(), &global_metadata, &positions);
+        let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
         let remaining = selection_limit.saturating_sub(
-            protocol_round_robin(
-                &ranked(final_verified.clone(), &final_metadata, &positions),
-                selection_limit,
-                max_per_endpoint,
-            )
-            .len(),
+            select_verified_configs(&ranked_final, selection_limit, max_per_endpoint).len(),
         );
 
         if remaining == 0 {
-            let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-            let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
-            write_experimental_output(
-                experimental_output.as_deref(),
-                &ranked_global,
-                selection_limit,
-                max_per_endpoint,
-            )?;
+            let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
             write_lines(&output, &selected)?;
-            println!("[INFO] Published {} Light configs.", selected.len());
+            println!(
+                "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",
+                selected.len(),
+                global_verified.len()
+            );
             return Ok(());
         }
 
@@ -643,7 +506,7 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
+        let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
@@ -654,15 +517,17 @@ async fn main() -> Result<(), String> {
         if selected.len() >= selection_limit {
             let mut protocol_counts = BTreeMap::<String, usize>::new();
             for config in &selected {
-                *protocol_counts.entry(protocol(config)).or_default() += 1;
+                let scheme = config
+                    .split_once("://")
+                    .map(|(scheme, _)| scheme.to_ascii_lowercase())
+                    .unwrap_or_else(|| "unknown".to_string());
+                *protocol_counts.entry(scheme).or_default() += 1;
             }
             println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
-            write_experimental_output(
-                experimental_output.as_deref(),
-                &ranked_final,
-                selection_limit,
-                max_per_endpoint,
-            )?;
+            println!(
+                "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
+                selected.len()
+            );
             write_lines(&output, &selected)?;
             println!(
                 "[INFO] Published {} Light configs from {} globally verified candidates.",
@@ -679,7 +544,7 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
+    let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
 
     if selected.is_empty() {
         return Err("selected Light validation produced zero verified configs".to_string());
@@ -688,7 +553,11 @@ async fn main() -> Result<(), String> {
     let mut protocol_counts = BTreeMap::<String, usize>::new();
     let mut backend_counts = BTreeMap::<&str, usize>::new();
     for config in &selected {
-        *protocol_counts.entry(protocol(config)).or_default() += 1;
+        let scheme = config
+            .split_once("://")
+            .map(|(scheme, _)| scheme.to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        *protocol_counts.entry(scheme).or_default() += 1;
         match light_backend(config) {
             LightBackend::SingBox => *backend_counts.entry("sing-box").or_default() += 1,
             LightBackend::Xray => *backend_counts.entry("xray").or_default() += 1,
@@ -697,13 +566,11 @@ async fn main() -> Result<(), String> {
     }
     println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
     println!("[INFO] Light backend distribution: {:?}", backend_counts);
+    println!(
+        "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
+        selected.len()
+    );
 
-    write_experimental_output(
-        experimental_output.as_deref(),
-        &ranked_final,
-        selection_limit,
-        max_per_endpoint,
-    )?;
     write_lines(&output, &selected)?;
     println!(
         "[INFO] Published {} Light configs after exhausting {} discovery candidates.",
@@ -715,7 +582,7 @@ async fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{light_backend, protocol_round_robin, LightBackend};
+    use super::{light_backend, select_verified_configs, LightBackend};
 
     #[test]
     fn routes_reality_to_both_cores() {
@@ -765,7 +632,7 @@ mod tests {
             "vmess://encoded@example.org:9443".to_string(),
         ];
 
-        let selected = super::quality_first_selection(&configs, 4, 1);
+        let selected = select_verified_configs(&configs, 4, 1);
 
         assert_eq!(
             selected,
@@ -773,40 +640,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn round_robin_preserves_rank_within_each_protocol() {
-        let configs = vec![
-            "vless://a@example.com:443".to_string(),
-            "vless://b@example.com:443".to_string(),
-            "trojan://c@example.net:443".to_string(),
-            "trojan://d@example.net:8443".to_string(),
-            "hysteria2://e@example.org:443".to_string(),
-        ];
-
-        let selected = protocol_round_robin(&configs, 5, 1);
-
-        assert_eq!(selected.len(), 4);
-        assert_eq!(selected[0], configs[4]);
-        assert_eq!(selected[1], configs[2]);
-        assert_eq!(selected[2], configs[0]);
-        assert_eq!(selected[3], configs[3]);
-    }
-
-    #[test]
-    fn round_robin_respects_endpoint_limit() {
-        let configs = vec![
-            "vless://a@example.com:443".to_string(),
-            "vless://b@example.com:443".to_string(),
-            "trojan://c@example.net:443".to_string(),
-            "trojan://d@example.net:443".to_string(),
-            "hysteria2://e@example.org:443".to_string(),
-        ];
-
-        let selected = protocol_round_robin(&configs, 5, 1);
-
-        assert_eq!(selected.len(), 3);
-        assert!(selected.contains(&configs[0]));
-        assert!(selected.contains(&configs[2]));
-        assert!(selected.contains(&configs[4]));
-    }
 }
