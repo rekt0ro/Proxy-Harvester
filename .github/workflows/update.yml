@@ -4,6 +4,17 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
+    inputs:
+      max_candidates:
+        description: "Maximum Light candidates to validate for this manual run"
+        required: false
+        default: "1000"
+        type: choice
+        options:
+          - "500"
+          - "1000"
+          - "2000"
+          - "4000"
 
 concurrency:
   group: update-configs
@@ -111,7 +122,6 @@ jobs:
           cargo check --release --bins
 
       - name: Check runner network
-      - name: Check runner network
         run: |
           curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
@@ -139,8 +149,11 @@ jobs:
         run: ./target/release/proxy-harvester
 
       - name: Build Light subscription
+        env:
+          LIGHT_MAX_CANDIDATES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_candidates || '4000' }}
         run: |
           mkdir -p /tmp/proxy-harvester
+          echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
           set +e
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
@@ -149,7 +162,7 @@ jobs:
             --batch-size 1000 \
             --timeout 1 \
             --final-recheck-limit 500 \
-            --max-candidates 4000 \
+            --max-candidates "$LIGHT_MAX_CANDIDATES" \
             --final-workers 16 \
             --final-batch-size 500 \
             --primary-target https://speed.cloudflare.com \
