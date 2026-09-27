@@ -114,7 +114,7 @@ jobs:
 
       - name: Check runner network
         run: |
-          curl -fsS --max-time 10 http://cp.cloudflare.com -o /dev/null
+          curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Prepare temporary workspace
@@ -155,7 +155,7 @@ jobs:
             --final-recheck-limit 500 \
             --final-workers 16 \
             --final-batch-size 500 \
-            --primary-target http://cp.cloudflare.com \
+            --primary-target https://speed.cloudflare.com \
             --selection-limit 200 \
             --max-per-endpoint 1
           status=$?
