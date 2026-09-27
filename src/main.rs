@@ -36,7 +36,7 @@ const MAX_LIGHT_CANDIDATES: usize = 10000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[INFO] Proxy-Harvester starting...");
+    println!("[INFO] ProxyRift starting...");
 
     let root = project_root()?;
     let sources_path = root.join("sources.txt");
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] Loaded {} sources.", sources.len());
 
     let client = Client::builder()
-        .user_agent("Proxy-Harvester/3.0")
+        .user_agent("ProxyRift/3.0")
         .timeout(Duration::from_secs(20))
         .build()?;
 
