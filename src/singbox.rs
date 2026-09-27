@@ -6,7 +6,6 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -23,12 +22,6 @@ const BATCH_SIZE: usize = 250;
 
 fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
-}
-
-fn decode_component(value: &str) -> String {
-    percent_encoding::percent_decode_str(value)
-        .decode_utf8_lossy()
-        .into_owned()
 }
 
 fn b64decode(value: &str) -> Option<Vec<u8>> {

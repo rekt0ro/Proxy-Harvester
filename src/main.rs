@@ -140,35 +140,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .then_with(|| config_a.cmp(config_b))
     });
 
-    let mut light_candidates =
-        Vec::with_capacity(MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len()));
+    let light_target = MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len());
+    let mut light_candidates = Vec::with_capacity(light_target);
     let mut light_candidate_endpoints = HashSet::new();
 
-    for (config, _) in &ranked_working_configs {
-        if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
-            break;
-        }
-
-        if let Some(endpoint) = endpoint(config) {
-            if light_candidate_endpoints.insert(endpoint) {
-                light_candidates.push(config.clone());
-            }
-        }
-    }
-
-    if light_candidates.len() < MAX_LIGHT_CANDIDATES {
-        let mut seen_configs = light_candidates.iter().cloned().collect::<HashSet<_>>();
-
+    if light_target == ranked_working_configs.len() {
         for (config, _) in &ranked_working_configs {
-            if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
-                break;
+            if let Some(endpoint) = endpoint(config) {
+                if light_candidate_endpoints.insert(endpoint) {
+                    light_candidates.push(config.clone());
+                }
             }
+        }
+    } else if light_target > 0 {
+        let last_index = ranked_working_configs.len() - 1;
+        let last_slot = light_target - 1;
 
-            if seen_configs.insert(config.clone()) {
-                light_candidates.push(config.clone());
+        for slot in 0..light_target {
+            let index = if last_slot == 0 {
+                0
+            } else {
+                slot.saturating_mul(last_index) / last_slot
+            };
+
+            let (config, _) = &ranked_working_configs[index];
+            if let Some(endpoint) = endpoint(config) {
+                if light_candidate_endpoints.insert(endpoint) {
+                    light_candidates.push(config.clone());
+                }
+            }
+        }
+
+        if light_candidates.len() < light_target {
+            for (config, _) in &ranked_working_configs {
+                if light_candidates.len() >= light_target {
+                    break;
+                }
+
+                if let Some(endpoint) = endpoint(config) {
+                    if light_candidate_endpoints.insert(endpoint) {
+                        light_candidates.push(config.clone());
+                    }
+                }
             }
         }
     }
+
+    println!(
+        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs across the ranked pool.",
+        light_candidates.len(),
+        ranked_working_configs.len()
+    );
     let light_candidates_path = output_dir.join(".light-candidates.txt");
     let light_candidates_subscription = if light_candidates.is_empty() {
         String::new()

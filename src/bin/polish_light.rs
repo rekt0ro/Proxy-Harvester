@@ -11,6 +11,7 @@ const MAX_DISCOVERY_CANDIDATES: usize = 4000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
+const DEFAULT_MAX_PER_IDENTITY: usize = 3;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -96,11 +97,29 @@ fn protocol(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn identity_key(config: &str) -> Option<(String, String)> {
+    let (scheme, rest) = config.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (user, _) = authority.rsplit_once('@')?;
+
+    match scheme.to_ascii_lowercase().as_str() {
+        "vless" | "trojan" | "hy2" | "hysteria2" | "ss" => {
+            Some((scheme.to_ascii_lowercase(), user.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Selects from the already-ranked verified pool in protocol round-robin order.
 /// Ranking is preserved within each protocol, so the best candidate for a
 /// protocol is always selected before its lower-ranked peers. Protocols with
 /// fewer candidates naturally exhaust early and their turns are redistributed.
-fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
+fn protocol_round_robin(
+    configs: &[String],
+    limit: usize,
+    max_per_endpoint: usize,
+    max_per_identity: usize,
+) -> Vec<String> {
     let mut groups = BTreeMap::<String, Vec<String>>::new();
 
     for config in configs {
@@ -113,6 +132,7 @@ fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usiz
     let protocols = groups.keys().cloned().collect::<Vec<_>>();
     let mut cursors = HashMap::<String, usize>::new();
     let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut identity_counts = HashMap::<(String, String), usize>::new();
     let mut result = Vec::with_capacity(limit.min(configs.len()));
 
     while result.len() < limit {
@@ -131,7 +151,20 @@ fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usiz
                     if *count >= max_per_endpoint {
                         continue;
                     }
-                    *count += 1;
+                }
+
+                if let Some(identity) = identity_key(config) {
+                    let count = identity_counts.entry(identity).or_insert(0);
+                    if *count >= max_per_identity {
+                        continue;
+                    }
+                }
+
+                if let Some(ep) = endpoint(config) {
+                    *endpoint_counts.entry(ep).or_insert(0) += 1;
+                }
+                if let Some(identity) = identity_key(config) {
+                    *identity_counts.entry(identity).or_insert(0) += 1;
                 }
 
                 result.push(config.clone());
@@ -150,10 +183,6 @@ fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usiz
     }
 
     result
-}
-
-fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
-    protocol_round_robin(configs, limit, max_per_endpoint)
 }
 
 async fn dual_validate(
@@ -193,8 +222,12 @@ async fn dual_validate(
     .await?;
 
     let mut verified = HashMap::new();
-    for (config, metrics) in xray_metadata {
-        if singbox_metadata.contains_key(&config) {
+    for (config, mut metrics) in xray_metadata {
+        if let Some(singbox) = singbox_metadata.get(&config) {
+            metrics.successes = metrics.successes.min(singbox.successes);
+            metrics.attempts = metrics.attempts.min(singbox.attempts);
+            metrics.median_ms = metrics.median_ms.max(singbox.median_ms);
+            metrics.min_ms = metrics.min_ms.max(singbox.min_ms);
             verified.insert(config, metrics);
         }
     }
@@ -215,7 +248,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--max-per-identity N] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -272,6 +305,14 @@ async fn main() -> Result<(), String> {
     )
     .parse::<usize>()
     .map_err(|_| "invalid --max-per-endpoint".to_string())?
+    .max(1);
+    let max_per_identity = value(
+        &args,
+        "--max-per-identity",
+        DEFAULT_MAX_PER_IDENTITY.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-per-identity".to_string())?
     .max(1);
     let singbox = value(&args, "--singbox", "sing-box");
 
@@ -334,6 +375,7 @@ async fn main() -> Result<(), String> {
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
                 max_per_endpoint,
+                max_per_identity,
             )
             .len(),
         );
@@ -343,6 +385,7 @@ async fn main() -> Result<(), String> {
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
                 max_per_endpoint,
+                max_per_identity,
             );
             write_lines(&output, &selected)?;
             println!("[INFO] Published {} Light configs.", selected.len());
@@ -398,7 +441,12 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
+        let selected = protocol_round_robin(
+            &ranked_final,
+            selection_limit,
+            max_per_endpoint,
+            max_per_identity,
+        );
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
@@ -428,7 +476,12 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
+    let selected = protocol_round_robin(
+            &ranked_final,
+            selection_limit,
+            max_per_endpoint,
+            max_per_identity,
+        );
 
     if selected.is_empty() {
         return Err("selected Light validation produced zero verified configs".to_string());
