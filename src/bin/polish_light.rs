@@ -572,11 +572,7 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let targets = [
-        primary_target.as_str(),
-        LIGHT_TARGETS[1],
-        LIGHT_TARGETS[2],
-    ];
+    let targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,

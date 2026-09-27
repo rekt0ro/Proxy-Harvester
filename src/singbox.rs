@@ -1314,10 +1314,7 @@ mod tests {
 
     #[test]
     fn default_probe_targets_require_expected_payloads() {
-        assert!(valid_probe_body(
-            "https://www.google.com/generate_204",
-            b""
-        ));
+        assert!(valid_probe_body("https://www.google.com/generate_204", b""));
         assert!(!valid_probe_body(
             "https://www.google.com/generate_204",
             b"blocked by upstream"

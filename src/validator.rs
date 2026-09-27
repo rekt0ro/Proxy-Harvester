@@ -1742,8 +1742,7 @@ mod tests {
 
     #[test]
     fn default_probe_targets_require_expected_payloads() {
-        let primary =
-            Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
+        let primary = Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
 
         let speed =
