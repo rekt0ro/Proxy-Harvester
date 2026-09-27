@@ -171,7 +171,7 @@ async fn main() -> Result<(), String> {
             "Usage: polish_light --candidates FILE --output FILE [--workers N] \
              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
              [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
-             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
+             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] \             [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -184,7 +184,7 @@ async fn main() -> Result<(), String> {
     let batch_size = value(&args, "--batch-size", "1000")
         .parse::<usize>()
         .map_err(|_| "invalid --batch-size".to_string())?;
-    let timeout = value(&args, "--timeout", "1")
+    let timeout = value(&args, "--timeout", "3")
         .parse::<f64>()
         .map_err(|_| "invalid --timeout".to_string())?;
     let final_recheck_limit = value(
