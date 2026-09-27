@@ -704,6 +704,7 @@ async fn check_batch_targets(
     binary: &str,
     entries: &[(String, Value)],
     targets: &[String],
+    target_hosts: &[String],
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
@@ -795,20 +796,25 @@ async fn check_batch_targets(
                 .map(|(config, client, entry_index)| {
                     let target = targets[(entry_index + attempt) % targets.len()].clone();
                     async move {
+                        let target_host = target_hosts[(entry_index + attempt) % target_hosts.len()]
+                            .clone();
                         let result = request_url(&client, &target).await;
-                        (config, target, result)
+                        (config, target_host, result)
                     }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
                 .await;
 
-            for (config, target, result) in results {
+            for (config, target_host, result) in results {
                 *attempts.entry(config.clone()).or_insert(0) += 1;
                 if let Ok(latency) = result {
                     *successes.entry(config.clone()).or_insert(0) += 1;
                     latencies.entry(config.clone()).or_default().push(latency);
-                    successful_targets.entry(config).or_default().insert(target);
+                    successful_targets
+                        .entry(config)
+                        .or_default()
+                        .insert(target_host);
                 }
             }
 
@@ -1065,6 +1071,13 @@ pub async fn validate_candidates_with_targets(
         .iter()
         .map(|target| target.to_string())
         .collect::<Vec<_>>();
+    let target_hosts = target_values
+        .iter()
+        .filter_map(|target| Url::parse(target).ok()?.host_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    if target_hosts.len() != target_values.len() {
+        return Err("Light validation target host parsing failed".to_string());
+    }
     let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
     let total_batches = (parsed.len() + batch_size - 1) / batch_size;
     let mut metadata = HashMap::new();
@@ -1085,6 +1098,7 @@ pub async fn validate_candidates_with_targets(
                 binary,
                 batch,
                 &target_values,
+                &target_hosts,
                 workers.max(1),
                 request_timeout,
                 max_latency_ms,
