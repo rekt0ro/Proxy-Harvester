@@ -11,7 +11,8 @@ import tempfile
 from collections import defaultdict
 from urllib.parse import urlsplit
 
-DISCOVERY_CHUNK_SIZE = 4000
+DISCOVERY_CHUNK_SIZE = 1000
+MAX_DISCOVERY_CANDIDATES = 4000
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
@@ -204,6 +205,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=1)
     parser.add_argument("--final-recheck-limit", type=int, default=FINAL_RECHECK_LIMIT)
+    parser.add_argument("--max-candidates", type=int, default=MAX_DISCOVERY_CANDIDATES)
     parser.add_argument("--final-workers", type=int, default=12)
     parser.add_argument("--final-batch-size", type=int, default=1)
     parser.add_argument("--primary-target", default=PRIMARY_TARGET)
@@ -212,6 +214,7 @@ def main():
     args = parser.parse_args()
 
     candidates = read_lines(args.candidates)
+    candidates = candidates[:max(1, min(args.max_candidates, MAX_DISCOVERY_CANDIDATES))]
 
     if not candidates:
         print("[WARN] No Light candidates available.")
@@ -221,6 +224,9 @@ def main():
     global_verified = []
     global_seen = set()
     global_metadata = {}
+    final_verified = []
+    final_seen = set()
+    final_metadata = {}
 
     try:
         chunk_count = (
@@ -239,7 +245,7 @@ def main():
             )
 
             print(
-                f"[INFO] Global Light pass {chunk_number}/{chunk_count}: "
+                f"[INFO] Global Light discovery {chunk_number}/{chunk_count}: "
                 f"testing {len(chunk)} candidates; "
                 f"{len(global_verified)} verified so far."
             )
@@ -273,100 +279,159 @@ def main():
             global_metadata.update(global_chunk_metadata)
 
             print(
-                f"[INFO] Global Light pass {chunk_number}/{chunk_count}: "
+                f"[INFO] Global Light discovery {chunk_number}/{chunk_count}: "
                 f"{len(chunk_verified)} verified; "
                 f"{len(global_verified)} total."
             )
 
-        if not global_verified:
-            print("[WARN] Global validation produced zero verified configs.")
+            global_positions = {
+                config: position for position, config in enumerate(global_verified)
+            }
+            ranked_global = sorted(
+                global_verified,
+                key=lambda config: global_rank(
+                    config,
+                    global_metadata,
+                    global_positions.get(config, len(global_verified)),
+                ),
+            )
+
+            untested_global = [
+                config for config in ranked_global
+                if config not in final_seen
+            ]
+            final_candidates = diversify_recheck_candidates(
+                untested_global,
+                max(1, args.final_recheck_limit),
+            )
+
+            if final_candidates:
+                final_recheck_endpoints = {
+                    ep
+                    for config in final_candidates
+                    if (ep := endpoint(config)) is not None
+                }
+                print(
+                    f"[INFO] Final Light recheck wave {chunk_number}: "
+                    f"{len(final_candidates)} candidates covering "
+                    f"{len(final_recheck_endpoints)} unique parsed endpoints."
+                )
+
+                primary_output = os.path.join(
+                    work_dir, f"primary-{chunk_number}.txt"
+                )
+                primary_metadata_path = os.path.join(
+                    work_dir, f"primary-{chunk_number}.json"
+                )
+
+                if run_checker(
+                    args.checker,
+                    final_candidates,
+                    args.primary_target,
+                    primary_output,
+                    primary_metadata_path,
+                    args.final_workers,
+                    args.final_batch_size,
+                    args.timeout,
+                ):
+                    primary_verified = read_lines(primary_output)
+                    primary_wave_metadata = load_metadata(primary_metadata_path)
+
+                    for config in primary_verified:
+                        if config not in final_seen:
+                            final_seen.add(config)
+                            final_verified.append(config)
+
+                    final_metadata.update(primary_wave_metadata)
+
+                    global_positions = {
+                        config: position
+                        for position, config in enumerate(global_verified)
+                    }
+                    ranked_final = sorted(
+                        final_verified,
+                        key=lambda config: (
+                            -int(final_metadata.get(config, {}).get("successes", 0)),
+                            float(final_metadata.get(config, {}).get("median_ms", float("inf"))),
+                            float(final_metadata.get(config, {}).get("min_ms", float("inf"))),
+                            global_positions.get(config, len(global_verified)),
+                            config,
+                        ),
+                    )
+                    final = diversified(
+                        ranked_final,
+                        max(1, args.selection_limit),
+                        max(1, args.max_per_endpoint),
+                    )
+
+                    print(
+                        f"[INFO] Light fill progress: {len(final)}/"
+                        f"{max(1, args.selection_limit)} configs ready."
+                    )
+
+                    if len(final) >= max(1, args.selection_limit):
+                        final_endpoints = {
+                            ep
+                            for config in final
+                            if (ep := endpoint(config)) is not None
+                        }
+                        write_lines(args.output, final)
+                        print(
+                            f"[INFO] Published {len(final)} Light configs from "
+                            f"{len(global_verified)} globally verified candidates; "
+                            f"{len(final_endpoints)} unique parsed endpoints; "
+                            f"final validation used {args.primary_target}."
+                        )
+                        return 0
+                else:
+                    print(
+                        f"[WARN] Final Light recheck wave {chunk_number} failed; "
+                        "continuing with the next discovery wave."
+                    )
+            else:
+                print(
+                    f"[INFO] No new final-recheck candidates available after "
+                    f"discovery wave {chunk_number}."
+                )
+
+        if not final_verified:
+            print("[WARN] Final Light validation produced zero verified configs.")
             return 1
 
         global_positions = {
             config: position for position, config in enumerate(global_verified)
         }
-        ranked_global = sorted(
-            global_verified,
-            key=lambda config: global_rank(
-                config,
-                global_metadata,
-                global_positions.get(config, len(global_verified)),
-            ),
-        )
-
-        final_candidates = diversify_recheck_candidates(
-            ranked_global,
-            max(1, args.final_recheck_limit),
-        )
-        final_recheck_endpoints = {
-            ep
-            for config in final_candidates
-            if (ep := endpoint(config)) is not None
-        }
-
-        print(
-            f"[INFO] Final Light recheck: {len(final_candidates)} "
-            f"individually tested candidates covering "
-            f"{len(final_recheck_endpoints)} unique parsed endpoints."
-        )
-
-        primary_output = os.path.join(work_dir, "primary.txt")
-        primary_metadata_path = os.path.join(work_dir, "primary.json")
-
-        if not run_checker(
-            args.checker,
-            final_candidates,
-            args.primary_target,
-            primary_output,
-            primary_metadata_path,
-            args.final_workers,
-            args.final_batch_size,
-            args.timeout,
-        ):
-            print("[WARN] Final primary validation failed.")
-            return 1
-
-        primary_verified = read_lines(primary_output)
-        primary_metadata = load_metadata(primary_metadata_path)
-
-        if not primary_verified:
-            print("[WARN] No configs survived the final primary validation.")
-            return 1
-
         ranked_final = sorted(
-            primary_verified,
+            final_verified,
             key=lambda config: (
-                -int(primary_metadata.get(config, {}).get("successes", 0)),
-                float(primary_metadata.get(config, {}).get("median_ms", float("inf"))),
-                float(primary_metadata.get(config, {}).get("min_ms", float("inf"))),
+                -int(final_metadata.get(config, {}).get("successes", 0)),
+                float(final_metadata.get(config, {}).get("median_ms", float("inf"))),
+                float(final_metadata.get(config, {}).get("min_ms", float("inf"))),
                 global_positions.get(config, len(global_verified)),
                 config,
             ),
         )
-
         final = diversified(
             ranked_final,
             max(1, args.selection_limit),
             max(1, args.max_per_endpoint),
         )
 
+        if not final:
+            print("[WARN] Diversity filtering left no verified configs.")
+            return 1
+
         final_endpoints = {
             ep
             for config in final
             if (ep := endpoint(config)) is not None
         }
-
-        if not final:
-            print("[WARN] Diversity filtering left no verified configs.")
-            return 1
-
         write_lines(args.output, final)
-
         print(
             f"[INFO] Published {len(final)} Light configs from "
             f"{len(global_verified)} globally verified candidates; "
             f"{len(final_endpoints)} unique parsed endpoints; "
-            f"final validation used {args.primary_target} only."
+            f"discovery exhausted at {len(candidates)} candidates."
         )
         return 0
     finally:
