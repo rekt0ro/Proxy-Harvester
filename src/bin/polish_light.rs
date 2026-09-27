@@ -89,28 +89,6 @@ fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String>
     selected
 }
 
-fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
-
-    for config in configs {
-        if let Some(ep) = endpoint(config) {
-            let count = endpoint_counts.entry(ep).or_insert(0);
-            if *count >= max_per_endpoint {
-                continue;
-            }
-            *count += 1;
-        }
-
-        result.push(config.clone());
-        if result.len() >= limit {
-            break;
-        }
-    }
-
-    result
-}
-
 fn protocol(config: &str) -> String {
     config
         .split_once("://")
@@ -173,6 +151,10 @@ fn protocol_round_robin(
     }
 
     result
+}
+
+fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
+    protocol_round_robin(configs, limit, max_per_endpoint)
 }
 
 async fn dual_validate(
@@ -473,10 +455,10 @@ mod tests {
         let selected = protocol_round_robin(&configs, 5, 1);
 
         assert_eq!(selected[0], configs[4]);
-        assert_eq!(selected[1], configs[0]);
-        assert_eq!(selected[2], configs[2]);
-        assert_eq!(selected[3], configs[1]);
-        assert_eq!(selected[4], configs[3]);
+        assert_eq!(selected[1], configs[2]);
+        assert_eq!(selected[2], configs[0]);
+        assert_eq!(selected[3], configs[3]);
+        assert_eq!(selected[4], configs[1]);
     }
 
     #[test]
