@@ -114,7 +114,11 @@ fn normalize_light_config(config: &str) -> String {
     }
 
     let separator = if base.contains('?') {
-        if base.ends_with('?') { "" } else { "&" }
+        if base.ends_with('?') {
+            ""
+        } else {
+            "&"
+        }
     } else {
         "?"
     };
