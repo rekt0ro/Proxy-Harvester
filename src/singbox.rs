@@ -1023,7 +1023,6 @@ async fn check_batch(
     Ok(verified)
 }
 
-
 pub async fn validate_candidates_with_targets(
     binary: &str,
     candidates: &[String],
