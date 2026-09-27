@@ -4,20 +4,6 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
-    inputs:
-      max_candidates:
-        description: "Maximum Light candidates to validate for this manual run"
-        required: false
-        default: "10000"
-        type: choice
-        options:
-          - "500"
-          - "1000"
-          - "2000"
-          - "4000"
-          - "6000"
-          - "10000"
-
 concurrency:
   group: update-configs
   cancel-in-progress: false
@@ -204,7 +190,7 @@ jobs:
 
       - name: Build Light subscription
         env:
-          LIGHT_MAX_CANDIDATES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_candidates || '10000' }}
+          LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_MIN_PUBLISH: "50"
         run: |
           mkdir -p /tmp/proxy-harvester
