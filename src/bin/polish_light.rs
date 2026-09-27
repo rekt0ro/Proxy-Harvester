@@ -100,15 +100,14 @@ fn protocol(config: &str) -> String {
 /// Ranking is preserved within each protocol, so the best candidate for a
 /// protocol is always selected before its lower-ranked peers. Protocols with
 /// fewer candidates naturally exhaust early and their turns are redistributed.
-fn protocol_round_robin(
-    configs: &[String],
-    limit: usize,
-    max_per_endpoint: usize,
-) -> Vec<String> {
+fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
     let mut groups = BTreeMap::<String, Vec<String>>::new();
 
     for config in configs {
-        groups.entry(protocol(config)).or_default().push(config.clone());
+        groups
+            .entry(protocol(config))
+            .or_default()
+            .push(config.clone());
     }
 
     let protocols = groups.keys().cloned().collect::<Vec<_>>();
@@ -209,10 +208,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N] \
-             [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
-             [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
-             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
