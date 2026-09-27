@@ -113,11 +113,7 @@ fn identity_key(config: &str) -> Option<(String, String)> {
 /// Ranking is preserved within each protocol, so the best candidate for a
 /// protocol is always selected before its lower-ranked peers. Protocols with
 /// fewer candidates naturally exhaust early and their turns are redistributed.
-fn protocol_round_robin(
-    configs: &[String],
-    limit: usize,
-    max_per_endpoint: usize,
-) -> Vec<String> {
+fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
     let mut groups = BTreeMap::<String, Vec<String>>::new();
 
     for config in configs {
@@ -443,11 +439,7 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let selected = protocol_round_robin(
-        &ranked_final,
-        selection_limit,
-        max_per_endpoint,
-    );
+        let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
