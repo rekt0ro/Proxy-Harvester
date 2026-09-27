@@ -109,12 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
-    let mut chunk_results =
-        stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-            .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
-            .buffer_unordered(TEST_CONCURRENCY)
-            .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
-            .await?;
+    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
+        .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
+        .buffer_unordered(TEST_CONCURRENCY)
+        .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
+        .await?
 
     chunk_results.sort_by_key(|(index, _)| *index);
 
@@ -723,8 +722,7 @@ fn looks_like_base64(value: &str) -> bool {
     value.len() >= 16
         && value.len() <= 8192
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
         })
 }
 
@@ -770,9 +768,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
                 if let Ok(bytes) = decoded {
                     if bytes
                         .iter()
-                        .filter(|byte| {
-                            **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t')
-                        })
+                        .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t'))
                         .count()
                         > 8
                     {
