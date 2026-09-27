@@ -279,11 +279,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut ws_early_data_header = String::new();
 
     if network == "ws" {
-        ws_early_data = first_query(
-            url,
-            &["ed", "maxEarlyData", "max_early_data"],
-            Some(""),
-        );
+        ws_early_data = first_query(url, &["ed", "maxEarlyData", "max_early_data"], Some(""));
         ws_early_data_header =
             first_query(url, &["eh", "earlyDataHeaderName", "early_data_header_name"], Some(""));
 
