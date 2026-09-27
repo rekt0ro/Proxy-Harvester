@@ -129,15 +129,6 @@ fn csv(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn truthy(url: &Url, names: &[&str]) -> bool {
-    matches!(
-        first_query(url, names, Some(""))
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u16), String> {
     let host = url
         .host_str()
