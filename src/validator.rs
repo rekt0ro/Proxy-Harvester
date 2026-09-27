@@ -93,14 +93,29 @@ fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
     }
     default.unwrap_or_default().to_string()
 }
-
-fn query_values(url: &Url, name: &str) -> Vec<String> {
-    url.query_pairs()
-        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())
-        .collect()
+fn decode_component(value: &str) -> String {
+    percent_encoding::percent_decode_str(value)
+        .decode_utf8_lossy()
+        .into_owned()
 }
+
+fn json_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(Value::Bool(value)) => Some(value.to_string()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn json_u64(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::Number(value)) => value.as_u64().unwrap_or(0),
+        Some(Value::String(value)) => value.parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 
 fn csv(value: &str) -> Vec<String> {
     value
@@ -311,7 +326,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 fn parse_vless(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let (host, port) = endpoint_from_url(&url, None)?;
-    let uuid = url.username().to_string();
+    let uuid = decode_component(url.username());
     if uuid.is_empty() {
         return Err("VLESS UUID missing".to_string());
     }
@@ -367,11 +382,8 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess UUID missing".to_string())?;
 
-    let network = value
-        .get("net")
-        .and_then(Value::as_str)
-        .unwrap_or("tcp")
-        .to_string();
+    let network = json_text(value.get("net"))
+        .unwrap_or_else(|| "tcp".to_string());
     if network.eq_ignore_ascii_case("h2") {
         return Err("VMess h2 transport unsupported".to_string());
     }
@@ -380,7 +392,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         ("type".to_string(), network.clone()),
         (
             "security".to_string(),
-            value.get("tls").and_then(Value::as_str).unwrap_or("").to_string(),
+            json_text(value.get("tls")).unwrap_or_default(),
         ),
     ];
     if value
@@ -399,9 +411,9 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         ("path", "path"),
         ("allowInsecure", "insecure"),
     ] {
-        if let Some(value) = value.get(source).and_then(Value::as_str) {
+        if let Some(value) = json_text(value.get(source)) {
             if !value.is_empty() {
-                q.push((destination.to_string(), value.to_string()));
+                q.push((destination.to_string(), value));
             }
         }
     }
@@ -416,8 +428,8 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
 
     let mut user = json!({
         "id": uuid,
-        "alterId": value.get("aid").and_then(Value::as_u64).unwrap_or(0),
-        "security": value.get("scy").and_then(Value::as_str).unwrap_or("auto"),
+        "alterId": json_u64(value.get("aid")),
+        "security": json_text(value.get("scy")).unwrap_or_else(|| "auto".to_string()),
     });
 
     let stream = stream_settings(&synthetic, host)?;
@@ -448,7 +460,7 @@ fn urlencoding(value: &str) -> String {
 fn parse_trojan(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let (host, port) = endpoint_from_url(&url, None)?;
-    let password = url.password().unwrap_or("").to_string();
+    let password = decode_component(url.password().unwrap_or(""));
     if password.is_empty() {
         return Err("Trojan password missing".to_string());
     }
@@ -472,12 +484,12 @@ fn parse_ss(config: &str) -> Result<Value, String> {
     }
 
     let (host, port, method, password) = if let Some(password) = url.password() {
-        let method = url.username().to_string();
+        let method = decode_component(url.username());
         let (host, port) = endpoint_from_url(&url, None)?;
         if method.is_empty() {
             return Err("Shadowsocks method missing".to_string());
         }
-        (host, port, method, password.to_string())
+        (host, port, method, decode_component(password))
     } else {
         let payload = clean(config)
             .split_once("://")
@@ -524,12 +536,12 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
         return Err("Hysteria2 obfs unsupported by Xray".to_string());
     }
 
-    let mut password = url.username().to_string();
+    let mut password = decode_component(url.username());
     if let Some(pass) = url.password() {
         if !password.is_empty() {
             password.push(':');
         }
-        password.push_str(pass);
+        password.push_str(&decode_component(pass));
     }
     if password.is_empty() {
         return Err("Hysteria2 password missing".to_string());
@@ -589,7 +601,7 @@ fn parse_wg(config: &str) -> Result<Value, String> {
             Some(""),
         )
     } else {
-        url.username().to_string()
+        decode_component(url.username())
     };
     let public = first_query(
         &url,
@@ -669,8 +681,8 @@ fn parse_basic(config: &str) -> Result<Value, String> {
     });
     if !url.username().is_empty() {
         server["users"] = json!([{
-            "user": url.username(),
-            "pass": url.password().unwrap_or(""),
+            "user": decode_component(url.username()),
+            "pass": decode_component(url.password().unwrap_or("")),
         }]);
     }
     Ok(json!({
@@ -1008,7 +1020,13 @@ async fn check_batch(
         )
         .map_err(|error| error.to_string())?;
 
-        let mut child = start_xray(binary, &config_path, &log_path)?;
+        let mut child = match start_xray(binary, &config_path, &log_path) {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
+    };
 
         if !ports_ready(&mut child, &local_ports).await {
             let _ = child.kill();
