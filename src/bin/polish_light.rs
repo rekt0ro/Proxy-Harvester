@@ -283,6 +283,7 @@ async fn merge_dual(
         timeout_seconds,
     )
     .await?;
+    let xray_verified = xray_metadata.len();
 
     let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
     let singbox_metadata = validate_singbox_candidates(
@@ -307,7 +308,7 @@ async fn merge_dual(
 
     println!(
         "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
-        xray_metadata.len(),
+        xray_verified,
         singbox_metadata.len(),
         verified.len()
     );
