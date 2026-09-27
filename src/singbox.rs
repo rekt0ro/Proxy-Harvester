@@ -17,7 +17,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 const STRICT_STABILITY_ATTEMPTS: usize = 6;
-const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
 const MIN_RESPONSE_BYTES: usize = 1;
 const MAX_RESPONSE_BYTES: usize = 65536;
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
@@ -1102,7 +1102,7 @@ pub async fn validate_candidates_with_targets_strict(
         max_latency_ms,
         STRICT_STABILITY_ATTEMPTS,
         STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        2,
+        MIN_SUCCESSFUL_TARGETS,
     )
     .await
 }
