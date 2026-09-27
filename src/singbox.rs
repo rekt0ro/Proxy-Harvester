@@ -727,7 +727,10 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         || body.len() > MAX_RESPONSE_BYTES
         || !valid_probe_body(url, &body)
     {
-        return Err("response body is empty, exceeds validation limit, or is not the expected probe payload".to_string());
+        return Err(
+            "response body is empty, exceeds validation limit, or is not the expected probe payload"
+                .to_string(),
+        );
     }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
