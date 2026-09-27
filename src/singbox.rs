@@ -16,6 +16,10 @@ const TARGET: &str = "https://cp.cloudflare.com/";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
+const STRICT_STABILITY_ATTEMPTS: usize = 6;
+const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+const MIN_RESPONSE_BYTES: usize = 1;
+const MAX_RESPONSE_BYTES: usize = 65536;
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const BATCH_SIZE: usize = 250;
@@ -691,9 +695,22 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    // Light validation is intentionally stronger than a URL-status probe: require
-    // the response body to be readable through the proxy, not just the headers.
-    response.bytes().await.map_err(|error| error.to_string())?;
+    if response.status().as_u16() == 429 {
+        return Err("target returned HTTP 429".to_string());
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+    {
+        return Err("response body exceeds validation limit".to_string());
+    }
+
+    let body = response.bytes().await.map_err(|error| error.to_string())?;
+
+    if body.len() < MIN_RESPONSE_BYTES || body.len() > MAX_RESPONSE_BYTES {
+        return Err("response body is empty or exceeds validation limit".to_string());
+    }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
@@ -706,6 +723,9 @@ async fn check_batch_targets(
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
+    stability_attempts: usize,
+    min_successful_attempts: usize,
+    min_successful_targets: usize,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -789,7 +809,7 @@ async fn check_batch_targets(
         let mut latencies = HashMap::<String, Vec<f64>>::new();
         let mut successful_targets = HashMap::<String, HashSet<String>>::new();
 
-        for attempt in 0..STABILITY_ATTEMPTS {
+        for attempt in 0..stability_attempts {
             let results = stream::iter(active.clone())
                 .map(|(config, client, entry_index)| {
                     let target = targets[(entry_index + attempt) % targets.len()].clone();
@@ -816,11 +836,11 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            let remaining_attempts = stability_attempts - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_ATTEMPTS
-                    && wins + remaining_attempts >= MIN_SUCCESSFUL_ATTEMPTS
+                wins < min_successful_attempts
+                    && wins + remaining_attempts >= min_successful_attempts
             });
         }
 
@@ -829,9 +849,10 @@ async fn check_batch_targets(
             let values = latencies.get(config).cloned().unwrap_or_default();
             let destinations = successful_targets.get(config).map_or(0, HashSet::len);
 
-            if wins >= MIN_SUCCESSFUL_ATTEMPTS
-                && destinations >= 2
+            if wins >= min_successful_attempts
+                && destinations >= min_successful_targets
                 && !values.is_empty()
+                && values.len() >= min_successful_attempts
                 && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
             {
                 let mut values = values;
@@ -1029,6 +1050,53 @@ pub async fn validate_candidates_with_targets(
     request_timeout: Duration,
     max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        max_latency_ms,
+        STABILITY_ATTEMPTS,
+        MIN_SUCCESSFUL_ATTEMPTS,
+        2,
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_targets_strict(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        max_latency_ms,
+        STRICT_STABILITY_ATTEMPTS,
+        STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+        targets.len(),
+    )
+    .await
+}
+
+async fn validate_candidates_with_targets_policy(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+    stability_attempts: usize,
+    min_successful_attempts: usize,
+    min_successful_targets: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut parsed = Vec::new();
     let mut rejected = Vec::new();
     let mut seen = HashSet::new();
@@ -1099,6 +1167,9 @@ pub async fn validate_candidates_with_targets(
                 workers.max(1),
                 request_timeout,
                 max_latency_ms,
+                stability_attempts,
+                min_successful_attempts,
+                min_successful_targets,
             )
             .await?,
         );
