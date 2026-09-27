@@ -15,6 +15,11 @@ use url::Url;
 
 pub const PRIMARY_TARGET: &str = "https://cp.cloudflare.com/";
 pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
+pub const LIGHT_TARGETS: &[&str] = &[
+    PRIMARY_TARGET,
+    "https://www.gstatic.com/generate_204",
+    COMPATIBILITY_TARGET,
+];
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
@@ -1159,6 +1164,26 @@ async fn check_batch(
     Ok(combined)
 }
 
+
+pub async fn validate_candidates_with_targets(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        targets,
+        workers,
+        batch_size,
+        timeout_seconds,
+    )
+    .await
+}
+
 pub async fn validate_candidates(
     binary: &str,
     candidates: &[String],
@@ -1198,6 +1223,252 @@ pub async fn validate_candidates_with_compatibility(
         timeout_seconds,
     )
     .await
+}
+
+
+async fn validate_candidates_targets_inner(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let targets = targets
+        .iter()
+        .map(|target| Url::parse(target).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if targets.len() < 2 {
+        return Err("Light validation requires at least two targets".to_string());
+    }
+
+    let (parsed, rejected) = unique_parsed(candidates);
+
+    println!(
+        "loaded {} input URLs, accepted {} for Xray, rejected {}",
+        candidates.len(),
+        parsed.len(),
+        rejected.len()
+    );
+
+    for (config, reason) in rejected.iter().take(8) {
+        println!("rejected: {config} :: {reason}");
+    }
+
+    if !rejected.is_empty() {
+        let mut counts = HashMap::<String, usize>::new();
+        for (config, _) in &rejected {
+            let scheme = Url::parse(clean(config))
+                .map(|url| url.scheme().to_ascii_lowercase())
+                .unwrap_or_else(|_| "unknown".to_string());
+            *counts.entry(scheme).or_insert(0) += 1;
+        }
+        println!("rejected by scheme: {:?}", counts);
+    }
+
+    if parsed.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let batch_size = batch_size.max(1);
+    let total_batches = (parsed.len() + batch_size - 1) / batch_size;
+    let mut metadata = HashMap::new();
+
+    for (index, batch) in parsed.chunks(batch_size).enumerate() {
+        println!(
+            "targets {:?}: batch {}/{} testing {} configs with Xray; requiring {}/{} successful attempts across at least 2 destinations",
+            targets.iter().map(Url::as_str).collect::<Vec<_>>(),
+            index + 1,
+            total_batches,
+            batch.len(),
+            MIN_SUCCESSFUL_TARGETS,
+            STABILITY_ATTEMPTS
+        );
+
+        let batch_metadata = check_batch_targets(
+            binary,
+            batch,
+            &targets,
+            workers.max(1),
+            timeout_seconds,
+        )
+        .await?;
+        metadata.extend(batch_metadata);
+    }
+
+    println!(
+        "{}/{} verified by Xray against {} targets with {}/{} successful attempts and at least 2 distinct successful destinations",
+        metadata.len(),
+        candidates.len(),
+        targets.len(),
+        MIN_SUCCESSFUL_TARGETS,
+        STABILITY_ATTEMPTS
+    );
+
+    Ok(metadata)
+}
+
+async fn check_batch_targets(
+    binary: &str,
+    entries: &[(String, Value)],
+    targets: &[Url],
+    workers: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    if entries.is_empty() || targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut pending_batches = vec![entries.to_vec()];
+    let mut combined = HashMap::new();
+
+    while let Some(batch_entries) = pending_batches.pop() {
+        let work = make_temp_dir()?;
+        let config_path = work.join("xray.json");
+        let log_path = work.join("xray.log");
+        let (config, local_ports) = xray_config(&batch_entries)?;
+
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let mut child = match start_xray(binary, &config_path, &log_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
+
+        if !ports_ready(&mut child, &local_ports).await {
+            let _ = child.kill();
+            let _ = child.wait();
+
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending_batches.push(batch_entries[..mid].to_vec());
+                pending_batches.push(batch_entries[mid..].to_vec());
+            } else {
+                let tail = fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(700)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+
+                println!("[WARN] Validation skipped: {}", batch_entries[0].0);
+                if !tail.is_empty() {
+                    println!("[WARN] Xray core failed to start: {tail}");
+                }
+            }
+
+            let _ = fs::remove_dir_all(&work);
+            continue;
+        }
+
+        let mut active = Vec::with_capacity(batch_entries.len());
+        for (index, (config, _)) in batch_entries.iter().enumerate() {
+            let client = match client_for_port(local_ports[index], timeout_seconds) {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&work);
+                    return Err(error);
+                }
+            };
+
+            active.push((config.clone(), client, index));
+        }
+
+        let mut successes = HashMap::<String, usize>::new();
+        let mut attempts = HashMap::<String, usize>::new();
+        let mut latencies = HashMap::<String, Vec<f64>>::new();
+        let mut successful_targets = HashMap::<String, HashSet<String>>::new();
+
+        for attempt in 0..STABILITY_ATTEMPTS {
+            if active.is_empty() {
+                break;
+            }
+
+            let results = stream::iter(active.clone())
+                .map(|(config, client, entry_index)| {
+                    let target = targets[(entry_index + attempt) % targets.len()].clone();
+                    async move {
+                        let result = probe_request(&client, target.clone()).await;
+                        (config, target, result)
+                    }
+                })
+                .buffer_unordered(workers.max(1))
+                .collect::<Vec<_>>()
+                .await;
+
+            for (config, target, result) in results {
+                *attempts.entry(config.clone()).or_insert(0) += 1;
+                match result {
+                    Ok(latency) => {
+                        *successes.entry(config.clone()).or_insert(0) += 1;
+                        latencies.entry(config.clone()).or_default().push(latency);
+                        successful_targets
+                            .entry(config)
+                            .or_default()
+                            .insert(target.to_string());
+                    }
+                    Err(ProbeError::Failed) => {}
+                }
+            }
+
+            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            active.retain(|(config, _, _)| {
+                let wins = successes.get(config).copied().unwrap_or(0);
+                wins < MIN_SUCCESSFUL_TARGETS
+                    && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+            });
+        }
+
+        for (config, _) in &batch_entries {
+            let values = latencies.get(config).cloned().unwrap_or_default();
+            let wins = successes.get(config).copied().unwrap_or(0);
+            let destinations = successful_targets.get(config).map_or(0, HashSet::len);
+
+            if wins >= MIN_SUCCESSFUL_TARGETS
+                && destinations >= 2
+                && !values.is_empty()
+                && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+            {
+                let mut values = values;
+                values.sort_by(f64::total_cmp);
+                let median = if values.len() % 2 == 1 {
+                    values[values.len() / 2]
+                } else {
+                    let right = values.len() / 2;
+                    (values[right - 1] + values[right]) / 2.0
+                };
+
+                combined.insert(
+                    config.clone(),
+                    ProxyMetrics {
+                        successes: wins,
+                        attempts: attempts.get(config).copied().unwrap_or(0),
+                        median_ms: median,
+                        min_ms: values[0],
+                    },
+                );
+            }
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    Ok(combined)
 }
 
 async fn validate_candidates_inner(
