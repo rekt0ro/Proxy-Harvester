@@ -1,6 +1,10 @@
-use proxy_harvester::singbox::validate_candidates_with_settings as validate_singbox_candidates;
+use proxy_harvester::singbox::{
+    validate_candidates_with_settings as validate_singbox_candidates,
+    validate_candidates_with_targets as validate_singbox_targets,
+};
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates, write_lines, ProxyMetrics, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates, validate_candidates_with_targets, write_lines,
+    ProxyMetrics, LIGHT_TARGETS, PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -242,10 +246,10 @@ async fn merge_dual(
         return Ok(HashMap::new());
     }
 
-    let xray_metadata = validate_candidates(
+    let xray_metadata = validate_candidates_with_targets(
         xray,
         candidates,
-        primary_target,
+        LIGHT_TARGETS,
         workers,
         batch_size,
         timeout_seconds,
@@ -254,9 +258,10 @@ async fn merge_dual(
     let xray_verified = xray_metadata.len();
 
     let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-    let singbox_metadata = validate_singbox_candidates(
+    let singbox_metadata = validate_singbox_targets(
         singbox,
         candidates,
+        LIGHT_TARGETS,
         workers.min(32).max(1),
         request_timeout,
         timeout_seconds * 1000.0,
@@ -317,9 +322,10 @@ async fn validate_light_batch(
     if !singbox_candidates.is_empty() {
         let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
         verified.extend(
-            validate_singbox_candidates(
+            validate_singbox_targets(
                 singbox,
                 &singbox_candidates,
+                LIGHT_TARGETS,
                 workers.min(32).max(1),
                 request_timeout,
                 timeout_seconds * 1000.0,
@@ -330,10 +336,10 @@ async fn validate_light_batch(
 
     if !xray_candidates.is_empty() {
         verified.extend(
-            validate_candidates(
+            validate_candidates_with_targets(
                 xray,
                 &xray_candidates,
-                primary_target,
+                LIGHT_TARGETS,
                 workers,
                 batch_size,
                 timeout_seconds,
