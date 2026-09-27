@@ -8,6 +8,7 @@ on:
       - "src/**"
       - ".github/workflows/**"
       - ".github/dependabot.yml"
+      - ".gitignore"
 
 permissions:
   contents: read
