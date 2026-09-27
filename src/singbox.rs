@@ -16,6 +16,7 @@ const TARGET: &str = "https://cp.cloudflare.com/";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
+const MIN_SUCCESSFUL_TARGETS: usize = 2;
 const STRICT_STABILITY_ATTEMPTS: usize = 6;
 const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
 const MIN_RESPONSE_BYTES: usize = 1;
@@ -1080,7 +1081,7 @@ pub async fn validate_candidates_with_targets(
         max_latency_ms,
         STABILITY_ATTEMPTS,
         MIN_SUCCESSFUL_ATTEMPTS,
-        2,
+        MIN_SUCCESSFUL_TARGETS,
     )
     .await
 }
