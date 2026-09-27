@@ -1074,8 +1074,8 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         return Err(ProbeError::Failed);
     }
 
-    let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
     let status_is_empty_success = response.status().as_u16() == 204;
+    let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
     if body.len() > MAX_RESPONSE_BYTES
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)

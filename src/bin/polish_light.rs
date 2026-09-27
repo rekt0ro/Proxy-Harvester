@@ -884,7 +884,7 @@ mod tests {
             "vmess://encoded@example.org:9443".to_string(),
         ];
 
-        let selected = select_verified_configs(&configs, 4, 1);
+        let selected = select_verified_configs(&configs, 4, 1, 3);
 
         assert_eq!(
             selected,
