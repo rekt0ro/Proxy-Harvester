@@ -4,7 +4,7 @@ use proxyrift::singbox::{
     validate_candidates_with_targets as validate_singbox_targets,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
-use proxy_harvester::validator::{
+use proxyrift::validator::{
     endpoint, read_lines, validate_candidates_with_targets,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
     PRIMARY_TARGET,
