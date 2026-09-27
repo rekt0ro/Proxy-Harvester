@@ -20,6 +20,7 @@ const MIN_SUCCESSFUL_TARGETS: usize = 2;
 const STRICT_STABILITY_ATTEMPTS: usize = 8;
 const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
 const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
+const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 const MIN_RESPONSE_BYTES: usize = 1;
 const MAX_RESPONSE_BYTES: usize = 65536;
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
@@ -867,6 +868,12 @@ async fn check_batch_targets(
                         .or_default()
                         .insert(target_host);
                 }
+            }
+
+            if stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
+                tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
 

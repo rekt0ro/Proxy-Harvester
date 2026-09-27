@@ -29,6 +29,7 @@ pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
 pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
 pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
+pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -1540,6 +1541,12 @@ async fn check_batch_targets(
                     }
                     Err(ProbeError::Failed) => {}
                 }
+            }
+
+            if stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
+                sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
 
