@@ -153,6 +153,7 @@ jobs:
             --batch-size 1000 \
             --timeout 1 \
             --final-recheck-limit 500 \
+            --max-candidates 4000 \
             --final-workers 16 \
             --final-batch-size 500 \
             --primary-target https://speed.cloudflare.com \
