@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn vless_ws_path_early_data_is_normalized {
+    fn vless_ws_path_early_data_is_normalized() {
         let config = parse_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=/?ed=2560",
         )
