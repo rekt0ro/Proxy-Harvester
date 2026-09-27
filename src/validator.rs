@@ -1164,7 +1164,8 @@ async fn check_batch(
                 .map(|(config, port, client)| {
                     let target = target.clone();
                     async move {
-                        let result = functional_attempt(&client, &target, compatibility_target).await;
+                        let result =
+                            functional_attempt(&client, &target, compatibility_target).await;
                         (config, port, result)
                     }
                 })
