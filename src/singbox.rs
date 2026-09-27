@@ -12,14 +12,14 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use url::Url;
 
-const TARGET: &str = "https://cp.cloudflare.com/";
+const TARGET: &str = "https://www.google.com/generate_204";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 const MIN_SUCCESSFUL_TARGETS: usize = 2;
 const STRICT_STABILITY_ATTEMPTS: usize = 8;
 const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
-const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
+const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 const MIN_RESPONSE_BYTES: usize = 1;
@@ -701,11 +701,9 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
-        "http://cp.cloudflare.com/"
-        | "https://www.google.com/generate_204"
-        | "https://www.gstatic.com/generate_204" => body.is_empty(),
+        TARGET => body.is_empty(),
         "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
-        "https://www.cloudflare.com/cdn-cgi/trace" => !body.is_empty(),
+        "https://example.com/" => !body.is_empty(),
         _ => true,
     }
 }
@@ -1317,6 +1315,14 @@ mod tests {
     #[test]
     fn default_probe_targets_require_expected_payloads() {
         assert!(valid_probe_body(
+            "https://www.google.com/generate_204",
+            b""
+        ));
+        assert!(!valid_probe_body(
+            "https://www.google.com/generate_204",
+            b"blocked by upstream"
+        ));
+        assert!(valid_probe_body(
             "https://speed.cloudflare.com/__down?bytes=16384",
             &vec![0_u8; 16_384]
         ));
@@ -1324,23 +1330,8 @@ mod tests {
             "https://speed.cloudflare.com/__down?bytes=16384",
             &vec![0_u8; 16_383]
         ));
-        assert!(valid_probe_body("https://www.google.com/generate_204", b""));
-        assert!(!valid_probe_body(
-            "https://www.google.com/generate_204",
-            b"blocked by upstream"
-        ));
-        assert!(valid_probe_body(
-            "https://www.gstatic.com/generate_204",
-            b""
-        ));
-        assert!(valid_probe_body(
-            "https://www.cloudflare.com/cdn-cgi/trace",
-            b"fl=1"
-        ));
-        assert!(!valid_probe_body(
-            "https://www.cloudflare.com/cdn-cgi/trace",
-            b""
-        ));
+        assert!(valid_probe_body("https://example.com/", b"<html>"));
+        assert!(!valid_probe_body("https://example.com/", b""));
     }
 
     #[test]

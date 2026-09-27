@@ -13,14 +13,12 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-pub const PRIMARY_TARGET: &str = "http://cp.cloudflare.com/";
+pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
     "https://speed.cloudflare.com/__down?bytes=16384",
-    "https://www.google.com/generate_204",
-    "https://www.gstatic.com/generate_204",
-    "https://www.cloudflare.com/cdn-cgi/trace",
+    "https://example.com/",
 ];
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
@@ -28,7 +26,7 @@ pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
 pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
-pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
+pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const MAX_LATENCY_MS: f64 = 800.0;
@@ -1056,11 +1054,9 @@ fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
-        PRIMARY_TARGET
-        | "https://www.google.com/generate_204"
-        | "https://www.gstatic.com/generate_204" => body.is_empty(),
+        PRIMARY_TARGET => body.is_empty(),
         "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
-        "https://www.cloudflare.com/cdn-cgi/trace" => !body.is_empty(),
+        "https://example.com/" => !body.is_empty(),
         _ => true,
     }
 }
@@ -1746,7 +1742,8 @@ mod tests {
 
     #[test]
     fn default_probe_targets_require_expected_payloads() {
-        let primary = Url::parse(PRIMARY_TARGET).expect("primary target should parse");
+        let primary =
+            Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
 
         let speed =
@@ -1754,18 +1751,9 @@ mod tests {
         assert!(valid_probe_body(&speed, &vec![0_u8; 16_384]));
         assert!(!valid_probe_body(&speed, &vec![0_u8; 16_383]));
 
-        let generate_204 =
-            Url::parse("https://www.google.com/generate_204").expect("Google generate_204");
-        assert!(valid_probe_body(&generate_204, b""));
-
-        let gstatic_204 =
-            Url::parse("https://www.gstatic.com/generate_204").expect("Google static target");
-        assert!(valid_probe_body(&gstatic_204, b""));
-
-        let trace =
-            Url::parse("https://www.cloudflare.com/cdn-cgi/trace").expect("Cloudflare trace");
-        assert!(valid_probe_body(&trace, b"fl=1"));
-        assert!(!valid_probe_body(&trace, b""));
+        let example = Url::parse("https://example.com/").expect("example.com");
+        assert!(valid_probe_body(&example, b"<html>"));
+        assert!(!valid_probe_body(&example, b""));
     }
 
     #[test]

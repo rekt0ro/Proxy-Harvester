@@ -576,8 +576,6 @@ async fn main() -> Result<(), String> {
         primary_target.as_str(),
         LIGHT_TARGETS[1],
         LIGHT_TARGETS[2],
-        LIGHT_TARGETS[3],
-        LIGHT_TARGETS[4],
     ];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
