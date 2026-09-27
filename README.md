@@ -38,7 +38,7 @@ Base64:
 https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
 ```
 
-Both plain-text and Base64 formats are provided for compatibility with different clients.
+Both plain-text and Base64 formats are provided for compatibility with different clients. The collection, validation, ranking, Light selection, and subscription encoding pipeline is implemented in Rust.
 
 ## Supported Protocols
 
