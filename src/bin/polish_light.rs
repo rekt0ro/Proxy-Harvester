@@ -7,7 +7,7 @@ use std::env;
 use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
-const MAX_DISCOVERY_CANDIDATES: usize = 4000;
+const MAX_DISCOVERY_CANDIDATES: usize = 6000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
@@ -191,6 +191,57 @@ fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usiz
     }
 
     result
+}
+
+fn quality_first_selection(
+    configs: &[String],
+    limit: usize,
+    max_per_endpoint: usize,
+) -> Vec<String> {
+    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut result = Vec::with_capacity(limit.min(configs.len()));
+
+    for config in configs {
+        if result.len() >= limit {
+            break;
+        }
+
+        if let Some(ep) = endpoint(config) {
+            let count = endpoint_counts.get(&ep).copied().unwrap_or(0);
+            if count >= max_per_endpoint {
+                continue;
+            }
+            *endpoint_counts.entry(ep).or_insert(0) += 1;
+        }
+
+        result.push(config.clone());
+    }
+
+    result
+}
+
+fn write_experimental_output(
+    path: Option<&str>,
+    ranked_configs: &[String],
+    selection_limit: usize,
+    max_per_endpoint: usize,
+) -> Result<(), String> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+
+    let selected = quality_first_selection(ranked_configs, selection_limit, max_per_endpoint);
+    if selected.is_empty() {
+        return Ok(());
+    }
+
+    write_lines(path, &selected)?;
+    println!(
+        "[INFO] Experimental Light quality-first selection: {} configs written.",
+        selected.len()
+    );
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -404,7 +455,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--experimental-output FILE] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -445,6 +496,8 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
+    let experimental_output = value(&args, "--experimental-output", "");
+    let experimental_output = (!experimental_output.is_empty()).then_some(experimental_output);
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -533,6 +586,12 @@ async fn main() -> Result<(), String> {
                 selection_limit,
                 max_per_endpoint,
             );
+            write_experimental_output(
+                experimental_output.as_deref(),
+                &ranked_final,
+                selection_limit,
+                max_per_endpoint,
+            )?;
             write_lines(&output, &selected)?;
             println!("[INFO] Published {} Light configs.", selected.len());
             return Ok(());
@@ -601,6 +660,12 @@ async fn main() -> Result<(), String> {
                 *protocol_counts.entry(protocol(config)).or_default() += 1;
             }
             println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
+            write_experimental_output(
+                experimental_output.as_deref(),
+                &ranked_final,
+                selection_limit,
+                max_per_endpoint,
+            )?;
             write_lines(&output, &selected)?;
             println!(
                 "[INFO] Published {} Light configs from {} globally verified candidates.",
@@ -636,6 +701,12 @@ async fn main() -> Result<(), String> {
     println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
     println!("[INFO] Light backend distribution: {:?}", backend_counts);
 
+    write_experimental_output(
+        experimental_output.as_deref(),
+        &ranked_final,
+        selection_limit,
+        max_per_endpoint,
+    )?;
     write_lines(&output, &selected)?;
     println!(
         "[INFO] Published {} Light configs after exhausting {} discovery candidates.",
@@ -686,6 +757,23 @@ mod tests {
     fn routes_normal_vless_to_singbox() {
         let config = "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn quality_first_preserves_rank_and_endpoint_limit() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "trojan://c@example.net:8443".to_string(),
+            "vmess://encoded@example.org:9443".to_string(),
+        ];
+
+        let selected = super::quality_first_selection(&configs, 4, 1);
+
+        assert_eq!(
+            selected,
+            vec![configs[0].clone(), configs[2].clone(), configs[3].clone()]
+        );
     }
 
     #[test]
