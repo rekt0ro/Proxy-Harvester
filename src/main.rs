@@ -1,7 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use std::borrow::Cow;
 use percent_encoding::percent_decode_str;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::Endpoint;
@@ -11,6 +10,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
