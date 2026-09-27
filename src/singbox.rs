@@ -648,10 +648,7 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         return Err("response body too large".to_string());
     }
 
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| error.to_string())?;
+    let body = response.bytes().await.map_err(|error| error.to_string())?;
 
     if body.len() > MAX_RESPONSE_BYTES {
         return Err("response body too large".to_string());
