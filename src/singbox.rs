@@ -872,7 +872,6 @@ pub async fn validate_candidates_with_settings(
     Ok(metadata)
 }
 
-
 pub async fn validate_candidates(
     binary: &str,
     candidates: &[String],
