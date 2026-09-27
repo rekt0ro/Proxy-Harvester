@@ -1419,8 +1419,10 @@ mod tests {
 
     #[test]
     fn parses_percent_encoded_trojan_password() {
-        let config = parse_trojan("trojan://%4D%49%54%49%56%50%4E@104.26.14.137:2096?type=ws&security=tls&sni=de-ms.App-Cloud.ir")
-            .expect("percent-encoded Trojan URI should parse");
+        let config = parse_trojan(
+            "trojan://%4D%49%54%49%56%50%4E@104.26.14.137:2096?type=ws&security=tls&sni=de-ms.App-Cloud.ir",
+        )
+        .expect("percent-encoded Trojan URI should parse");
 
         assert_eq!(config["settings"]["servers"][0]["password"], "MITIVPN");
     }
