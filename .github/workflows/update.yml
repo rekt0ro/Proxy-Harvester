@@ -8,13 +8,14 @@ on:
       max_candidates:
         description: "Maximum Light candidates to validate for this manual run"
         required: false
-        default: "4000"
+        default: "6000"
         type: choice
         options:
           - "500"
           - "1000"
           - "2000"
           - "4000"
+          - "6000"
 
 concurrency:
   group: update-configs
@@ -202,7 +203,7 @@ jobs:
 
       - name: Build Light subscription
         env:
-          LIGHT_MAX_CANDIDATES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_candidates || '4000' }}
+          LIGHT_MAX_CANDIDATES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_candidates || '6000' }}
           LIGHT_MIN_PUBLISH: "50"
         run: |
           mkdir -p /tmp/proxy-harvester
@@ -219,6 +220,7 @@ jobs:
             --selected-workers 10 \
             --selected-batch-size 500 \
             --primary-target http://cp.cloudflare.com/ \
+            --experimental-output /tmp/proxy-harvester/light.experimental.txt \
             --singbox "$HOME/.local/bin/sing-box" \
             --selection-limit 200 \
             --max-per-endpoint 1
@@ -238,6 +240,19 @@ jobs:
             echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
           else
             echo "Light validation produced no configs; preserving the previous Light subscription."
+          fi
+
+          if [ -s /tmp/proxy-harvester/light.experimental.txt ]; then
+            experimental_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxy-harvester/light.experimental.txt)"
+            echo "Experimental Light quality-first count: ${experimental_count}"
+            if [ "$experimental_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
+              cp /tmp/proxy-harvester/light.experimental.txt subscriptions/light-experimental.txt
+              echo "Published refreshed experimental Light subscription."
+            else
+              echo "Experimental Light pool is too small; preserving the previous experimental subscription."
+            fi
+          else
+            echo "No experimental Light subscription produced; preserving the previous experimental subscription."
           fi
 
       - name: Generate Base64 subscriptions
