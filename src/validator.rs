@@ -217,9 +217,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         if !fp.is_empty() {
             tls["fingerprint"] = json!(fp);
         }
-        if truthy(url, &["insecure", "allowInsecure"]) {
-            tls["allowInsecure"] = json!(true);
-        }
         out["tlsSettings"] = tls;
     } else if security == "reality" {
         let pbk = first_query(url, &["pbk", "publicKey"], Some(""));
@@ -578,9 +575,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let fp = first_query(&url, &["fp", "fingerprint"], Some(""));
     if !fp.is_empty() {
         tls["fingerprint"] = json!(fp);
-    }
-    if truthy(&url, &["insecure", "allowInsecure"]) {
-        tls["allowInsecure"] = json!(true);
     }
 
     Ok(json!({
@@ -1429,4 +1423,29 @@ mod tests {
 
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
     }
+
+    #[test]
+    fn ignores_removed_allow_insecure_tls_option() {
+        let config = parse_config(
+            "vless://user@example.com:443?security=tls&sni=example.com&allowInsecure=1",
+        )
+        .expect("VLESS TLS should parse");
+
+        assert!(config["streamSettings"]["tlsSettings"]
+            .get("allowInsecure")
+            .is_none());
+    }
+
+    #[test]
+    fn ignores_removed_allow_insecure_hysteria2_option() {
+        let config = parse_hy2(
+            "hysteria2://password@example.com:443?insecure=1&sni=example.com",
+        )
+        .expect("Hysteria2 TLS should parse");
+
+        assert!(config["streamSettings"]["tlsSettings"]
+            .get("allowInsecure")
+            .is_none());
+    }
+
 }
