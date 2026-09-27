@@ -1,7 +1,7 @@
 use proxy_harvester::singbox::validate_candidates_with_targets as validate_singbox_targets;
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_targets, write_lines, ProxyMetrics, LIGHT_TARGETS,
-    PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates_with_targets, write_lines, ProxyMetrics,
+    LIGHT_TARGETS, PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -416,11 +416,7 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let targets = [
-        primary_target.as_str(),
-        LIGHT_TARGETS[1],
-        LIGHT_TARGETS[2],
-    ];
+    let targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -469,15 +465,8 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = validate_light_batch(
-            &xray,
-            &singbox,
-            &chunk_vec,
-            &targets,
-            workers,
-            batch_size,
-            timeout,
-        )
+        let chunk_metadata =
+            validate_light_batch(&xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout)
         .await?;
 
         for config in chunk_metadata.keys() {
