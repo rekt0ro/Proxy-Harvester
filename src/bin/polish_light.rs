@@ -639,7 +639,7 @@ async fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::protocol_round_robin;
+    use super::{light_backend, LightBackend, protocol_round_robin};
 
     #[test]
     fn routes_reality_to_both_cores() {
