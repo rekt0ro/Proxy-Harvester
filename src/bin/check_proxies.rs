@@ -10,13 +10,12 @@ fn value(args: &[String], name: &str, default: &str) -> String {
 }
 
 fn required(args: &[String], name: &str) -> Result<String, String> {
-    value(args, name, "")
-        .is_empty()
-        .then_some(())
-        .map_or_else(
-            || Ok(value(args, name, "")),
-            |_| Err(format!("missing required argument {name}")),
-        )
+    let result = value(args, name, "");
+    if result.is_empty() {
+        Err(format!("missing required argument {name}"))
+    } else {
+        Ok(result)
+    }
 }
 
 fn ranked(metadata: &std::collections::HashMap<String, ProxyMetrics>) -> Vec<String> {
