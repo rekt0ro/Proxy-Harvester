@@ -344,51 +344,58 @@ async fn merge_dual(
         return Ok(HashMap::new());
     }
 
-    let xray_metadata = if strict {
-        validate_candidates_with_targets_strict(
-            xray,
-            candidates,
-            targets,
-            workers,
-            batch_size,
-            timeout_seconds,
-        )
-        .await?
-    } else {
-        validate_candidates_with_targets(
-            xray,
-            candidates,
-            targets,
-            workers,
-            batch_size,
-            timeout_seconds,
-        )
-        .await?
-    };
-    let xray_verified = xray_metadata.len();
-
     let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-    let singbox_metadata = if strict {
-        validate_singbox_targets_strict(
-            singbox,
-            candidates,
-            targets,
-            workers.min(32).max(1),
-            request_timeout,
-            timeout_seconds * 1000.0,
-        )
-        .await?
-    } else {
-        validate_singbox_targets(
-            singbox,
-            candidates,
-            targets,
-            workers.min(32).max(1),
-            request_timeout,
-            timeout_seconds * 1000.0,
-        )
-        .await?
+    let xray_future = async {
+        if strict {
+            validate_candidates_with_targets_strict(
+                xray,
+                candidates,
+                targets,
+                workers,
+                batch_size,
+                timeout_seconds,
+            )
+            .await
+        } else {
+            validate_candidates_with_targets(
+                xray,
+                candidates,
+                targets,
+                workers,
+                batch_size,
+                timeout_seconds,
+            )
+            .await
+        }
     };
+    let singbox_future = async {
+        if strict {
+            validate_singbox_targets_strict(
+                singbox,
+                candidates,
+                targets,
+                workers.min(32).max(1),
+                request_timeout,
+                timeout_seconds * 1000.0,
+            )
+            .await
+        } else {
+            validate_singbox_targets(
+                singbox,
+                candidates,
+                targets,
+                workers.min(32).max(1),
+                request_timeout,
+                timeout_seconds * 1000.0,
+            )
+            .await
+        }
+    };
+
+    let (xray_result, singbox_result) = tokio::join!(xray_future, singbox_future);
+    let xray_metadata = xray_result?;
+    let xray_verified = xray_metadata.len();
+    let singbox_metadata = singbox_result?;
 
     let mut verified = HashMap::new();
     for (config, mut metrics) in xray_metadata {
