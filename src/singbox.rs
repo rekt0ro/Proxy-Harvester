@@ -870,9 +870,7 @@ async fn check_batch_targets(
                 }
             }
 
-            if stability_attempts >= STRICT_STABILITY_ATTEMPTS
-                && attempt + 1 < stability_attempts
-            {
+            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
