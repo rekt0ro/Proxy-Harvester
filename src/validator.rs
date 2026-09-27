@@ -13,16 +13,19 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-pub const PRIMARY_TARGET: &str = "https://cp.cloudflare.com/";
+pub const PRIMARY_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=16384";
 pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
-    "https://www.gstatic.com/generate_204",
+    "https://www.google.com/robots.txt",
     "https://detectportal.firefox.com/success.txt",
 ];
 pub const MAX_RESPONSE_BYTES: usize = 65536;
+pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
+pub const STRICT_STABILITY_ATTEMPTS: usize = 6;
+pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -173,6 +176,33 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
     endpoint_from_url(&url, default).ok()
 }
 
+fn normalize_xhttp_extra(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, normalize_xhttp_extra(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.into_iter().map(normalize_xhttp_extra).collect()),
+        Value::Number(number) => {
+            if number.as_i64().is_some() {
+                return Value::Number(number);
+            }
+            if let Some(value) = number.as_f64() {
+                if value.is_finite()
+                    && value.fract() == 0.0
+                    && value >= i64::MIN as f64
+                    && value <= i64::MAX as f64
+                {
+                    return json!(value as i64);
+                }
+            }
+            Value::Number(number)
+        }
+        other => other,
+    }
+}
+
 fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
     if network == "tcp" {
@@ -318,7 +348,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !extra.is_empty() {
                 if let Ok(value) = serde_json::from_str::<Value>(&extra) {
                     if value.is_object() {
-                        settings["extra"] = value;
+                        settings["extra"] = normalize_xhttp_extra(value);
                     }
                 }
             }
@@ -988,9 +1018,22 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         extend_rate_limit(rate_limit_wait(response.headers()));
     }
 
-    // Light validation is intentionally stronger than a URL-status probe: require
-    // the response body to be readable through the proxy, not just the headers.
-    response.bytes().await.map_err(|_| ProbeError::Failed)?;
+    if response.status().as_u16() == 429 {
+        extend_rate_limit(rate_limit_wait(response.headers()));
+        return Err(ProbeError::Failed);
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+    {
+        return Err(ProbeError::Failed);
+    }
+
+    let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
+    if body.len() < MIN_RESPONSE_BYTES || body.len() > MAX_RESPONSE_BYTES {
+        return Err(ProbeError::Failed);
+    }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
@@ -1090,7 +1133,7 @@ async fn check_batch(
         let mut attempts = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
 
-        for attempt in 0..STABILITY_ATTEMPTS {
+        for attempt in 0..stability_attempts {
             if active.is_empty() {
                 break;
             }
@@ -1119,10 +1162,11 @@ async fn check_batch(
                 }
             }
 
-            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            let remaining_attempts = stability_attempts - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+                wins < min_successful_attempts
+                    && wins + remaining_attempts >= min_successful_attempts
             });
         }
 
@@ -1178,6 +1222,31 @@ pub async fn validate_candidates_with_targets(
         workers,
         batch_size,
         timeout_seconds,
+        STABILITY_ATTEMPTS,
+        MIN_SUCCESSFUL_TARGETS,
+        MIN_SUCCESSFUL_TARGETS,
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_targets_strict(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        targets,
+        workers,
+        batch_size,
+        timeout_seconds,
+        STRICT_STABILITY_ATTEMPTS,
+        STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+        targets.len(),
     )
     .await
 }
@@ -1230,6 +1299,9 @@ async fn validate_candidates_targets_inner(
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
+    stability_attempts: usize,
+    min_successful_attempts: usize,
+    min_successful_targets: usize,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let targets = targets
         .iter()
@@ -1279,12 +1351,22 @@ async fn validate_candidates_targets_inner(
             index + 1,
             total_batches,
             batch.len(),
-            MIN_SUCCESSFUL_TARGETS,
-            STABILITY_ATTEMPTS
+            min_successful_attempts,
+            stability_attempts
         );
 
         let batch_metadata =
-            check_batch_targets(binary, batch, &targets, workers.max(1), timeout_seconds).await?;
+            check_batch_targets(
+                binary,
+                batch,
+                &targets,
+                workers.max(1),
+                timeout_seconds,
+                stability_attempts,
+                min_successful_attempts,
+                min_successful_targets,
+            )
+            .await?;
         metadata.extend(batch_metadata);
     }
 
@@ -1293,8 +1375,8 @@ async fn validate_candidates_targets_inner(
         metadata.len(),
         candidates.len(),
         targets.len(),
-        MIN_SUCCESSFUL_TARGETS,
-        STABILITY_ATTEMPTS
+        min_successful_attempts,
+        stability_attempts
     );
 
     Ok(metadata)
@@ -1306,6 +1388,9 @@ async fn check_batch_targets(
     targets: &[Url],
     workers: usize,
     timeout_seconds: f64,
+    stability_attempts: usize,
+    min_successful_attempts: usize,
+    min_successful_targets: usize,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -1427,9 +1512,10 @@ async fn check_batch_targets(
             let wins = successes.get(config).copied().unwrap_or(0);
             let destinations = successful_targets.get(config).map_or(0, HashSet::len);
 
-            if wins >= MIN_SUCCESSFUL_TARGETS
-                && destinations >= 2
+            if wins >= min_successful_attempts
+                && destinations >= min_successful_targets
                 && !values.is_empty()
+                && values.len() >= min_successful_attempts
                 && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
             {
                 let mut values = values;
