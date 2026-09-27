@@ -691,10 +691,9 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    // Match sing-box/Throne URL testing: receiving an HTTP response is enough.
-    // The response status itself is not a proxy reachability verdict.
-    // Closing without draining the body avoids false negatives on quirky upstreams.
-    drop(response);
+    // Light validation is intentionally stronger than a URL-status probe: require
+    // the response body to be readable through the proxy, not just the headers.
+    response.bytes().await.map_err(|error| error.to_string())?;
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
