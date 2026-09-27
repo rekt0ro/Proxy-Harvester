@@ -76,26 +76,32 @@ fn query_bool(url: &Url, names: &[&str]) -> bool {
     })
 }
 
-fn string_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, String> {
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = value;
+
     for part in path {
-        current = current
-            .get(*part)
-            .ok_or_else(|| format!("missing {part}"))?;
+        current = match current {
+            Value::Object(map) => map.get(*part)?,
+            Value::Array(values) => {
+                let index = part.parse::<usize>().ok()?;
+                values.get(index)?
+            }
+            _ => return None,
+        };
     }
 
-    current
-        .as_str()
+    Some(current)
+}
+
+fn string_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str, String> {
+    value_at(value, path)
+        .and_then(Value::as_str)
         .ok_or_else(|| format!("invalid {}", path.join(".")))
 }
 
 fn u16_at(value: &Value, path: &[&str]) -> Result<u16, String> {
-    let mut current = value;
-    for part in path {
-        current = current
-            .get(*part)
-            .ok_or_else(|| format!("missing {part}"))?;
-    }
+    let current =
+        value_at(value, path).ok_or_else(|| format!("missing {}", path.join(".")))?;
 
     match current {
         Value::Number(value) => value
@@ -652,146 +658,156 @@ async fn check_batch(
         return Ok(HashMap::new());
     }
 
-    let work = make_temp_dir()?;
-    let config_path = work.join("sing-box.json");
-    let log_path = work.join("sing-box.log");
-    let (config, local_ports) = singbox_config(entries)?;
+    let mut pending = vec![entries.to_vec()];
+    let mut verified = HashMap::new();
 
-    fs::write(
-        &config_path,
-        serde_json::to_vec(&config).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    while let Some(batch_entries) = pending.pop() {
+        let work = make_temp_dir()?;
+        let config_path = work.join("sing-box.json");
+        let log_path = work.join("sing-box.log");
+        let (config, local_ports) = singbox_config(&batch_entries)?;
 
-    if let Err(error) = check_singbox_config(binary, &config_path) {
-        if entries.len() > 1 {
-            let mid = entries.len() / 2;
-            let left = check_batch(binary, &entries[..mid].to_vec(), workers).await?;
-            let right = check_batch(binary, &entries[mid..].to_vec(), workers).await?;
-            let mut merged = left;
-            merged.extend(right);
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+
+        if let Err(error) = check_singbox_config(binary, &config_path) {
             let _ = fs::remove_dir_all(&work);
-            return Ok(merged);
+
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending.push(batch_entries[..mid].to_vec());
+                pending.push(batch_entries[mid..].to_vec());
+                continue;
+            }
+
+            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
+            continue;
         }
 
-        println!(
-            "[WARN] sing-box rejected {}: {}",
-            entries[0].0, error
-        );
-        let _ = fs::remove_dir_all(&work);
-        return Ok(HashMap::new());
-    }
+        let mut child = start_singbox(binary, &config_path, &log_path)?;
 
-    let mut child = start_singbox(binary, &config_path, &log_path)?;
+        if !ports_ready(&mut child, &local_ports).await {
+            let _ = child.kill();
+            let _ = child.wait();
 
-    if !ports_ready(&mut child, &local_ports).await {
-        let _ = child.kill();
-        let _ = child.wait();
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending.push(batch_entries[..mid].to_vec());
+                pending.push(batch_entries[mid..].to_vec());
+                let _ = fs::remove_dir_all(&work);
+                continue;
+            }
 
-        if entries.len() > 1 {
-            let mid = entries.len() / 2;
-            let left = check_batch(binary, &entries[..mid].to_vec(), workers).await?;
-            let right = check_batch(binary, &entries[mid..].to_vec(), workers).await?;
-            let mut merged = left;
-            merged.extend(right);
+            let tail = fs::read_to_string(&log_path)
+                .unwrap_or_default()
+                .chars()
+                .rev()
+                .take(700)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            println!("[WARN] sing-box failed to start: {}", batch_entries[0].0);
+            if !tail.is_empty() {
+                println!("[WARN] sing-box log: {tail}");
+            }
             let _ = fs::remove_dir_all(&work);
-            return Ok(merged);
+            continue;
         }
 
-        let tail = fs::read_to_string(&log_path)
-            .unwrap_or_default()
-            .chars()
-            .rev()
-            .take(700)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>();
-        println!("[WARN] sing-box failed to start: {}", entries[0].0);
-        if !tail.is_empty() {
-            println!("[WARN] sing-box log: {tail}");
-        }
-        let _ = fs::remove_dir_all(&work);
-        return Ok(HashMap::new());
-    }
+        let mut active = Vec::with_capacity(batch_entries.len());
+        let mut client_error = None;
 
-    let mut active = Vec::with_capacity(entries.len());
-    for (index, (config, _)) in entries.iter().enumerate() {
-        active.push((config.clone(), client_for_port(local_ports[index])?));
-    }
-
-    let mut successes = HashMap::<String, usize>::new();
-    let mut attempts = HashMap::<String, usize>::new();
-    let mut latencies = HashMap::<String, Vec<f64>>::new();
-
-    for attempt in 0..STABILITY_ATTEMPTS {
-        let results = stream::iter(active.clone())
-            .map(|(config, client)| async move {
-                let started = std::time::Instant::now();
-                let get = request_url(&client, TARGET, false).await;
-                let head = match get {
-                    Ok(_) => request_url(&client, TARGET, true).await,
-                    Err(error) => Err(error),
-                };
-                let result = match head {
-                    Ok(head_latency) => Ok(head_latency.max(started.elapsed().as_secs_f64() * 1000.0)),
-                    Err(error) => Err(error),
-                };
-                (config, result)
-            })
-            .buffer_unordered(workers.max(1))
-            .collect::<Vec<_>>()
-            .await;
-
-        for (config, result) in results {
-            *attempts.entry(config.clone()).or_insert(0) += 1;
-            if let Ok(latency) = result {
-                *successes.entry(config.clone()).or_insert(0) += 1;
-                latencies.entry(config).or_default().push(latency);
+        for (index, (config, _)) in batch_entries.iter().enumerate() {
+            match client_for_port(local_ports[index]) {
+                Ok(client) => active.push((config.clone(), client)),
+                Err(error) => {
+                    client_error = Some(error);
+                    break;
+                }
             }
         }
 
-        let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
-        active.retain(|(config, _)| {
-            let wins = successes.get(config).copied().unwrap_or(0);
-            wins < MIN_SUCCESSFUL_ATTEMPTS
-                && wins + remaining_attempts >= MIN_SUCCESSFUL_ATTEMPTS
-        });
-    }
-
-    let mut verified = HashMap::new();
-    for (config, _) in entries {
-        let wins = successes.get(config).copied().unwrap_or(0);
-        let values = latencies.get(config).cloned().unwrap_or_default();
-
-        if wins >= MIN_SUCCESSFUL_ATTEMPTS
-            && !values.is_empty()
-            && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
-        {
-            let mut values = values;
-            values.sort_by(f64::total_cmp);
-            let median = if values.len() % 2 == 1 {
-                values[values.len() / 2]
-            } else {
-                let right = values.len() / 2;
-                (values[right - 1] + values[right]) / 2.0
-            };
-
-            verified.insert(
-                config.clone(),
-                ProxyMetrics {
-                    successes: wins,
-                    attempts: attempts.get(config).copied().unwrap_or(0),
-                    median_ms: median,
-                    min_ms: values[0],
-                },
-            );
+        if let Some(error) = client_error {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
         }
-    }
 
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = fs::remove_dir_all(&work);
+        let mut successes = HashMap::<String, usize>::new();
+        let mut attempts = HashMap::<String, usize>::new();
+        let mut latencies = HashMap::<String, Vec<f64>>::new();
+
+        for attempt in 0..STABILITY_ATTEMPTS {
+            let results = stream::iter(active.clone())
+                .map(|(config, client)| async move {
+                    let started = std::time::Instant::now();
+                    let result = request_url(&client, TARGET, false)
+                        .await
+                        .and_then(|_| async {
+                            request_url(&client, TARGET, true).await
+                        })
+                        .await
+                        .map(|_| started.elapsed().as_secs_f64() * 1000.0);
+                    (config, result)
+                })
+                .buffer_unordered(workers.max(1))
+                .collect::<Vec<_>>()
+                .await;
+
+            for (config, result) in results {
+                *attempts.entry(config.clone()).or_insert(0) += 1;
+                if let Ok(latency) = result {
+                    *successes.entry(config.clone()).or_insert(0) += 1;
+                    latencies.entry(config).or_default().push(latency);
+                }
+            }
+
+            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
+            active.retain(|(config, _)| {
+                let wins = successes.get(config).copied().unwrap_or(0);
+                wins < MIN_SUCCESSFUL_ATTEMPTS
+                    && wins + remaining_attempts >= MIN_SUCCESSFUL_ATTEMPTS
+            });
+        }
+
+        for (config, _) in &batch_entries {
+            let wins = successes.get(config).copied().unwrap_or(0);
+            let values = latencies.get(config).cloned().unwrap_or_default();
+
+            if wins >= MIN_SUCCESSFUL_ATTEMPTS
+                && !values.is_empty()
+                && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+            {
+                let mut values = values;
+                values.sort_by(f64::total_cmp);
+                let median = if values.len() % 2 == 1 {
+                    values[values.len() / 2]
+                } else {
+                    let right = values.len() / 2;
+                    (values[right - 1] + values[right]) / 2.0
+                };
+
+                verified.insert(
+                    config.clone(),
+                    ProxyMetrics {
+                        successes: wins,
+                        attempts: attempts.get(config).copied().unwrap_or(0),
+                        median_ms: median,
+                        min_ms: values[0],
+                    },
+                );
+            }
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&work);
+    }
 
     Ok(verified)
 }
