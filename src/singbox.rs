@@ -808,10 +808,7 @@ async fn check_batch_targets(
                 if let Ok(latency) = result {
                     *successes.entry(config.clone()).or_insert(0) += 1;
                     latencies.entry(config.clone()).or_default().push(latency);
-                    successful_targets
-                        .entry(config)
-                        .or_default()
-                        .insert(target);
+                    successful_targets.entry(config).or_default().insert(target);
                 }
             }
 
