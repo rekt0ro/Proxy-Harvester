@@ -3,7 +3,7 @@ use proxy_harvester::validator::{
     endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
     COMPATIBILITY_TARGET, PRIMARY_TARGET,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
@@ -89,26 +89,71 @@ fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String>
     selected
 }
 
-fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+fn protocol(config: &str) -> String {
+    config
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Selects from the already-ranked verified pool in protocol round-robin order.
+/// Ranking is preserved within each protocol, so the best candidate for a
+/// protocol is always selected before its lower-ranked peers. Protocols with
+/// fewer candidates naturally exhaust early and their turns are redistributed.
+fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
+    let mut groups = BTreeMap::<String, Vec<String>>::new();
 
     for config in configs {
-        if let Some(ep) = endpoint(config) {
-            let count = endpoint_counts.entry(ep).or_insert(0);
-            if *count >= max_per_endpoint {
-                continue;
+        groups
+            .entry(protocol(config))
+            .or_default()
+            .push(config.clone());
+    }
+
+    let protocols = groups.keys().cloned().collect::<Vec<_>>();
+    let mut cursors = HashMap::<String, usize>::new();
+    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut result = Vec::with_capacity(limit.min(configs.len()));
+
+    while result.len() < limit {
+        let mut made_progress = false;
+
+        for scheme in &protocols {
+            let group = groups.get(scheme).expect("protocol group exists");
+            let cursor = cursors.entry(scheme.clone()).or_insert(0);
+
+            while *cursor < group.len() {
+                let config = &group[*cursor];
+                *cursor += 1;
+
+                if let Some(ep) = endpoint(config) {
+                    let count = endpoint_counts.entry(ep).or_insert(0);
+                    if *count >= max_per_endpoint {
+                        continue;
+                    }
+                    *count += 1;
+                }
+
+                result.push(config.clone());
+                made_progress = true;
+                break;
             }
-            *count += 1;
+
+            if result.len() >= limit {
+                break;
+            }
         }
 
-        result.push(config.clone());
-        if result.len() >= limit {
+        if !made_progress {
             break;
         }
     }
 
     result
+}
+
+fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
+    protocol_round_robin(configs, limit, max_per_endpoint)
 }
 
 async fn dual_validate(
@@ -163,10 +208,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N] \
-             [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
-             [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
-             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -278,7 +320,7 @@ async fn main() -> Result<(), String> {
 
         let ranked_global = ranked(global_verified.clone(), &global_metadata, &positions);
         let remaining = selection_limit.saturating_sub(
-            diversified(
+            protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
                 max_per_endpoint,
@@ -287,7 +329,7 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let selected = diversified(
+            let selected = protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
                 max_per_endpoint,
@@ -346,7 +388,7 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let selected = diversified(&ranked_final, selection_limit, max_per_endpoint);
+        let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
@@ -355,6 +397,11 @@ async fn main() -> Result<(), String> {
         );
 
         if selected.len() >= selection_limit {
+            let mut protocol_counts = BTreeMap::<String, usize>::new();
+            for config in &selected {
+                *protocol_counts.entry(protocol(config)).or_default() += 1;
+            }
+            println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
             write_lines(&output, &selected)?;
             println!(
                 "[INFO] Published {} Light configs from {} globally verified candidates; selected validation used {}.",
@@ -372,7 +419,7 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let selected = diversified(&ranked_final, selection_limit, max_per_endpoint);
+    let selected = protocol_round_robin(&ranked_final, selection_limit, max_per_endpoint);
 
     if selected.is_empty() {
         return Err("selected Light validation produced zero verified configs".to_string());
@@ -385,4 +432,46 @@ async fn main() -> Result<(), String> {
         candidates.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protocol_round_robin;
+
+    #[test]
+    fn round_robin_preserves_rank_within_each_protocol() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "trojan://c@example.net:443".to_string(),
+            "trojan://d@example.net:8443".to_string(),
+            "hysteria2://e@example.org:443".to_string(),
+        ];
+
+        let selected = protocol_round_robin(&configs, 5, 1);
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(selected[0], configs[4]);
+        assert_eq!(selected[1], configs[2]);
+        assert_eq!(selected[2], configs[0]);
+        assert_eq!(selected[3], configs[3]);
+    }
+
+    #[test]
+    fn round_robin_respects_endpoint_limit() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "trojan://c@example.net:443".to_string(),
+            "trojan://d@example.net:443".to_string(),
+            "hysteria2://e@example.org:443".to_string(),
+        ];
+
+        let selected = protocol_round_robin(&configs, 5, 1);
+
+        assert_eq!(selected.len(), 3);
+        assert!(selected.contains(&configs[0]));
+        assert!(selected.contains(&configs[2]));
+        assert!(selected.contains(&configs[4]));
+    }
 }
