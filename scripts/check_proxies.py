@@ -14,7 +14,7 @@ import tempfile
 import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
-DEFAULT_TARGET = "http://cp.cloudflare.com"
+DEFAULT_TARGET = "https://speed.cloudflare.com"
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_LATENCY_MS = 800
