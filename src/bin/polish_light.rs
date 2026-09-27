@@ -1,10 +1,7 @@
-use proxy_harvester::singbox::{
-    validate_candidates_with_settings as validate_singbox_candidates,
-    validate_candidates_with_targets as validate_singbox_targets,
-};
+use proxy_harvester::singbox::validate_candidates_with_targets as validate_singbox_targets;
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates, validate_candidates_with_targets, write_lines,
-    ProxyMetrics, LIGHT_TARGETS, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates_with_targets, write_lines, ProxyMetrics, LIGHT_TARGETS,
+    PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -237,7 +234,7 @@ async fn merge_dual(
     xray: &str,
     singbox: &str,
     candidates: &[String],
-    primary_target: &str,
+    targets: &[&str],
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
@@ -249,7 +246,7 @@ async fn merge_dual(
     let xray_metadata = validate_candidates_with_targets(
         xray,
         candidates,
-        LIGHT_TARGETS,
+        targets,
         workers,
         batch_size,
         timeout_seconds,
@@ -261,7 +258,7 @@ async fn merge_dual(
     let singbox_metadata = validate_singbox_targets(
         singbox,
         candidates,
-        LIGHT_TARGETS,
+        targets,
         workers.min(32).max(1),
         request_timeout,
         timeout_seconds * 1000.0,
@@ -293,7 +290,7 @@ async fn validate_light_batch(
     xray: &str,
     singbox: &str,
     candidates: &[String],
-    primary_target: &str,
+    targets: &[&str],
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
@@ -325,7 +322,7 @@ async fn validate_light_batch(
             validate_singbox_targets(
                 singbox,
                 &singbox_candidates,
-                LIGHT_TARGETS,
+                targets,
                 workers.min(32).max(1),
                 request_timeout,
                 timeout_seconds * 1000.0,
@@ -339,7 +336,7 @@ async fn validate_light_batch(
             validate_candidates_with_targets(
                 xray,
                 &xray_candidates,
-                LIGHT_TARGETS,
+                targets,
                 workers,
                 batch_size,
                 timeout_seconds,
@@ -354,7 +351,7 @@ async fn validate_light_batch(
                 xray,
                 singbox,
                 &dual_candidates,
-                primary_target,
+                targets,
                 workers,
                 batch_size,
                 timeout_seconds,
@@ -419,6 +416,11 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
+    let targets = [
+        primary_target.as_str(),
+        LIGHT_TARGETS[1],
+        LIGHT_TARGETS[2],
+    ];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -471,7 +473,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             &chunk_vec,
-            &primary_target,
+            &targets,
             workers,
             batch_size,
             timeout,
@@ -537,7 +539,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             &final_candidates,
-            &primary_target,
+            &targets,
             final_workers,
             final_batch_size,
             timeout,
