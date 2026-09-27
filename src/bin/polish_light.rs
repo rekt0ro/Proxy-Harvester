@@ -3,8 +3,9 @@ use proxy_harvester::singbox::{
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_targets, validate_candidates_with_targets_strict,
-    write_lines, ProxyMetrics, LIGHT_TARGETS, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates_with_targets,
+    validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
+    PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -518,14 +519,7 @@ async fn main() -> Result<(), String> {
 
         let chunk_vec = chunk.to_vec();
         let chunk_metadata = validate_light_batch(
-            &xray,
-            &singbox,
-            &chunk_vec,
-            &targets,
-            workers,
-            batch_size,
-            timeout,
-            false,
+            &xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout, false,
         )
         .await?;
 
