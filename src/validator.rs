@@ -1430,4 +1430,3 @@ mod tests {
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
     }
 }
-}
