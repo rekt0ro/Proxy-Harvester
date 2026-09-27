@@ -1401,11 +1401,6 @@ mod tests {
         headers.insert("retry-after", HeaderValue::from_static("invalid"));
         assert_eq!(rate_limit_wait(&headers), RATE_LIMIT_DEFAULT_WAIT);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_trojan;
 
     #[test]
     fn parses_standard_trojan_password() {
@@ -1434,4 +1429,5 @@ mod tests {
 
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
     }
+}
 }
