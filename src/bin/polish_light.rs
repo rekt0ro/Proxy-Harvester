@@ -1,3 +1,4 @@
+use proxy_harvester::singbox::validate_candidates as validate_singbox_candidates;
 use proxy_harvester::validator::{
     endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
     COMPATIBILITY_TARGET, PRIMARY_TARGET,
@@ -110,6 +111,57 @@ fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec
     result
 }
 
+async fn dual_validate(
+    xray: &str,
+    singbox: &str,
+    candidates: &[String],
+    primary_target: &str,
+    workers: usize,
+    batch_size: usize,
+    timeout: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let xray_metadata = validate_candidates_with_compatibility(
+        xray,
+        candidates,
+        primary_target,
+        COMPATIBILITY_TARGET,
+        workers,
+        batch_size,
+        timeout,
+    )
+    .await?;
+
+    if xray_metadata.is_empty() {
+        println!("[INFO] Dual-core Light: Xray verified 0 candidates.");
+        return Ok(HashMap::new());
+    }
+
+    let xray_candidates = xray_metadata.keys().cloned().collect::<Vec<_>>();
+    let singbox_metadata = validate_singbox_candidates(
+        singbox,
+        &xray_candidates,
+        workers.min(16).max(1),
+    )
+    .await?;
+
+    let mut verified = HashMap::new();
+    for (config, metrics) in xray_metadata {
+        if singbox_metadata.contains_key(&config) {
+            verified.insert(config, metrics);
+        }
+    }
+
+    println!(
+        "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
+        xray_candidates.len(),
+        singbox_metadata.len(),
+        verified.len()
+    );
+
+    Ok(verified)
+}
+
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
@@ -119,7 +171,7 @@ async fn main() -> Result<(), String> {
             "Usage: polish_light --candidates FILE --output FILE [--workers N] \
              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
              [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
-             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH]"
+             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -174,6 +226,7 @@ async fn main() -> Result<(), String> {
     .map_err(|_| "invalid --max-per-endpoint".to_string())?
     .max(1);
     let xray = value(&args, "--xray", "xray");
+    let singbox = value(&args, "--singbox", "sing-box");
 
     let candidates = read_lines(&candidates_path)?;
     let candidates = candidates
@@ -204,11 +257,11 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = validate_candidates_with_compatibility(
+        let chunk_metadata = dual_validate(
             &xray,
+            &singbox,
             &chunk_vec,
             &primary_target,
-            COMPATIBILITY_TARGET,
             workers,
             batch_size,
             timeout,
@@ -273,11 +326,11 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata = validate_candidates_with_compatibility(
+        let primary_metadata = dual_validate(
             &xray,
+            &singbox,
             &final_candidates,
             &primary_target,
-            COMPATIBILITY_TARGET,
             final_workers,
             final_batch_size,
             timeout,
