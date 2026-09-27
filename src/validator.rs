@@ -1011,8 +1011,8 @@ fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.len() == 16_384,
         "https://www.google.com/robots.txt" => body
-            .strip_prefix(b"")
-            .is_some_and(|body| body.windows(b"User-agent:".len()).any(|window| window == b"User-agent:")),
+            .windows(b"User-agent:".len())
+            .any(|window| window == b"User-agent:"),
         "https://detectportal.firefox.com/success.txt" => body == b"success",
         _ => true,
     }
