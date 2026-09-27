@@ -20,7 +20,6 @@ pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
-pub const RATE_LIMIT_RETRIES: usize = 1;
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
 pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(300);
@@ -37,7 +36,6 @@ pub struct ProxyMetrics {
 
 #[derive(Debug)]
 enum ProbeError {
-    RateLimited,
     Failed,
 }
 
@@ -992,31 +990,11 @@ async fn functional_attempt(
     target: &Url,
     compatibility_target: Option<&Url>,
 ) -> Result<f64, ProbeError> {
-    for retry in 0..=RATE_LIMIT_RETRIES {
-        if let Some(compatibility_target) = compatibility_target {
-            match probe_request(client, compatibility_target.clone()).await {
-                Ok(_) => {}
-                Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
-                    wait_for_rate_limit().await;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        let target_latency = match probe_request(client, target.clone()).await {
-            Ok(latency) => latency,
-            Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
-                wait_for_rate_limit().await;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-
-        return Ok(target_latency);
+    if let Some(compatibility_target) = compatibility_target {
+        probe_request(client, compatibility_target.clone()).await?;
     }
 
-    Err(ProbeError::Failed)
+    probe_request(client, target.clone()).await
 }
 
 async fn check_batch(
@@ -1127,7 +1105,6 @@ async fn check_batch(
                         *successes.entry(config.clone()).or_insert(0) += 1;
                         latencies.entry(config).or_default().push(latency);
                     }
-                    Err(ProbeError::RateLimited) => {}
                     Err(ProbeError::Failed) => {}
                 }
             }
