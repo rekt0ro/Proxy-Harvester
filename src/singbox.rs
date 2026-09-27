@@ -746,13 +746,13 @@ async fn check_batch(
             let results = stream::iter(active.clone())
                 .map(|(config, client)| async move {
                     let started = std::time::Instant::now();
-                    let result = request_url(&client, TARGET, false)
-                        .await
-                        .and_then(|_| async {
-                            request_url(&client, TARGET, true).await
-                        })
-                        .await
-                        .map(|_| started.elapsed().as_secs_f64() * 1000.0);
+                    let result = match request_url(&client, TARGET, false).await {
+                        Ok(_) => match request_url(&client, TARGET, true).await {
+                            Ok(_) => Ok(started.elapsed().as_secs_f64() * 1000.0),
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    };
                     (config, result)
                 })
                 .buffer_unordered(workers.max(1))
