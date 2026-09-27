@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import os
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,11 @@ DEFAULT_TARGET = "http://cp.cloudflare.com"
 MIN_SUCCESSFUL_TARGETS = 2
 STABILITY_ATTEMPTS = 3
 MAX_LATENCY_MS = 800
+DOWNLOAD_BYTES = 4096
+UPLOAD_BYTES = 1024
+MAX_RESPONSE_BYTES = 65536
+RATE_LIMIT_RETRIES = 1
+RATE_LIMIT_MAX_WAIT = 2.0
 CORE_START_TIMEOUT = 5.0
 SUPPORTED = {"vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "wg", "socks", "socks5", "socks5h", "http"}
 
@@ -411,24 +417,62 @@ def _port_ready(port):
         return False
 
 
-def probe(port, target, timeout_seconds):
-    p = urlsplit(target)
-    default_port = {"http": 80, "https": 443}.get(p.scheme.lower())
-    host, target_port = endpoint(p, default_port)
-    started = time.monotonic()
+class RateLimited(Exception):
+    def __init__(self, retry_after=0.0):
+        super().__init__("target rate limited")
+        self.retry_after = retry_after
+
+
+def _response_body(sock, headers):
+    length = headers.get("content-length")
+    if length is not None:
+        try:
+            expected = int(length)
+        except ValueError:
+            raise OSError("invalid Content-Length")
+        if expected < 0 or expected > MAX_RESPONSE_BYTES:
+            raise OSError("response body too large")
+        data = bytearray()
+        while len(data) < expected:
+            chunk = sock.recv(min(4096, expected - len(data)))
+            if not chunk:
+                raise OSError("HTTP response body truncated")
+            data.extend(chunk)
+        return bytes(data)
+
+    data = bytearray()
+    while len(data) <= MAX_RESPONSE_BYTES:
+        chunk = sock.recv(min(4096, MAX_RESPONSE_BYTES + 1 - len(data)))
+        if not chunk:
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise OSError("response body too large")
+    return bytes(data)
+
+
+def _http_transfer(port, scheme, host, target_port, path, timeout_seconds, method, body=b""):
     sock = socket.create_connection(("127.0.0.1", port), timeout=timeout_seconds)
     sock.settimeout(timeout_seconds)
     try:
         sock.sendall(b"\x05\x01\x00")
         if sock.recv(2) != b"\x05\x00":
             raise OSError("SOCKS5 auth negotiation failed")
+
         name = host.encode("idna")
         if len(name) > 255:
             raise OSError("target hostname too long")
-        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + target_port.to_bytes(2, "big"))
+        sock.sendall(
+            b"\x05\x01\x00\x03"
+            + bytes([len(name)])
+            + name
+            + target_port.to_bytes(2, "big")
+        )
+
         head = sock.recv(4)
         if len(head) != 4 or head[0] != 5 or head[1] != 0:
             raise OSError("SOCKS5 CONNECT failed")
+
         atyp = head[3]
         size = 4 if atyp == 1 else 16 if atyp == 4 else None
         if atyp == 3:
@@ -438,6 +482,7 @@ def probe(port, target, timeout_seconds):
             size = length[0]
         if size is None:
             raise OSError("SOCKS5 response address type invalid")
+
         left = size + 2
         while left:
             chunk = sock.recv(left)
@@ -445,35 +490,131 @@ def probe(port, target, timeout_seconds):
                 raise OSError("SOCKS5 response truncated")
             left -= len(chunk)
 
-        path = p.path or "/"
-        if p.query:
-            path += "?" + p.query
-        host_header = host
-        if target_port != default_port:
-            host_header = f"[{host}]" if ":" in host and not host.startswith("[") else host
-            host_header = f"{host_header}:{target_port}"
+        context = ssl.create_default_context()
+        sock = context.wrap_socket(sock, server_hostname=host)
 
-        request = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host_header}\r\n"
-            "Connection: close\r\n"
-            "User-Agent: Proxy-Harvester/3.0\r\n"
-            "\r\n"
-        ).encode("ascii")
+        headers = [
+            f"{method} {path} HTTP/1.1",
+            f"Host: {host}",
+            "Connection: close",
+            "User-Agent: Proxy-Harvester/3.0",
+            "Accept: */*",
+        ]
+        if body:
+            headers.append("Content-Type: application/octet-stream")
+            headers.append(f"Content-Length: {len(body)}")
+
+        request = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body
+        started = time.monotonic()
         sock.sendall(request)
 
-        data = b""
-        while b"\r\n\r\n" not in data and len(data) < 65536:
-            chunk = sock.recv(min(4096, 65536 - len(data)))
+        raw = bytearray()
+        while b"\r\n\r\n" not in raw and len(raw) < MAX_RESPONSE_BYTES:
+            chunk = sock.recv(min(4096, MAX_RESPONSE_BYTES - len(raw)))
             if not chunk:
                 break
-            data += chunk
-        if b"\r\n\r\n" not in data:
-            raise OSError("HTTP response headers not received")
-        return True, (time.monotonic() - started) * 1000, ""
-    finally:
-        sock.close()
+            raw.extend(chunk)
 
+        marker = b"\r\n\r\n"
+        if marker not in raw:
+            raise OSError("HTTP response headers not received")
+
+        header_bytes, remainder = bytes(raw).split(marker, 1)
+        lines = header_bytes.decode("iso-8859-1").split("\r\n")
+        if not lines or len(lines[0].split()) < 2:
+            raise OSError("invalid HTTP status line")
+
+        try:
+            status = int(lines[0].split()[1])
+        except ValueError:
+            raise OSError("invalid HTTP status code")
+
+        response_headers = {}
+        for line in lines[1:]:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                response_headers[key.strip().lower()] = value.strip()
+
+        if status == 429:
+            retry_after = 0.0
+            try:
+                retry_after = float(response_headers.get("retry-after", "0"))
+            except ValueError:
+                pass
+            raise RateLimited(min(max(retry_after, 0.0), RATE_LIMIT_MAX_WAIT))
+
+        if status < 200 or status >= 300:
+            raise OSError(f"HTTP status {status}")
+
+        if "content-length" in response_headers:
+            length = int(response_headers["content-length"])
+            remaining = length - len(remainder)
+            if remaining > 0:
+                remainder += sock.recv(remaining)
+            if len(remainder) < length:
+                raise OSError("HTTP response body truncated")
+            body_data = remainder[:length]
+        else:
+            body_data = bytes(remainder) + _response_body(sock, {})
+        return (time.monotonic() - started) * 1000, body_data
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _probe_once(port, host, target_port, timeout_seconds):
+    download_path = f"/__down?bytes={DOWNLOAD_BYTES}"
+    upload_body = b"0" * UPLOAD_BYTES
+
+    download_latency, download_body = _http_transfer(
+        port,
+        "https",
+        host,
+        target_port,
+        download_path,
+        timeout_seconds,
+        "GET",
+    )
+    if len(download_body) < DOWNLOAD_BYTES:
+        raise OSError(
+            f"download body too small: {len(download_body)} < {DOWNLOAD_BYTES}"
+        )
+
+    upload_latency, upload_response = _http_transfer(
+        port,
+        "https",
+        host,
+        target_port,
+        "/__up",
+        timeout_seconds,
+        "POST",
+        upload_body,
+    )
+
+    return max(download_latency, upload_latency), (download_latency, upload_latency, len(upload_response))
+
+
+def probe(port, target, timeout_seconds):
+    p = urlsplit(target)
+    default_port = {"http": 80, "https": 443}.get(p.scheme.lower())
+    host, target_port = endpoint(p, default_port)
+
+    last_rate_limit = None
+    for retry in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return True, _probe_once(port, host, target_port, timeout_seconds)[0], ""
+        except RateLimited as exc:
+            last_rate_limit = exc
+            if retry >= RATE_LIMIT_RETRIES:
+                break
+            if exc.retry_after:
+                time.sleep(exc.retry_after)
+
+    if last_rate_limit is not None:
+        raise OSError("Cloudflare test endpoint rate limited after retry")
+    raise OSError("probe failed")
 
 def check_batch(binary, entries, target, timeout_seconds, workers):
     with tempfile.TemporaryDirectory(prefix="proxy-harvester-xray-") as work:
