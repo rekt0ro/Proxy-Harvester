@@ -1,10 +1,10 @@
 use proxy_harvester::singbox::validate_candidates_with_settings as validate_singbox_candidates;
 use proxy_harvester::validator::{
-    endpoint, read_lines, validate_candidates_with_compatibility, write_lines, ProxyMetrics,
-    COMPATIBILITY_TARGET, PRIMARY_TARGET,
+    endpoint, read_lines, validate_candidates, write_lines, ProxyMetrics, PRIMARY_TARGET,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
+use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
 const MAX_DISCOVERY_CANDIDATES: usize = 4000;
@@ -193,7 +193,68 @@ fn protocol_round_robin(configs: &[String], limit: usize, max_per_endpoint: usiz
     result
 }
 
-async fn dual_validate(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightBackend {
+    SingBox,
+    Xray,
+    Dual,
+}
+
+fn query_value(url: &Url, names: &[&str]) -> String {
+    url.query_pairs()
+        .find(|(key, value)| {
+            names.iter().any(|name| key.eq_ignore_ascii_case(name)) && !value.is_empty()
+        })
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default()
+}
+
+fn has_query_key(url: &Url, names: &[&str]) -> bool {
+    url.query_pairs()
+        .any(|(key, _)| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
+}
+
+fn light_backend(config: &str) -> LightBackend {
+    let Ok(url) = Url::parse(config.split('#').next().unwrap_or(config)) else {
+        return LightBackend::SingBox;
+    };
+
+    if !url.scheme().eq_ignore_ascii_case("vless") {
+        return LightBackend::SingBox;
+    }
+
+    let transport = query_value(&url, &["type", "network"]).to_ascii_lowercase();
+    let security = query_value(&url, &["security"]).to_ascii_lowercase();
+
+    // Throne's default Xray preference is XHTTP + Reality. Reality is checked
+    // against both engines because Hiddify defaults to sing-box while Throne
+    // normally routes it to Xray.
+    if security == "reality" {
+        return LightBackend::Dual;
+    }
+
+    let raw_http_over_tls = (transport.is_empty() || transport == "tcp" || transport == "raw")
+        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
+        && ((!security.is_empty() && security != "none")
+            || !query_value(&url, &["sni"]).is_empty()
+            || !query_value(&url, &["peer"]).is_empty());
+
+    if transport == "xhttp"
+        || raw_http_over_tls
+        || has_query_key(&url, &["fm", "finalmask"])
+        || {
+            let encryption = query_value(&url, &["encryption"]);
+            !encryption.is_empty() && !encryption.eq_ignore_ascii_case("none")
+        }
+        || !query_value(&url, &["extra"]).is_empty()
+    {
+        return LightBackend::Xray;
+    }
+
+    LightBackend::SingBox
+}
+
+async fn merge_dual(
     xray: &str,
     singbox: &str,
     candidates: &[String],
@@ -202,27 +263,24 @@ async fn dual_validate(
     batch_size: usize,
     timeout_seconds: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
-    let xray_metadata = validate_candidates_with_compatibility(
+    if candidates.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let xray_metadata = validate_candidates(
         xray,
         candidates,
         primary_target,
-        COMPATIBILITY_TARGET,
         workers,
         batch_size,
         timeout_seconds,
     )
     .await?;
 
-    if xray_metadata.is_empty() {
-        println!("[INFO] Dual-core Light: Xray verified 0 candidates.");
-        return Ok(HashMap::new());
-    }
-
-    let xray_candidates = xray_metadata.keys().cloned().collect::<Vec<_>>();
     let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
     let singbox_metadata = validate_singbox_candidates(
         singbox,
-        &xray_candidates,
+        candidates,
         workers.min(32).max(1),
         request_timeout,
         timeout_seconds * 1000.0,
@@ -242,9 +300,91 @@ async fn dual_validate(
 
     println!(
         "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
-        xray_candidates.len(),
+        candidates.len(),
         singbox_metadata.len(),
         verified.len()
+    );
+
+    Ok(verified)
+}
+
+async fn validate_light_batch(
+    xray: &str,
+    singbox: &str,
+    candidates: &[String],
+    primary_target: &str,
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let mut singbox_candidates = Vec::new();
+    let mut xray_candidates = Vec::new();
+    let mut dual_candidates = Vec::new();
+
+    for config in candidates {
+        match light_backend(config) {
+            LightBackend::SingBox => singbox_candidates.push(config.clone()),
+            LightBackend::Xray => xray_candidates.push(config.clone()),
+            LightBackend::Dual => dual_candidates.push(config.clone()),
+        }
+    }
+
+    println!(
+        "[INFO] Light backend routing: sing-box {}, Xray {}, dual {}.",
+        singbox_candidates.len(),
+        xray_candidates.len(),
+        dual_candidates.len()
+    );
+
+    let mut verified = HashMap::new();
+
+    if !singbox_candidates.is_empty() {
+        let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
+        verified.extend(
+            validate_singbox_candidates(
+                singbox,
+                &singbox_candidates,
+                workers.min(32).max(1),
+                request_timeout,
+                timeout_seconds * 1000.0,
+            )
+            .await?,
+        );
+    }
+
+    if !xray_candidates.is_empty() {
+        verified.extend(
+            validate_candidates(
+                xray,
+                &xray_candidates,
+                primary_target,
+                workers,
+                batch_size,
+                timeout_seconds,
+            )
+            .await?,
+        );
+    }
+
+    if !dual_candidates.is_empty() {
+        verified.extend(
+            merge_dual(
+                xray,
+                singbox,
+                &dual_candidates,
+                primary_target,
+                workers,
+                batch_size,
+                timeout_seconds,
+            )
+            .await?,
+        );
+    }
+
+    println!(
+        "[INFO] Consumer-style Light validation: {}/{} candidates verified.",
+        verified.len(),
+        candidates.len()
     );
 
     Ok(verified)
@@ -345,7 +485,7 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata = dual_validate(
+        let chunk_metadata = validate_light_batch(
             &xray,
             &singbox,
             &chunk_vec,
@@ -414,7 +554,7 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata = dual_validate(
+        let primary_metadata = validate_light_batch(
             &xray,
             &singbox,
             &final_candidates,
@@ -475,6 +615,19 @@ async fn main() -> Result<(), String> {
         return Err("selected Light validation produced zero verified configs".to_string());
     }
 
+    let mut protocol_counts = BTreeMap::<String, usize>::new();
+    let mut backend_counts = BTreeMap::<&str, usize>::new();
+    for config in &selected {
+        *protocol_counts.entry(protocol(config)).or_default() += 1;
+        match light_backend(config) {
+            LightBackend::SingBox => *backend_counts.entry("sing-box").or_default() += 1,
+            LightBackend::Xray => *backend_counts.entry("xray").or_default() += 1,
+            LightBackend::Dual => *backend_counts.entry("dual").or_default() += 1,
+        }
+    }
+    println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
+    println!("[INFO] Light backend distribution: {:?}", backend_counts);
+
     write_lines(&output, &selected)?;
     println!(
         "[INFO] Published {} Light configs after exhausting {} discovery candidates.",
@@ -487,6 +640,26 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::protocol_round_robin;
+
+    #[test]
+    fn routes_reality_to_both_cores() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=tcp&pbk=public&sid=01&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::Dual);
+    }
+
+    #[test]
+    fn routes_xhttp_to_xray_only() {
+        let config = "vless://uuid@example.com:443?security=none&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_normal_vless_to_singbox() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
 
     #[test]
     fn round_robin_preserves_rank_within_each_protocol() {

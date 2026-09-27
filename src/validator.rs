@@ -13,10 +13,8 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-pub const PRIMARY_TARGET: &str = "https://speed.cloudflare.com";
+pub const PRIMARY_TARGET: &str = "http://cp.cloudflare.com/";
 pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
-pub const DOWNLOAD_BYTES: usize = 4096;
-pub const UPLOAD_BYTES: usize = 1024;
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
@@ -956,23 +954,11 @@ fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
         .map_err(|error| error.to_string())
 }
 
-async fn probe_request(
-    client: &Client,
-    url: Url,
-    body: Option<Vec<u8>>,
-) -> Result<(f64, usize), ProbeError> {
+async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
-    let request = match body {
-        Some(body) => client
-            .post(url)
-            .header("Accept-Encoding", "identity")
-            .header("Content-Type", "application/octet-stream")
-            .body(body),
-        None => client.get(url).header("Accept-Encoding", "identity"),
-    };
-
-    let response = request
+    let response = client
+        .get(url)
         .send()
         .await
         .map_err(|error| ProbeError::Failed(error.to_string()))?;
@@ -990,23 +976,11 @@ async fn probe_request(
         )));
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| ProbeError::Failed(error.to_string()))?;
+    // Match the consumer clients: a successful response header is the connectivity verdict.
+    // Do not force a full body transfer, which can reject otherwise usable proxy connections.
+    drop(response);
 
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(ProbeError::Failed("response body too large".to_string()));
-    }
-
-    Ok((started.elapsed().as_secs_f64() * 1000.0, bytes.len()))
-}
-
-fn target_with(target: &Url, path: &str, query: Option<&str>) -> Url {
-    let mut url = target.clone();
-    url.set_path(path);
-    url.set_query(query);
-    url
+    Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
 async fn functional_attempt(
@@ -1015,24 +989,19 @@ async fn functional_attempt(
     compatibility_target: Option<&Url>,
 ) -> Result<f64, ProbeError> {
     for retry in 0..=RATE_LIMIT_RETRIES {
-        let compatibility_latency = if let Some(compatibility_target) = compatibility_target {
-            match probe_request(client, compatibility_target.clone(), None).await {
-                Ok((latency, _)) => Some(latency),
+        if let Some(compatibility_target) = compatibility_target {
+            match probe_request(client, compatibility_target.clone()).await {
+                Ok(_) => {}
                 Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
                     wait_for_rate_limit().await;
                     continue;
                 }
                 Err(error) => return Err(error),
             }
-        } else {
-            None
-        };
+        }
 
-        let download_url = target_with(target, "/__down", Some(&format!("bytes={DOWNLOAD_BYTES}")));
-
-        let (download_latency, download_len) = match probe_request(client, download_url, None).await
-        {
-            Ok(value) => value,
+        let target_latency = match probe_request(client, target.clone()).await {
+            Ok(latency) => latency,
             Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
                 wait_for_rate_limit().await;
                 continue;
@@ -1040,30 +1009,7 @@ async fn functional_attempt(
             Err(error) => return Err(error),
         };
 
-        if download_len < DOWNLOAD_BYTES {
-            return Err(ProbeError::Failed(format!(
-                "download body too small: {download_len} < {DOWNLOAD_BYTES}"
-            )));
-        }
-
-        let upload_url = target_with(target, "/__up", None);
-        let upload_body = vec![0u8; UPLOAD_BYTES];
-
-        let (upload_latency, _) = match probe_request(client, upload_url, Some(upload_body)).await {
-            Ok(value) => value,
-            Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
-                wait_for_rate_limit().await;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-
-        let mut latency = download_latency.max(upload_latency);
-        if let Some(compatibility_latency) = compatibility_latency {
-            latency = latency.max(compatibility_latency);
-        }
-
-        return Ok(latency);
+        return Ok(target_latency);
     }
 
     Err(ProbeError::Failed(
@@ -1153,7 +1099,6 @@ async fn check_batch(
         let mut successes = HashMap::<String, usize>::new();
         let mut attempts = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
-        let mut errors = HashMap::<String, String>::new();
 
         for attempt in 0..STABILITY_ATTEMPTS {
             if active.is_empty() {
@@ -1180,13 +1125,8 @@ async fn check_batch(
                         *successes.entry(config.clone()).or_insert(0) += 1;
                         latencies.entry(config).or_default().push(latency);
                     }
-                    Err(error) => {
-                        let message = match error {
-                            ProbeError::RateLimited => "target rate limited".to_string(),
-                            ProbeError::Failed(message) => message,
-                        };
-                        errors.insert(config, message);
-                    }
+                    Err(ProbeError::RateLimited) => {}
+                    Err(ProbeError::Failed(_)) => {}
                 }
             }
 
