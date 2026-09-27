@@ -1063,9 +1063,9 @@ async fn check_batch(
                     .rev()
                     .collect::<String>();
 
-                println!("[DEBUG] Validation skipped: {}", batch_entries[0].0);
+                println!("[WARN] Validation skipped: {}", batch_entries[0].0);
                 if !tail.is_empty() {
-                    println!("[DEBUG] Xray core failed to start: {tail}");
+                    println!("[WARN] Xray core failed to start: {tail}");
                 }
             }
 
@@ -1160,8 +1160,6 @@ async fn check_batch(
                         min_ms: values[0],
                     },
                 );
-            } else if let Some(error) = errors.get(config) {
-                println!("[DEBUG] Validation failed: {config} :: {error}");
             }
         }
 
