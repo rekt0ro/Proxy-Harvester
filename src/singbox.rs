@@ -1102,7 +1102,7 @@ pub async fn validate_candidates_with_targets_strict(
         max_latency_ms,
         STRICT_STABILITY_ATTEMPTS,
         STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        targets.len(),
+        2,
     )
     .await
 }
