@@ -17,8 +17,9 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 const MIN_SUCCESSFUL_TARGETS: usize = 2;
-const STRICT_STABILITY_ATTEMPTS: usize = 6;
-const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
+const STRICT_STABILITY_ATTEMPTS: usize = 8;
+const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
 const MIN_RESPONSE_BYTES: usize = 1;
 const MAX_RESPONSE_BYTES: usize = 65536;
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
@@ -259,6 +260,19 @@ fn transport_settings(stream: &Value) -> Result<Option<Value>, String> {
             }
             if let Some(headers) = settings.get("headers").filter(|value| value.is_object()) {
                 transport["headers"] = headers.clone();
+            }
+            if let Some(early_data) = settings
+                .get("maxEarlyData")
+                .and_then(Value::as_u64)
+            {
+                transport["max_early_data"] = json!(early_data);
+            }
+            if let Some(header) = settings
+                .get("earlyDataHeaderName")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                transport["early_data_header_name"] = json!(header);
             }
 
             Ok(Some(transport))
@@ -724,8 +738,9 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
 
     let body = response.bytes().await.map_err(|error| error.to_string())?;
 
-    if body.len() < MIN_RESPONSE_BYTES
-        || body.len() > MAX_RESPONSE_BYTES
+    let status_is_empty_success = response.status().as_u16() == 204;
+    if body.len() > MAX_RESPONSE_BYTES
+        || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(url, &body)
     {
         return Err(
@@ -858,12 +873,7 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining_attempts = stability_attempts - attempt - 1;
-            active.retain(|(config, _, _)| {
-                let wins = successes.get(config).copied().unwrap_or(0);
-                wins < min_successful_attempts
-                    && wins + remaining_attempts >= min_successful_attempts
-            });
+
         }
 
         for (config, _) in &batch_entries {
@@ -1019,12 +1029,7 @@ async fn check_batch(
                 }
             }
 
-            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
-            active.retain(|(config, _)| {
-                let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_ATTEMPTS
-                    && wins + remaining_attempts >= MIN_SUCCESSFUL_ATTEMPTS
-            });
+
         }
 
         for (config, _) in &batch_entries {
@@ -1103,7 +1108,7 @@ pub async fn validate_candidates_with_targets_strict(
         max_latency_ms,
         STRICT_STABILITY_ATTEMPTS,
         STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        MIN_SUCCESSFUL_TARGETS,
+        STRICT_MIN_SUCCESSFUL_TARGETS,
     )
     .await
 }

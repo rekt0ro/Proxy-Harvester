@@ -209,7 +209,8 @@ jobs:
             --primary-target https://speed.cloudflare.com/__down?bytes=16384 \
             --singbox "$HOME/.local/bin/sing-box" \
             --selection-limit 200 \
-            --max-per-endpoint 1
+            --max-per-endpoint 1 \
+            --max-per-family 3
           status=$?
           set -e
 

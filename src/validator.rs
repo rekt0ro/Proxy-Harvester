@@ -13,19 +13,22 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-pub const PRIMARY_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=16384";
-pub const COMPATIBILITY_TARGET: &str = "http://cp.cloudflare.com";
+pub const PRIMARY_TARGET: &str = "http://cp.cloudflare.com/";
+pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
-    "https://www.google.com/robots.txt",
-    "https://detectportal.firefox.com/success.txt",
+    "https://speed.cloudflare.com/__down?bytes=16384",
+    "https://www.google.com/generate_204",
+    "https://www.gstatic.com/generate_204",
+    "https://www.cloudflare.com/cdn-cgi/trace",
 ];
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
-pub const STRICT_STABILITY_ATTEMPTS: usize = 6;
-pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
+pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
+pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -271,6 +274,23 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let path = first_query(url, &["path"], Some(""));
     let host_header = first_query(url, &["host"], Some(""));
 
+    if network == "ws" {
+        let early_data = first_query(url, &["ed", "maxEarlyData"], Some(""));
+        if !early_data.is_empty() {
+            let early_data = early_data
+                .parse::<u64>()
+                .map_err(|_| "invalid WebSocket early-data size".to_string())?;
+            if early_data > u32::MAX as u64 {
+                return Err("WebSocket early-data size exceeds Xray limit".to_string());
+            }
+        }
+        let early_data_header =
+            first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
+        if early_data.is_empty() && !early_data_header.is_empty() {
+            return Err("WebSocket early-data header is set without early data".to_string());
+        }
+    }
+
     match network.as_str() {
         "raw" => {
             if first_query(url, &["headerType", "header_type"], Some(""))
@@ -308,6 +328,17 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             }
             if !host_header.is_empty() {
                 settings["headers"] = json!({ "Host": host_header });
+            }
+            let early_data = first_query(url, &["ed", "maxEarlyData"], Some(""));
+            if !early_data.is_empty() {
+                settings["maxEarlyData"] = json!(
+                    early_data.parse::<u32>().expect("validated WebSocket early-data size")
+                );
+                let early_data_header =
+                    first_query(url, &["eh", "earlyDataHeaderName"], Some(""));
+                if !early_data_header.is_empty() {
+                    settings["earlyDataHeaderName"] = json!(early_data_header);
+                }
             }
             out["wsSettings"] = settings;
         }
@@ -1044,8 +1075,9 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     }
 
     let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
-    if body.len() < MIN_RESPONSE_BYTES
-        || body.len() > MAX_RESPONSE_BYTES
+    let status_is_empty_success = response.status().as_u16() == 204;
+    if body.len() > MAX_RESPONSE_BYTES
+        || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)
     {
         return Err(ProbeError::Failed);
@@ -1178,11 +1210,7 @@ async fn check_batch(
                 }
             }
 
-            let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
-            active.retain(|(config, _, _)| {
-                let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
-            });
+
         }
 
         for (config, _) in &batch_entries {
@@ -1261,7 +1289,7 @@ pub async fn validate_candidates_with_targets_strict(
         timeout_seconds,
         STRICT_STABILITY_ATTEMPTS,
         STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        MIN_SUCCESSFUL_TARGETS,
+        STRICT_MIN_SUCCESSFUL_TARGETS,
     )
     .await
 }
@@ -1516,12 +1544,7 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining_attempts = stability_attempts - attempt - 1;
-            active.retain(|(config, _, _)| {
-                let wins = successes.get(config).copied().unwrap_or(0);
-                wins < min_successful_attempts
-                    && wins + remaining_attempts >= min_successful_attempts
-            });
+
         }
 
         for (config, _) in &batch_entries {
@@ -1698,17 +1721,23 @@ mod tests {
     #[test]
     fn default_probe_targets_require_expected_payloads() {
         let primary = Url::parse(PRIMARY_TARGET).expect("primary target should parse");
-        assert!(valid_probe_body(&primary, &vec![0_u8; 16_384]));
-        assert!(!valid_probe_body(&primary, &vec![0_u8; 16_383]));
+        assert!(valid_probe_body(&primary, b""));
 
-        let google = Url::parse("https://www.google.com/robots.txt").expect("Google target");
-        assert!(valid_probe_body(&google, b"User-agent: *\nDisallow: /"));
-        assert!(!valid_probe_body(&google, b"blocked by upstream"));
+        let speed =
+            Url::parse("https://speed.cloudflare.com/__down?bytes=16384").expect("speed target");
+        assert!(valid_probe_body(&speed, &vec![0_u8; 16_384]));
+        assert!(!valid_probe_body(&speed, &vec![0_u8; 16_383]));
 
-        let firefox =
-            Url::parse("https://detectportal.firefox.com/success.txt").expect("Firefox target");
-        assert!(valid_probe_body(&firefox, b"success"));
-        assert!(!valid_probe_body(&firefox, b"success page"));
+        let generate_204 =
+            Url::parse("https://www.google.com/generate_204").expect("Google generate_204");
+        assert!(valid_probe_body(&generate_204, b""));
+
+        let gstatic_204 =
+            Url::parse("https://www.gstatic.com/generate_204").expect("Google static target");
+        assert!(valid_probe_body(&gstatic_204, b""));
+
+        let trace = Url::parse("https://www.cloudflare.com/cdn-cgi/trace").expect("Cloudflare trace");
+        assert!(valid_probe_body(&trace, b""));
     }
 
     #[test]

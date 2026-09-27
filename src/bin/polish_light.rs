@@ -7,6 +7,9 @@ use proxy_harvester::validator::{
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
     PRIMARY_TARGET,
 };
+use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
+use base64::Engine;
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use url::Url;
@@ -16,6 +19,8 @@ const MAX_DISCOVERY_CANDIDATES: usize = 10000;
 const FINAL_RECHECK_LIMIT: usize = 500;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
+const DEFAULT_MAX_PER_FAMILY: usize = 3;
+const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
@@ -67,18 +72,98 @@ fn ranked(
     values
 }
 
-fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String> {
+fn family_key(config: &str) -> String {
+    let cleaned = config.split('#').next().unwrap_or(config);
+    let Ok(url) = Url::parse(cleaned) else {
+        return cleaned.to_string();
+    };
+    let scheme = url.scheme().to_ascii_lowercase();
+
+    if scheme == "vmess" {
+        if let Some(payload) = cleaned.split_once("://").map(|(_, value)| value) {
+            let mut padded = payload.to_string();
+            while padded.len() % 4 != 0 {
+                padded.push('=');
+            }
+            for encoded in [payload, padded.as_str()] {
+                for decoded in [
+                    STANDARD.decode(encoded),
+                    URL_SAFE.decode(encoded),
+                    URL_SAFE_NO_PAD.decode(encoded),
+                ] {
+                    if let Ok(bytes) = decoded {
+                        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                            let fields = [
+                                "id", "aid", "scy", "net", "tls", "sni", "host", "path", "type",
+                            ];
+                            let mut key = String::from("vmess|");
+                            for field in fields {
+                                if let Some(value) = value.get(field) {
+                                    key.push_str(field);
+                                    key.push('=');
+                                    key.push_str(&value.to_string());
+                                    key.push('|');
+                                }
+                            }
+                            return key;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.into_owned()))
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "ps" | "name" | "remark" | "remarks" | "test_name" | "telegram"
+            )
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_unstable();
+
+    let mut key = format!(
+        "{}|{}|{}",
+        scheme,
+        url.username(),
+        url.password().unwrap_or("")
+    );
+    for (name, value) in pairs {
+        key.push('|');
+        key.push_str(&name);
+        key.push('=');
+        key.push_str(&value);
+    }
+    key
+}
+
+fn diversify_recheck_candidates(
+    configs: &[String],
+    limit: usize,
+    max_family: usize,
+) -> Vec<String> {
     let mut selected = Vec::new();
     let mut deferred = Vec::new();
     let mut seen_endpoints = HashSet::new();
+    let mut family_counts = HashMap::<String, usize>::new();
 
     for config in configs {
-        if let Some(ep) = endpoint(config) {
-            if seen_endpoints.insert(ep) {
-                selected.push(config.clone());
-            } else {
-                deferred.push(config.clone());
+        let family = family_key(config);
+        let family_available =
+            family_counts.get(&family).copied().unwrap_or(0) < max_family;
+        let endpoint_available = endpoint(config)
+            .map(|ep| !seen_endpoints.contains(&ep))
+            .unwrap_or(true);
+
+        if family_available && endpoint_available {
+            *family_counts.entry(family).or_default() += 1;
+            if let Some(ep) = endpoint(config) {
+                seen_endpoints.insert(ep);
             }
+            selected.push(config.clone());
         } else {
             deferred.push(config.clone());
         }
@@ -144,8 +229,10 @@ fn select_verified_configs(
     configs: &[String],
     limit: usize,
     max_per_endpoint: usize,
+    max_per_family: usize,
 ) -> Vec<String> {
     let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut family_counts = HashMap::<String, usize>::new();
     let mut result = Vec::with_capacity(limit.min(configs.len()));
 
     for config in configs {
@@ -158,9 +245,18 @@ fn select_verified_configs(
             if count >= max_per_endpoint {
                 continue;
             }
-            *endpoint_counts.entry(ep).or_insert(0) += 1;
         }
 
+        let family = family_key(config);
+        let family_count = family_counts.get(&family).copied().unwrap_or(0);
+        if family_count >= max_per_family {
+            continue;
+        }
+
+        if let Some(ep) = endpoint(config) {
+            *endpoint_counts.entry(ep).or_insert(0) += 1;
+        }
+        *family_counts.entry(family).or_insert(0) += 1;
         result.push(config.clone());
     }
 
@@ -429,7 +525,7 @@ async fn main() -> Result<(), String> {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--xray PATH] [--singbox PATH]"
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--max-per-family N] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -470,7 +566,13 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
+    let targets = [
+        primary_target.as_str(),
+        LIGHT_TARGETS[1],
+        LIGHT_TARGETS[2],
+        LIGHT_TARGETS[3],
+        LIGHT_TARGETS[4],
+    ];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -487,6 +589,14 @@ async fn main() -> Result<(), String> {
     )
     .parse::<usize>()
     .map_err(|_| "invalid --max-per-endpoint".to_string())?
+    .max(1);
+    let max_per_family = value(
+        &args,
+        "--max-per-family",
+        DEFAULT_MAX_PER_FAMILY.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-per-family".to_string())?
     .max(1);
     let singbox = value(&args, "--singbox", "sing-box");
 
@@ -540,12 +650,23 @@ async fn main() -> Result<(), String> {
         let ranked_global = ranked(global_verified.clone(), &global_metadata, &positions);
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
         let remaining = selection_limit.saturating_sub(
-            select_verified_configs(&ranked_final, selection_limit, max_per_endpoint).len(),
+            select_verified_configs(
+                &ranked_final,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            )
+            .len(),
         );
 
         if remaining == 0 {
             let selected =
-                select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
+                select_verified_configs(
+                    &ranked_final,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                );
             write_light_lines(&output, &selected)?;
             println!(
                 "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",
@@ -568,7 +689,8 @@ async fn main() -> Result<(), String> {
                     && final_attempts.get(config).copied().unwrap_or(0) < MAX_FINAL_RECHECK_ATTEMPTS
             })
             .collect::<Vec<_>>();
-        let final_candidates = diversify_recheck_candidates(&untested, dynamic_limit);
+        let final_candidates =
+            diversify_recheck_candidates(&untested, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
 
         if final_candidates.is_empty() {
             continue;
@@ -610,7 +732,12 @@ async fn main() -> Result<(), String> {
             .collect::<HashMap<_, _>>();
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
-        let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
+        let selected = select_verified_configs(
+            &ranked_final,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
@@ -648,7 +775,12 @@ async fn main() -> Result<(), String> {
         .map(|(index, config)| (config.clone(), index))
         .collect::<HashMap<_, _>>();
     let ranked_final = ranked(final_verified, &final_metadata, &positions);
-    let selected = select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
+    let selected = select_verified_configs(
+        &ranked_final,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    );
 
     if selected.is_empty() {
         return Err("selected Light validation produced zero verified configs".to_string());
