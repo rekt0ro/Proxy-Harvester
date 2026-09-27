@@ -699,6 +699,10 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         return Err("target returned HTTP 429".to_string());
     }
 
+    if !response.status().is_success() {
+        return Err(format!("target returned HTTP {}", response.status()));
+    }
+
     if response
         .content_length()
         .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
@@ -1149,13 +1153,14 @@ async fn validate_candidates_with_targets_policy(
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
-            "targets {:?}: batch {}/{} testing {} configs with sing-box; requiring {}/{} successful attempts across at least 2 destinations",
+            "targets {:?}: batch {}/{} testing {} configs with sing-box; requiring {}/{} successful attempts across at least {} destinations",
             target_values,
             index + 1,
             total_batches,
             batch.len(),
-            MIN_SUCCESSFUL_ATTEMPTS,
-            STABILITY_ATTEMPTS
+            min_successful_attempts,
+            stability_attempts,
+            min_successful_targets
         );
 
         metadata.extend(
@@ -1176,12 +1181,13 @@ async fn validate_candidates_with_targets_policy(
     }
 
     println!(
-        "{}/{} verified by sing-box against {} targets with {}/{} successful GET attempts and at least 2 distinct successful destinations",
+        "{}/{} verified by sing-box against {} targets with {}/{} successful GET attempts and at least {} distinct successful destinations",
         metadata.len(),
         candidates.len(),
         targets.len(),
-        MIN_SUCCESSFUL_ATTEMPTS,
-        STABILITY_ATTEMPTS
+        min_successful_attempts,
+        stability_attempts,
+        min_successful_targets
     );
 
     Ok(metadata)
