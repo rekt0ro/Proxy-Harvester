@@ -950,20 +950,6 @@ async fn check_batch(
         )
         .map_err(|error| error.to_string())?;
 
-        if let Err(error) = check_singbox_config(binary, &config_path) {
-            let _ = fs::remove_dir_all(&work);
-
-            if batch_entries.len() > 1 {
-                let mid = batch_entries.len() / 2;
-                pending.push(batch_entries[..mid].to_vec());
-                pending.push(batch_entries[mid..].to_vec());
-                continue;
-            }
-
-            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
-            continue;
-        }
-
         let mut child = start_singbox(binary, &config_path, &log_path)?;
 
         if !ports_ready(&mut child, &local_ports).await {
