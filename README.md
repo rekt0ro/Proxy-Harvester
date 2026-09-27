@@ -32,12 +32,6 @@ Base64:
 https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base64.txt
 ```
 
-## Validation
-
-All subscriptions are validated through the Rust-based validation pipeline.
-
-Light uses a Throne-compatible URL-test target plus independent HTTP/HTTPS connectivity targets, performs a full stability window during strict recheck, and applies endpoint and service-family diversity before publishing.
-
 ## Supported Protocols
 
 VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS
