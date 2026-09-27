@@ -378,7 +378,7 @@ async fn main() -> Result<(), String> {
             protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
-                max_per_endpoint ,
+                max_per_endpoint,
             )
             .len(),
         );
@@ -387,7 +387,7 @@ async fn main() -> Result<(), String> {
             let selected = protocol_round_robin(
                 &ranked(final_verified.clone(), &final_metadata, &positions),
                 selection_limit,
-                max_per_endpoint ,
+                max_per_endpoint,
             );
             write_lines(&output, &selected)?;
             println!("[INFO] Published {} Light configs.", selected.len());
@@ -444,10 +444,10 @@ async fn main() -> Result<(), String> {
 
         let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
         let selected = protocol_round_robin(
-            &ranked_final,
-            selection_limit,
-            max_per_endpoint,
-        );
+        &ranked_final,
+        selection_limit,
+        max_per_endpoint,
+    );
 
         println!(
             "[INFO] Light fill progress: {}/{} configs ready.",
