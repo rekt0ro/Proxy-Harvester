@@ -1269,7 +1269,10 @@ mod tests {
     fn vless_percent_encoded_username_is_decoded() {
         let config = "vless://user%40name@example.com:443?security=tls&sni=edge.example";
         let parsed = parse_config(config).expect("VLESS should parse");
-        assert_eq!(parsed["settings"]["vnext"][0]["users"][0]["id"], "user@name");
+        assert_eq!(
+            parsed["settings"]["vnext"][0]["users"][0]["id"],
+            "user@name"
+        );
         assert_eq!(
             parsed["streamSettings"]["tlsSettings"]["serverName"],
             "edge.example"
