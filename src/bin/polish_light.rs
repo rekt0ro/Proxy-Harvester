@@ -89,6 +89,47 @@ fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String>
     selected
 }
 
+fn normalize_light_config(config: &str) -> String {
+    if !config
+        .split_once("://")
+        .map(|(scheme, _)| scheme.eq_ignore_ascii_case("trojan"))
+        .unwrap_or(false)
+    {
+        return config.to_string();
+    }
+
+    let fragment_index = config.find('#').unwrap_or(config.len());
+    let base = &config[..fragment_index];
+    let fragment = &config[fragment_index..];
+
+    let Ok(url) = Url::parse(base) else {
+        return config.to_string();
+    };
+
+    if url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("security"))
+    {
+        return config.to_string();
+    }
+
+    let separator = if base.contains('?') {
+        if base.ends_with('?') { "" } else { "&" }
+    } else {
+        "?"
+    };
+
+    format!("{base}{separator}security=tls{fragment}")
+}
+
+fn write_light_lines(output: &str, values: &[String]) -> Result<(), String> {
+    let normalized = values
+        .iter()
+        .map(|config| normalize_light_config(config))
+        .collect::<Vec<_>>();
+    write_lines(output, &normalized)
+}
+
 fn select_verified_configs(
     configs: &[String],
     limit: usize,
@@ -449,7 +490,7 @@ async fn main() -> Result<(), String> {
         if remaining == 0 {
             let selected =
                 select_verified_configs(&ranked_final, selection_limit, max_per_endpoint);
-            write_lines(&output, &selected)?;
+            write_light_lines(&output, &selected)?;
             println!(
                 "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",
                 selected.len(),
@@ -583,7 +624,7 @@ async fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{light_backend, select_verified_configs, LightBackend};
+    use super::{light_backend, normalize_light_config, select_verified_configs, LightBackend};
 
     #[test]
     fn routes_reality_to_both_cores() {
@@ -622,6 +663,22 @@ mod tests {
     fn routes_normal_vless_to_singbox() {
         let config = "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn defaults_trojan_security_in_published_light_links() {
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?sni=example.com#Trojan"),
+            "trojan://pass@example.com:443?sni=example.com&security=tls#Trojan"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?#Trojan"),
+            "trojan://pass@example.com:443?security=tls#Trojan"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?security=tls"),
+            "trojan://pass@example.com:443?security=tls"
+        );
     }
 
     #[test]
