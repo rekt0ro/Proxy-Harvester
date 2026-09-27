@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use url::Url;
 
-const TARGET: &str = "http://cp.cloudflare.com/";
+const TARGET: &str = "https://cp.cloudflare.com/";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STABILITY_ATTEMPTS: usize = 3;
 const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
