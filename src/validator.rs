@@ -1286,14 +1286,8 @@ async fn validate_candidates_targets_inner(
             STABILITY_ATTEMPTS
         );
 
-        let batch_metadata = check_batch_targets(
-            binary,
-            batch,
-            &targets,
-            workers.max(1),
-            timeout_seconds,
-        )
-        .await?;
+        let batch_metadata =
+            check_batch_targets(binary, batch, &targets, workers.max(1), timeout_seconds).await?;
         metadata.extend(batch_metadata);
     }
 
@@ -1427,8 +1421,7 @@ async fn check_batch_targets(
             let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS
-                    && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
             });
         }
 
