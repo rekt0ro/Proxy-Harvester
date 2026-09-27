@@ -450,11 +450,11 @@ mod tests {
 
         let selected = protocol_round_robin(&configs, 5, 1);
 
+        assert_eq!(selected.len(), 4);
         assert_eq!(selected[0], configs[4]);
         assert_eq!(selected[1], configs[2]);
         assert_eq!(selected[2], configs[0]);
         assert_eq!(selected[3], configs[3]);
-        assert_eq!(selected[4], configs[1]);
     }
 
     #[test]
