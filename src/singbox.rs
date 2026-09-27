@@ -610,7 +610,7 @@ fn make_temp_dir() -> Result<std::path::PathBuf, String> {
         .map_err(|error| error.to_string())?
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "proxy-harvester-singbox-{}-{nanos}",
+        "proxyrift-singbox-{}-{nanos}",
         std::process::id()
     ));
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
@@ -696,7 +696,7 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        .user_agent("Proxy-Harvester-Singbox/1.0")
+        .user_agent("ProxyRift-SingBox/1.0")
         .build()
         .map_err(|error| error.to_string())
 }
