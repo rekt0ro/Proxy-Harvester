@@ -219,36 +219,44 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::SingBox;
     };
 
-    if !url.scheme().eq_ignore_ascii_case("vless") {
-        return LightBackend::SingBox;
-    }
-
     let transport = query_value(&url, &["type", "network"]).to_ascii_lowercase();
     let security = query_value(&url, &["security"]).to_ascii_lowercase();
 
-    // Throne's default Xray preference is XHTTP + Reality. Reality is checked
-    // against both engines because Hiddify defaults to sing-box while Throne
-    // normally routes it to Xray.
+    // Reality is checked by both cores because consumer applications can use
+    // either engine for the same profile class.
     if security == "reality" {
         return LightBackend::Dual;
     }
 
-    let raw_http_over_tls = (transport.is_empty() || transport == "tcp" || transport == "raw")
-        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
-        && ((!security.is_empty() && security != "none")
-            || !query_value(&url, &["sni"]).is_empty()
-            || !query_value(&url, &["peer"]).is_empty());
+    // XHTTP is an Xray-only path in our Light validator, regardless of the
+    // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
+    // deterministic parser rejection.
+    let raw_http_over_tls =
+        (transport.is_empty() || transport == "tcp" || transport == "raw")
+            && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
+            && ((!security.is_empty() && security != "none")
+                || !query_value(&url, &["sni"]).is_empty()
+                || !query_value(&url, &["peer"]).is_empty());
 
-    if transport == "xhttp"
-        || raw_http_over_tls
-        || has_query_key(&url, &["fm", "finalmask"])
-        || {
-            let encryption = query_value(&url, &["encryption"]);
-            !encryption.is_empty() && !encryption.eq_ignore_ascii_case("none")
-        }
-        || !query_value(&url, &["extra"]).is_empty()
-    {
+    if transport == "xhttp" || raw_http_over_tls {
         return LightBackend::Xray;
+    }
+
+    if url.scheme().eq_ignore_ascii_case("vless") {
+        let flow = query_value(&url, &["flow"]).to_ascii_lowercase();
+        if !flow.is_empty() && flow != "xtls-rprx-vision" {
+            return LightBackend::Xray;
+        }
+
+        if has_query_key(&url, &["fm", "finalmask"])
+            || {
+                let encryption = query_value(&url, &["encryption"]);
+                !encryption.is_empty() && !encryption.eq_ignore_ascii_case("none")
+            }
+            || !query_value(&url, &["extra"]).is_empty()
+        {
+            return LightBackend::Xray;
+        }
     }
 
     LightBackend::SingBox
@@ -300,7 +308,7 @@ async fn merge_dual(
 
     println!(
         "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
-        candidates.len(),
+        xray_metadata.len(),
         singbox_metadata.len(),
         verified.len()
     );
@@ -651,6 +659,18 @@ mod tests {
     #[test]
     fn routes_xhttp_to_xray_only() {
         let config = "vless://uuid@example.com:443?security=none&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_non_vless_xhttp_to_xray() {
+        let config = "trojan://pass@example.com:443?security=tls&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vision_udp443_to_xray() {
+        let config = "vless://uuid@example.com:443?security=tls&type=tcp&flow=xtls-rprx-vision-udp443";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 

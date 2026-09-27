@@ -38,7 +38,7 @@ pub struct ProxyMetrics {
 #[derive(Debug)]
 enum ProbeError {
     RateLimited,
-    Failed(String),
+    Failed,
 }
 
 fn clean(url: &str) -> &str {
@@ -961,7 +961,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         .get(url)
         .send()
         .await
-        .map_err(|error| ProbeError::Failed(error.to_string()))?;
+        .map_err(|_| ProbeError::Failed)?;
 
     if response.status().as_u16() == 429 {
         let retry = rate_limit_wait(response.headers());
@@ -970,10 +970,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     }
 
     if !response.status().is_success() {
-        return Err(ProbeError::Failed(format!(
-            "HTTP status {}",
-            response.status()
-        )));
+        return Err(ProbeError::Failed);
     }
 
     // Match the consumer clients: a successful response header is the connectivity verdict.
@@ -1012,9 +1009,7 @@ async fn functional_attempt(
         return Ok(target_latency);
     }
 
-    Err(ProbeError::Failed(
-        "Cloudflare test endpoint rate limited after retry".to_string(),
-    ))
+    Err(ProbeError::Failed)
 }
 
 async fn check_batch(
@@ -1126,7 +1121,7 @@ async fn check_batch(
                         latencies.entry(config).or_default().push(latency);
                     }
                     Err(ProbeError::RateLimited) => {}
-                    Err(ProbeError::Failed(_)) => {}
+                    Err(ProbeError::Failed) => {}
                 }
             }
 
