@@ -1075,11 +1075,17 @@ async fn check_batch(
 
         let mut active = Vec::with_capacity(batch_entries.len());
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            active.push((
-                config.clone(),
-                local_ports[index],
-                client_for_port(local_ports[index], timeout_seconds)?,
-            ));
+            let client = match client_for_port(local_ports[index], timeout_seconds) {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&work);
+                    return Err(error);
+                }
+            };
+
+            active.push((config.clone(), local_ports[index], client));
         }
 
         let mut successes = HashMap::<String, usize>::new();
