@@ -167,7 +167,7 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
     }
 
     let default = match url.scheme().to_ascii_lowercase().as_str() {
-        "http" => Some(80),
+        "http" => Some(8080),
         "https" => Some(443),
         "socks" | "socks4" | "socks5" | "socks5h" => Some(1080),
         _ => None,
@@ -433,7 +433,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
     let synthetic = Url::parse(&format!("https://example.invalid/?{query}"))
         .map_err(|error| error.to_string())?;
 
-    let mut user = json!({
+    let user = json!({
         "id": uuid,
         "alterId": json_u64(value.get("aid")),
         "security": json_text(value.get("scy")).unwrap_or_else(|| "auto".to_string()),
