@@ -64,7 +64,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | sed -n 's/.*"tag_name": *"v\\([^"]*\\)".*/\\1/p' | head -n1)"
+          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -er '.tag_name | ltrimstr("v")')"
+
+          if [[ ! "$xray_version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "Invalid Xray release version: $xray_version" >&2
+            exit 1
+          fi
+
           echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
           echo "Xray version: ${xray_version}"
 
@@ -101,6 +107,12 @@ jobs:
           XRAY_VERSION: ${{ steps.xray-version.outputs.version }}
         run: |
           set -euo pipefail
+
+          if [ -z "$XRAY_VERSION" ]; then
+            echo "Xray version output is empty." >&2
+            exit 1
+          fi
+
           mkdir -p "$HOME/.local/bin" /tmp/xray-download
 
           if [ ! -x "$HOME/.local/bin/xray" ]; then
@@ -199,9 +211,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          xray_version="${{ steps.xray-version.outputs.version }}"
+          if [ -z "$xray_version" ]; then
+            echo "Refusing cache cleanup because the Xray version is empty." >&2
+            exit 1
+          fi
+
           current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
           current_build_key="${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}"
-          current_xray_key="${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}"
+          current_xray_key="${{ runner.os }}-xray-${xray_version}"
 
           cleanup_prefix() {
             local prefix="$1"
