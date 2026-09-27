@@ -1160,6 +1160,7 @@ async fn check_batch(
                         min_ms: values[0],
                     },
                 );
+            }
         }
 
         let _ = child.kill();
@@ -1258,7 +1259,6 @@ pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> R
     )
     .map_err(|error| error.to_string())
 }
-
 
 #[cfg(test)]
 mod tests {
