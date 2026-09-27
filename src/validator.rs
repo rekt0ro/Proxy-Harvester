@@ -894,6 +894,55 @@ async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
     pending.is_empty()
 }
 
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(RATE_LIMIT_DEFAULT_WAIT)
+        .max(RATE_LIMIT_MIN_WAIT)
+        .min(RATE_LIMIT_MAX_WAIT)
+}
+
+fn extend_rate_limit(wait: Duration) {
+    let wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+    let target = unix_now_ms().saturating_add(wait_ms);
+    let mut current = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
+
+    while target > current {
+        match RATE_LIMIT_UNTIL_MS.compare_exchange_weak(
+            current,
+            target,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+async fn wait_for_rate_limit() {
+    loop {
+        let now = unix_now_ms();
+        let until = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
+        if until <= now {
+            return;
+        }
+        sleep(Duration::from_millis(until - now)).await;
+    }
+}
+
 fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
     let request_timeout = if timeout_seconds.is_finite() && timeout_seconds > 0.0 {
         Duration::from_secs_f64(timeout_seconds)
