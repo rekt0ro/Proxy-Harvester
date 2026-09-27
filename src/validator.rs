@@ -419,14 +419,11 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .is_some_and(|value| value.eq_ignore_ascii_case("http"))
         && network.eq_ignore_ascii_case("tcp")
     {
-        if let Some(header) = stream.get_mut("rawSettings").and_then(Value::as_object_mut) {
-            header.insert(
-                "header".to_string(),
-                json!({
-                    "type": "http",
-                }),
-            );
-        }
+        stream["rawSettings"] = json!({
+            "header": {
+                "type": "http"
+            }
+        });
     }
 
     Ok(json!({
