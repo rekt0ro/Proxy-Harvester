@@ -1,5 +1,8 @@
 [package]
-name = "proxy-harvester"
+name = "ProxyRift"
+
+[lib]
+name = "proxyrift"
 version = "0.1.0"
 edition = "2021"
 
