@@ -1021,6 +1021,10 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         return Err(ProbeError::Failed);
     }
 
+    if !response.status().is_success() {
+        return Err(ProbeError::Failed);
+    }
+
     if response
         .content_length()
         .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
@@ -1343,13 +1347,14 @@ async fn validate_candidates_targets_inner(
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
-            "targets {:?}: batch {}/{} testing {} configs with Xray; requiring {}/{} successful attempts across at least 2 destinations",
+            "targets {:?}: batch {}/{} testing {} configs with Xray; requiring {}/{} successful attempts across at least {} destinations",
             targets.iter().map(Url::as_str).collect::<Vec<_>>(),
             index + 1,
             total_batches,
             batch.len(),
             min_successful_attempts,
-            stability_attempts
+            stability_attempts,
+            min_successful_targets
         );
 
         let batch_metadata = check_batch_targets(
@@ -1367,12 +1372,13 @@ async fn validate_candidates_targets_inner(
     }
 
     println!(
-        "{}/{} verified by Xray against {} targets with {}/{} successful attempts and at least 2 distinct successful destinations",
+        "{}/{} verified by Xray against {} targets with {}/{} successful attempts and at least {} distinct successful destinations",
         metadata.len(),
         candidates.len(),
         targets.len(),
         min_successful_attempts,
-        stability_attempts
+        stability_attempts,
+        min_successful_targets
     );
 
     Ok(metadata)
