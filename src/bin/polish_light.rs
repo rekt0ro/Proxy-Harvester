@@ -1,4 +1,3 @@
-
 use proxy_harvester::validator::{
     endpoint, read_lines, validate_candidates, write_lines, ProxyMetrics, PRIMARY_TARGET,
 };
@@ -88,11 +87,7 @@ fn diversify_recheck_candidates(configs: &[String], limit: usize) -> Vec<String>
     selected
 }
 
-fn diversified(
-    configs: &[String],
-    limit: usize,
-    max_per_endpoint: usize,
-) -> Vec<String> {
+fn diversified(configs: &[String], limit: usize, max_per_endpoint: usize) -> Vec<String> {
     let mut result = Vec::new();
     let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
 
@@ -139,13 +134,21 @@ async fn main() -> Result<(), String> {
     let timeout = value(&args, "--timeout", "1")
         .parse::<f64>()
         .map_err(|_| "invalid --timeout".to_string())?;
-    let final_recheck_limit = value(&args, "--selected-recheck-limit", FINAL_RECHECK_LIMIT.to_string().as_str())
-        .parse::<usize>()
-        .map_err(|_| "invalid --selected-recheck-limit".to_string())?;
-    let max_candidates = value(&args, "--max-candidates", MAX_DISCOVERY_CANDIDATES.to_string().as_str())
-        .parse::<usize>()
-        .map_err(|_| "invalid --max-candidates".to_string())?
-        .clamp(1, MAX_DISCOVERY_CANDIDATES);
+    let final_recheck_limit = value(
+        &args,
+        "--selected-recheck-limit",
+        FINAL_RECHECK_LIMIT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --selected-recheck-limit".to_string())?;
+    let max_candidates = value(
+        &args,
+        "--max-candidates",
+        MAX_DISCOVERY_CANDIDATES.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-candidates".to_string())?
+    .clamp(1, MAX_DISCOVERY_CANDIDATES);
     let final_workers = value(&args, "--selected-workers", "16")
         .parse::<usize>()
         .map_err(|_| "invalid --selected-workers".to_string())?;
@@ -153,14 +156,22 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let selection_limit = value(&args, "--selection-limit", DEFAULT_SELECTION_LIMIT.to_string().as_str())
-        .parse::<usize>()
-        .map_err(|_| "invalid --selection-limit".to_string())?
-        .max(1);
-    let max_per_endpoint = value(&args, "--max-per-endpoint", DEFAULT_MAX_PER_ENDPOINT.to_string().as_str())
-        .parse::<usize>()
-        .map_err(|_| "invalid --max-per-endpoint".to_string())?
-        .max(1);
+    let selection_limit = value(
+        &args,
+        "--selection-limit",
+        DEFAULT_SELECTION_LIMIT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --selection-limit".to_string())?
+    .max(1);
+    let max_per_endpoint = value(
+        &args,
+        "--max-per-endpoint",
+        DEFAULT_MAX_PER_ENDPOINT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-per-endpoint".to_string())?
+    .max(1);
     let xray = value(&args, "--xray", "xray");
 
     let candidates = read_lines(&candidates_path)?;
@@ -192,9 +203,15 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_vec = chunk.to_vec();
-        let chunk_metadata =
-            validate_candidates(&xray, &chunk_vec, &primary_target, workers, batch_size, timeout)
-                .await?;
+        let chunk_metadata = validate_candidates(
+            &xray,
+            &chunk_vec,
+            &primary_target,
+            workers,
+            batch_size,
+            timeout,
+        )
+        .await?;
 
         for config in chunk_metadata.keys() {
             if global_seen.insert(config.clone()) {
@@ -211,17 +228,31 @@ async fn main() -> Result<(), String> {
 
         let ranked_global = ranked(global_verified.clone(), &global_metadata, &positions);
         let remaining = selection_limit.saturating_sub(
-            diversified(&ranked(final_verified.clone(), &final_metadata, &positions), selection_limit, max_per_endpoint).len()
+            diversified(
+                &ranked(final_verified.clone(), &final_metadata, &positions),
+                selection_limit,
+                max_per_endpoint,
+            )
+            .len(),
         );
 
         if remaining == 0 {
-            let selected = diversified(&ranked(final_verified.clone(), &final_metadata, &positions), selection_limit, max_per_endpoint);
+            let selected = diversified(
+                &ranked(final_verified.clone(), &final_metadata, &positions),
+                selection_limit,
+                max_per_endpoint,
+            );
             write_lines(&output, &selected)?;
             println!("[INFO] Published {} Light configs.", selected.len());
             return Ok(());
         }
 
-        let dynamic_limit = final_recheck_limit.min(remaining.saturating_mul(2).saturating_add(20).max(remaining));
+        let dynamic_limit = final_recheck_limit.min(
+            remaining
+                .saturating_mul(2)
+                .saturating_add(20)
+                .max(remaining),
+        );
         let untested = ranked_global
             .into_iter()
             .filter(|config| !final_seen.contains(config))
@@ -240,9 +271,15 @@ async fn main() -> Result<(), String> {
             remaining
         );
 
-        let primary_metadata =
-            validate_candidates(&xray, &final_candidates, &primary_target, final_workers, final_batch_size, timeout)
-                .await?;
+        let primary_metadata = validate_candidates(
+            &xray,
+            &final_candidates,
+            &primary_target,
+            final_workers,
+            final_batch_size,
+            timeout,
+        )
+        .await?;
 
         for (config, metrics) in primary_metadata {
             if !final_metadata.contains_key(&config) {

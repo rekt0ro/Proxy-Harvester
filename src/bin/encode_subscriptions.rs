@@ -1,4 +1,3 @@
-
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use std::fs;
@@ -10,10 +9,7 @@ fn encode_file(path: &str) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
     };
 
-    let payload = bytes
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
+    let payload = bytes.iter().copied().collect::<Vec<_>>();
     let payload = String::from_utf8_lossy(&payload)
         .trim_end_matches(['\r', '\n'])
         .as_bytes()

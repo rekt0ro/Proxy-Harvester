@@ -2,8 +2,13 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
+use quinn::crypto::rustls::QuicClientConfig;
+use quinn::Endpoint;
 use regex::Regex;
 use reqwest::Client;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -15,12 +20,10 @@ use tokio::fs;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{timeout, Duration, Instant};
 use url::Url;
-use quinn::crypto::rustls::QuicClientConfig;
-use quinn::Endpoint;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
-use wireguard_sans_io::{Config as WireGuardConfig, EntropyError, EntropySource, Now as WireGuardNow, PresharedKey, PublicKey, Received, StaticSecret, Tunnel};
+use wireguard_sans_io::{
+    Config as WireGuardConfig, EntropyError, EntropySource, Now as WireGuardNow, PresharedKey,
+    PublicKey, Received, StaticSecret, Tunnel,
+};
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 const TEST_CONCURRENCY: usize = 8;
@@ -106,13 +109,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
-    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-        .map(|(index, chunk)| {
-            async move { test_chunk(index, format!("{index}"), chunk.to_vec()).await }
-        })
-        .buffer_unordered(TEST_CONCURRENCY)
-        .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
-        .await?;
+    let mut chunk_results =
+        stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
+            .map(|(index, chunk)| async move {
+                test_chunk(index, format!("{index}"), chunk.to_vec()).await
+            })
+            .buffer_unordered(TEST_CONCURRENCY)
+            .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
+            .await?;
 
     chunk_results.sort_by_key(|(index, _)| *index);
 
@@ -131,12 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     ranked_working_configs.sort_unstable_by(|(config_a, latency_a), (config_b, latency_b)| {
-        latency_a.cmp(latency_b).then_with(|| config_a.cmp(config_b))
+        latency_a
+            .cmp(latency_b)
+            .then_with(|| config_a.cmp(config_b))
     });
 
-    let mut light_candidates = Vec::with_capacity(
-        MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len()),
-    );
+    let mut light_candidates =
+        Vec::with_capacity(MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len()));
     let mut light_candidate_endpoints = HashSet::new();
 
     for (config, _) in &ranked_working_configs {
@@ -172,9 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
-    let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(
-        ranked_working_configs.len(),
-    ));
+    let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(ranked_working_configs.len()));
     let mut seen = HashSet::new();
 
     for (config, _) in ranked_working_configs {
@@ -185,8 +188,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     }
-
-
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
@@ -219,7 +220,9 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     Ok(root.to_path_buf())
 }
 
-async fn load_sources(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+async fn load_sources(
+    path: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let content = fs::read_to_string(path).await?;
     Ok(content
         .lines()
@@ -325,7 +328,10 @@ fn has_invalid_percent_escapes(value: &str) -> bool {
 }
 
 fn has_bracketed_ipv4_host(config: &str) -> bool {
-    let Some(authority) = config.split_once("://").and_then(|(_, rest)| rest.split(['?', '#']).next()) else {
+    let Some(authority) = config
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['?', '#']).next())
+    else {
         return false;
     };
 
@@ -361,23 +367,40 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
     ];
 
     let method = if !url.username().is_empty() {
-        percent_decode_str(url.username()).decode_utf8().ok()?.into_owned()
+        percent_decode_str(url.username())
+            .decode_utf8()
+            .ok()?
+            .into_owned()
     } else {
-        let payload = config.split_once("://")?.1.split('#').next()?.split('@').next()?;
+        let payload = config
+            .split_once("://")?
+            .1
+            .split('#')
+            .next()?
+            .split('@')
+            .next()?;
         let mut padded = payload.to_string();
         while padded.len() % 4 != 0 {
             padded.push('=');
         }
 
-        let decoded = [STANDARD.decode(payload), STANDARD.decode(&padded), URL_SAFE.decode(payload), URL_SAFE_NO_PAD.decode(payload)]
-            .into_iter()
-            .find_map(Result::ok)?;
+        let decoded = [
+            STANDARD.decode(payload),
+            STANDARD.decode(&padded),
+            URL_SAFE.decode(payload),
+            URL_SAFE_NO_PAD.decode(payload),
+        ]
+        .into_iter()
+        .find_map(Result::ok)?;
 
         let decoded = String::from_utf8(decoded).ok()?;
         decoded.split_once(':')?.0.to_string()
     };
 
-    if METHODS.iter().any(|supported| method.eq_ignore_ascii_case(supported)) {
+    if METHODS
+        .iter()
+        .any(|supported| method.eq_ignore_ascii_case(supported))
+    {
         Some(config.to_string())
     } else {
         None
@@ -400,7 +423,10 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
 
     if url.query_pairs().any(|(key, value)| {
         key.eq_ignore_ascii_case("security")
-            && !matches!(value.to_ascii_lowercase().as_str(), "none" | "tls" | "reality")
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "none" | "tls" | "reality"
+            )
     }) {
         return None;
     }
@@ -412,20 +438,24 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     }
 
     if url.query_pairs().any(|(key, value)| {
-        (key.eq_ignore_ascii_case("packetencoding")
-            || key.eq_ignore_ascii_case("packet-encoding"))
-            && !matches!(value.to_ascii_lowercase().as_str(), "xudp" | "packetaddr" | "none")
+        (key.eq_ignore_ascii_case("packetencoding") || key.eq_ignore_ascii_case("packet-encoding"))
+            && !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "xudp" | "packetaddr" | "none"
+            )
     }) {
         return None;
     }
 
-    if url.query_pairs().any(|(key, _)| key.eq_ignore_ascii_case("fm")) {
+    if url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("fm"))
+    {
         return None;
     }
 
     if url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("path")
-            && value.to_ascii_lowercase().contains("security=tls")
+        key.eq_ignore_ascii_case("path") && value.to_ascii_lowercase().contains("security=tls")
     }) {
         return None;
     }
@@ -438,17 +468,18 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
 }
 
 fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
-    let is_reality = url
-        .query_pairs()
-        .any(|(key, value)| key.eq_ignore_ascii_case("security") && value.eq_ignore_ascii_case("reality"));
+    let is_reality = url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("security") && value.eq_ignore_ascii_case("reality")
+    });
 
     if !is_reality {
         return false;
     }
 
-    let Some(public_key) = url.query_pairs().find_map(|(key, value)| {
-        key.eq_ignore_ascii_case("pbk").then(|| value.into_owned())
-    }) else {
+    let Some(public_key) = url
+        .query_pairs()
+        .find_map(|(key, value)| key.eq_ignore_ascii_case("pbk").then(|| value.into_owned()))
+    else {
         return false;
     };
 
@@ -489,7 +520,11 @@ fn normalize_vmess(config: &str) -> Option<String> {
     }
 
     let add = object.get("add")?.as_str()?.trim();
-    if add.is_empty() || add.chars().any(|c| c.is_control() || c == ' ' || c == '/' || c == '\\') {
+    if add.is_empty()
+        || add
+            .chars()
+            .any(|c| c.is_control() || c == ' ' || c == '/' || c == '\\')
+    {
         return None;
     }
 
@@ -587,8 +622,14 @@ fn decode_html_entities(text: &str) -> String {
 fn trim_config(config: &str) -> String {
     let config = config
         .trim_end_matches(|c| {
-            c == ')' || c == ']' || c == '}' || c == ',' || c == ';' || c == '.'
-                || c == '\r' || c == '\n'
+            c == ')'
+                || c == ']'
+                || c == '}'
+                || c == ','
+                || c == ';'
+                || c == '.'
+                || c == '\r'
+                || c == '\n'
         })
         .to_string();
 
@@ -663,10 +704,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
 
-    if compact.len() >= 16
-        && compact.len() <= MAX_COMPACT_BASE64_BYTES
-        && !text.contains("://")
-    {
+    if compact.len() >= 16 && compact.len() <= MAX_COMPACT_BASE64_BYTES && !text.contains("://") {
         inputs.push(compact);
     }
 
@@ -715,7 +753,6 @@ fn config_scheme(config: &str) -> String {
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .unwrap_or_else(|| "unknown".to_string())
 }
-
 
 fn endpoint(config: &str) -> Option<(String, u16)> {
     let url = Url::parse(config).ok()?;
@@ -789,16 +826,16 @@ async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
 
     for config in configs {
         let scheme = config_scheme(&config);
-        if matches!(scheme.as_str(), "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg") {
+        if matches!(
+            scheme.as_str(),
+            "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+        ) {
             transport_configs.push(config);
             continue;
         }
 
         if let Some(endpoint) = endpoint(&config) {
-            tcp_by_endpoint
-                .entry(endpoint)
-                .or_default()
-                .push(config);
+            tcp_by_endpoint.entry(endpoint).or_default().push(config);
         }
     }
 
@@ -826,12 +863,7 @@ async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
 
     for ((host, port), latency_ms) in tcp_results {
         if let Some(configs) = tcp_by_endpoint.get(&(host, port)) {
-            working.extend(
-                configs
-                    .iter()
-                    .cloned()
-                    .map(|config| (config, latency_ms)),
-            );
+            working.extend(configs.iter().cloned().map(|config| (config, latency_ms)));
         }
     }
 
@@ -931,10 +963,7 @@ fn quic_client_config(alpn: &[String]) -> Option<quinn::ClientConfig> {
         .with_custom_certificate_verifier(Arc::new(ProbeCertVerifier))
         .with_no_client_auth();
 
-    tls.alpn_protocols = alpn
-        .iter()
-        .map(|value| value.as_bytes().to_vec())
-        .collect();
+    tls.alpn_protocols = alpn.iter().map(|value| value.as_bytes().to_vec()).collect();
 
     let crypto = QuicClientConfig::try_from(tls).ok()?;
     Some(quinn::ClientConfig::new(Arc::new(crypto)))
@@ -967,8 +996,7 @@ fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
         return None;
     }
 
-    let sni = query_value(config, &["sni", "server_name"])
-        .unwrap_or_else(|| host.clone());
+    let sni = query_value(config, &["sni", "server_name"]).unwrap_or_else(|| host.clone());
 
     let alpn = {
         let values = query_values(config, "alpn");
@@ -1005,9 +1033,7 @@ async fn quic_latency(config: &str) -> Option<u64> {
 
         let endpoint = Endpoint::client(local).ok()?;
         let client_config = quic_client_config(&alpn)?;
-        let connecting = endpoint
-            .connect_with(client_config, address, &sni)
-            .ok()?;
+        let connecting = endpoint.connect_with(client_config, address, &sni).ok()?;
         let start = Instant::now();
 
         let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
@@ -1048,7 +1074,12 @@ fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
 fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
     if let Some(key) = wireguard_key(
         config,
-        &["privatekey", "private-key", "private_key", "private_key_base64"],
+        &[
+            "privatekey",
+            "private-key",
+            "private_key",
+            "private_key_base64",
+        ],
     ) {
         return Some(key);
     }
@@ -1072,7 +1103,14 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
     let private_key = wireguard_private_key(config)?;
     let public_key = wireguard_key(
         config,
-        &["publickey", "public-key", "public_key", "peer-public-key", "peer_public_key", "pubkey"],
+        &[
+            "publickey",
+            "public-key",
+            "public_key",
+            "peer-public-key",
+            "peer_public_key",
+            "pubkey",
+        ],
     )?;
 
     let psk = wireguard_key(
@@ -1205,7 +1243,10 @@ async fn diagnose_configs(configs: &[String]) {
         }
     }
 
-    println!("[DIAG] Transport testing {} protocol samples.", samples.len());
+    println!(
+        "[DIAG] Transport testing {} protocol samples.",
+        samples.len()
+    );
 
     for (index, config) in samples.iter().enumerate() {
         println!(
@@ -1216,7 +1257,11 @@ async fn diagnose_configs(configs: &[String]) {
         );
         println!(
             "[DIAG] Transport result: {}",
-            if transport_reachable(config).await { "PASS" } else { "FAIL" }
+            if transport_reachable(config).await {
+                "PASS"
+            } else {
+                "FAIL"
+            }
         );
     }
 }

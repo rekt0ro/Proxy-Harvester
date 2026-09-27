@@ -1,5 +1,6 @@
-
-use proxy_harvester::validator::{read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, PRIMARY_TARGET};
+use proxy_harvester::validator::{
+    read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, PRIMARY_TARGET,
+};
 use std::env;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
@@ -59,7 +60,8 @@ async fn main() -> Result<(), String> {
     let xray = value(&args, "--xray", "xray");
 
     let candidates = read_lines(&input)?;
-    let metadata = validate_candidates(&xray, &candidates, &target, workers, batch_size, timeout).await?;
+    let metadata =
+        validate_candidates(&xray, &candidates, &target, workers, batch_size, timeout).await?;
     write_lines(&output, &ranked(&metadata))?;
 
     if !metadata_path.is_empty() {
