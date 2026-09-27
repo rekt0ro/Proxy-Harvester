@@ -1022,7 +1022,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
     let response = client
-        .get(url)
+        .get(url.as_str())
         .send()
         .await
         .map_err(|_| ProbeError::Failed)?;
