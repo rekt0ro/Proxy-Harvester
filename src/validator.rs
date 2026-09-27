@@ -1410,7 +1410,7 @@ async fn check_batch_targets(
                         successful_targets
                             .entry(config)
                             .or_default()
-                            .insert(target.to_string());
+                            .extend(target.host_str().into_iter().map(str::to_owned));
                     }
                     Err(ProbeError::Failed) => {}
                 }
