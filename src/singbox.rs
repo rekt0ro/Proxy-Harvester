@@ -796,8 +796,8 @@ async fn check_batch_targets(
                 .map(|(config, client, entry_index)| {
                     let target = targets[(entry_index + attempt) % targets.len()].clone();
                     async move {
-                        let target_host = target_hosts[(entry_index + attempt) % target_hosts.len()]
-                            .clone();
+                        let target_host =
+                            target_hosts[(entry_index + attempt) % target_hosts.len()].clone();
                         let result = request_url(&client, &target).await;
                         (config, target_host, result)
                     }
