@@ -9,13 +9,10 @@ fn encode_file(path: &str) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
     };
 
-    let payload = bytes.iter().copied().collect::<Vec<_>>();
-    let payload = String::from_utf8_lossy(&payload)
-        .trim_end_matches(['\r', '\n'])
-        .as_bytes()
-        .to_vec();
+    let payload = String::from_utf8_lossy(&bytes);
+    let payload = payload.trim_end_matches(['\r', '\n']);
 
-    let encoded = STANDARD.encode(payload);
+    let encoded = STANDARD.encode(payload.as_bytes());
     let output = path.replace(".txt", "-base64.txt");
     fs::write(output, format!("{encoded}\n")).map_err(|error| error.to_string())
 }
