@@ -111,9 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut chunk_results =
         stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-            .map(|(index, chunk)| async move {
-                test_chunk(index, format!("{index}"), chunk.to_vec()).await
-            })
+            .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
             .buffer_unordered(TEST_CONCURRENCY)
             .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
             .await?;
@@ -603,23 +601,22 @@ fn is_uuid(value: &str) -> bool {
 }
 
 fn decode_vmess_payload(encoded: &str) -> Option<String> {
-    let mut candidates = Vec::with_capacity(4);
     let mut padded = encoded.to_string();
-
     while padded.len() % 4 != 0 {
         padded.push('=');
     }
 
-    candidates.push(encoded.to_string());
-    if padded != encoded {
-        candidates.push(padded);
-    }
+    let candidates: &[&str] = if padded == encoded {
+        &[encoded]
+    } else {
+        &[encoded, padded.as_str()]
+    };
 
     for candidate in candidates {
         for decoded in [
-            STANDARD.decode(&candidate),
-            URL_SAFE.decode(&candidate),
-            URL_SAFE_NO_PAD.decode(&candidate),
+            STANDARD.decode(candidate),
+            URL_SAFE.decode(candidate),
+            URL_SAFE_NO_PAD.decode(candidate),
         ] {
             if let Ok(bytes) = decoded {
                 if let Ok(text) = String::from_utf8(bytes) {
@@ -722,49 +719,76 @@ fn display_protocol(scheme: &str) -> &str {
     }
 }
 
+fn looks_like_base64(value: &str) -> bool {
+    value.len() >= 16
+        && value.len() <= 8192
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+        })
+}
+
 fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
-    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
 
-    if compact.len() >= 16 && compact.len() <= MAX_COMPACT_BASE64_BYTES && !text.contains("://") {
-        inputs.push(compact);
-    }
-
-    for line in text.lines().map(str::trim).filter(|line| line.len() >= 16) {
-        if line.len() <= 8192 {
-            inputs.push(line.to_string());
+    if !text.contains("://") {
+        let compact = text.split_whitespace().collect::<String>();
+        if compact.len() <= MAX_COMPACT_BASE64_BYTES && looks_like_base64(&compact) {
+            inputs.push(compact);
         }
     }
+
+    inputs.extend(
+        text.lines()
+            .map(str::trim)
+            .filter(|line| looks_like_base64(line))
+            .map(ToOwned::to_owned),
+    );
+    inputs.sort_unstable();
+    inputs.dedup();
 
     let mut results = Vec::new();
 
     for input in inputs {
-        let mut variants = vec![input.clone()];
         let mut padded = input.clone();
-
         while padded.len() % 4 != 0 {
             padded.push('=');
         }
 
-        variants.push(padded);
+        let candidates: &[&str] = if padded == input {
+            &[input.as_str()]
+        } else {
+            &[input.as_str(), padded.as_str()]
+        };
 
-        for candidate in variants {
+        for candidate in candidates {
             for decoded in [
-                STANDARD.decode(&candidate),
-                URL_SAFE.decode(&candidate),
-                URL_SAFE_NO_PAD.decode(&candidate),
+                STANDARD.decode(candidate),
+                URL_SAFE.decode(candidate),
+                URL_SAFE_NO_PAD.decode(candidate),
             ] {
                 if let Ok(bytes) = decoded {
-                    let decoded = String::from_utf8_lossy(&bytes).to_string();
+                    if bytes
+                        .iter()
+                        .filter(|byte| {
+                            **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t')
+                        })
+                        .count()
+                        > 8
+                    {
+                        continue;
+                    }
+
+                    let decoded = String::from_utf8_lossy(&bytes);
                     if decoded.contains("://") {
-                        results.push(decoded);
+                        results.push(decoded.into_owned());
                     }
                 }
             }
         }
     }
 
-    results.sort();
+    results.sort_unstable();
     results.dedup();
     results
 }
@@ -842,22 +866,22 @@ async fn transport_reachable(config: &str) -> bool {
     transport_latency(config).await.is_some()
 }
 
-async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
-    let mut tcp_by_endpoint: HashMap<(String, u16), Vec<String>> = HashMap::new();
-    let mut transport_configs = Vec::new();
+async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
+    let mut tcp_by_endpoint: HashMap<(String, u16), Vec<usize>> = HashMap::new();
+    let mut transport_indices = Vec::new();
 
-    for config in configs {
-        let scheme = config_scheme(&config);
+    for (index, config) in configs.iter().enumerate() {
+        let scheme = config_scheme(config);
         if matches!(
             scheme.as_str(),
             "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
         ) {
-            transport_configs.push(config);
+            transport_indices.push(index);
             continue;
         }
 
-        if let Some(endpoint) = endpoint(&config) {
-            tcp_by_endpoint.entry(endpoint).or_default().push(config);
+        if let Some(endpoint) = endpoint(config) {
+            tcp_by_endpoint.entry(endpoint).or_default().push(index);
         }
     }
 
@@ -884,28 +908,37 @@ async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
     let mut working = Vec::new();
 
     for ((host, port), latency_ms) in tcp_results {
-        if let Some(configs) = tcp_by_endpoint.get(&(host, port)) {
-            working.extend(configs.iter().cloned().map(|config| (config, latency_ms)));
+        if let Some(indices) = tcp_by_endpoint.get(&(host, port)) {
+            working.extend(
+                indices
+                    .iter()
+                    .map(|&index| (configs[index].clone(), latency_ms)),
+            );
         }
     }
 
-    if !transport_configs.is_empty() {
+    if !transport_indices.is_empty() {
         println!(
             "[INFO] Protocol-aware UDP probing: {} transport configs.",
-            transport_configs.len()
+            transport_indices.len()
         );
 
-        let udp_results = stream::iter(transport_configs)
-            .map(|config| async move {
-                let latency = transport_latency(&config).await?;
-                Some((config, latency))
+        let udp_results = stream::iter(transport_indices)
+            .map(|index| async move {
+                transport_latency(&configs[index])
+                    .await
+                    .map(|latency| (index, latency))
             })
             .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
             .filter_map(async move |result| result)
             .collect::<Vec<_>>()
             .await;
 
-        working.extend(udp_results);
+        working.extend(
+            udp_results
+                .into_iter()
+                .map(|(index, latency)| (configs[index].clone(), latency)),
+        );
     }
 
     working
@@ -913,20 +946,19 @@ async fn test_transport_configs(configs: Vec<String>) -> Vec<(String, u64)> {
 
 async fn test_chunk(
     index: usize,
-    label: String,
-    configs: Vec<String>,
+    configs: &[String],
 ) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
-        label,
+        index,
         configs.len()
     );
 
-    let working = test_transport_configs(configs.clone()).await;
+    let working = test_transport_configs(configs).await;
 
     println!(
         "[INFO] Chunk {} complete: {}/{} transport-reachable.",
-        label,
+        index,
         working.len(),
         configs.len()
     );

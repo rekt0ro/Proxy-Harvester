@@ -39,13 +39,12 @@ fn required(args: &[String], name: &str) -> Result<String, String> {
     }
 }
 
-fn ranked(
-    configs: impl IntoIterator<Item = String>,
+fn sort_ranked(
+    configs: &mut [String],
     metadata: &HashMap<String, ProxyMetrics>,
     positions: &HashMap<String, usize>,
-) -> Vec<String> {
-    let mut values: Vec<_> = configs.into_iter().collect();
-    values.sort_unstable_by(|a, b| {
+) {
+    configs.sort_unstable_by(|a, b| {
         let ma = metadata.get(a);
         let mb = metadata.get(b);
 
@@ -69,7 +68,6 @@ fn ranked(
             })
             .then_with(|| a.cmp(b))
     });
-    values
 }
 
 fn family_key(config: &str) -> String {
@@ -239,24 +237,28 @@ fn select_verified_configs(
             break;
         }
 
-        if let Some(ep) = endpoint(config) {
-            let count = endpoint_counts.get(&ep).copied().unwrap_or(0);
-            if count >= max_per_endpoint {
+        if let Some(endpoint) = endpoint(config) {
+            if endpoint_counts.get(&endpoint).copied().unwrap_or(0) >= max_per_endpoint {
                 continue;
             }
-        }
 
-        let family = family_key(config);
-        let family_count = family_counts.get(&family).copied().unwrap_or(0);
-        if family_count >= max_per_family {
-            continue;
-        }
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                continue;
+            }
 
-        if let Some(ep) = endpoint(config) {
-            *endpoint_counts.entry(ep).or_insert(0) += 1;
+            *endpoint_counts.entry(endpoint).or_insert(0) += 1;
+            *family_counts.entry(family).or_insert(0) += 1;
+            result.push(config.clone());
+        } else {
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                continue;
+            }
+
+            *family_counts.entry(family).or_insert(0) += 1;
+            result.push(config.clone());
         }
-        *family_counts.entry(family).or_insert(0) += 1;
-        result.push(config.clone());
     }
 
     result
@@ -447,58 +449,67 @@ async fn validate_light_batch(
         dual_candidates.len()
     );
 
-    let mut verified = HashMap::new();
+    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
 
-    if !singbox_candidates.is_empty() {
-        let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
-        let metadata = if strict {
+    let singbox_future = async {
+        if singbox_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else if strict {
             validate_singbox_targets_strict(
                 singbox,
                 &singbox_candidates,
                 targets,
-                workers.min(32).max(1),
+                workers.clamp(1, 32),
                 request_timeout,
                 timeout_seconds * 1000.0,
             )
-            .await?
+            .await
         } else {
             validate_singbox_targets(
                 singbox,
                 &singbox_candidates,
                 targets,
-                workers.min(32).max(1),
+                workers.clamp(1, 32),
                 request_timeout,
                 timeout_seconds * 1000.0,
             )
-            .await?
-        };
-        verified.extend(metadata);
-    }
+            .await
+        }
+    };
 
-    if !xray_candidates.is_empty() {
-        let metadata = if strict {
+    let xray_future = async {
+        if xray_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else if strict {
             validate_candidates_with_targets_strict(
                 xray,
                 &xray_candidates,
                 targets,
-                workers,
+                workers.max(1),
                 batch_size,
                 timeout_seconds,
             )
-            .await?
+            .await
         } else {
             validate_candidates_with_targets(
                 xray,
                 &xray_candidates,
                 targets,
-                workers,
+                workers.max(1),
                 batch_size,
                 timeout_seconds,
             )
-            .await?
-        };
-        verified.extend(metadata);
-    }
+            .await
+        }
+    };
+
+    let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+    let singbox_metadata = singbox_result?;
+    let xray_metadata = xray_result?;
+
+    let mut verified = HashMap::with_capacity(singbox_metadata.len() + xray_metadata.len());
+    verified.extend(singbox_metadata);
+    verified.extend(xray_metadata);
 
     if !dual_candidates.is_empty() {
         verified.extend(
@@ -611,7 +622,7 @@ async fn main() -> Result<(), String> {
     }
 
     let mut global_verified = Vec::<String>::new();
-    let mut global_seen = HashSet::<String>::new();
+    let mut global_positions = HashMap::<String, usize>::new();
     let mut global_metadata = HashMap::<String, ProxyMetrics>::new();
     let mut final_verified = Vec::<String>::new();
     let mut final_attempts = HashMap::<String, usize>::new();
@@ -628,30 +639,25 @@ async fn main() -> Result<(), String> {
             global_verified.len()
         );
 
-        let chunk_vec = chunk.to_vec();
-        let chunk_metadata = validate_light_batch(
-            &xray, &singbox, &chunk_vec, &targets, workers, batch_size, timeout, false,
-        )
-        .await?;
+        let chunk_metadata =
+            validate_light_batch(&xray, &singbox, chunk, &targets, workers, batch_size, timeout, false)
+                .await?;
 
         for config in chunk_metadata.keys() {
-            if global_seen.insert(config.clone()) {
+            if !global_positions.contains_key(config) {
+                let position = global_verified.len();
                 global_verified.push(config.clone());
+                global_positions.insert(config.clone(), position);
             }
         }
         global_metadata.extend(chunk_metadata);
 
-        let positions = global_verified
-            .iter()
-            .enumerate()
-            .map(|(index, config)| (config.clone(), index))
-            .collect::<HashMap<_, _>>();
+        sort_ranked(&mut global_verified, &global_metadata, &global_positions);
+        sort_ranked(&mut final_verified, &final_metadata, &global_positions);
 
-        let ranked_global = ranked(global_verified.clone(), &global_metadata, &positions);
-        let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
         let remaining = selection_limit.saturating_sub(
             select_verified_configs(
-                &ranked_final,
+                &final_verified,
                 selection_limit,
                 max_per_endpoint,
                 max_per_family,
@@ -661,7 +667,7 @@ async fn main() -> Result<(), String> {
 
         if remaining == 0 {
             let selected = select_verified_configs(
-                &ranked_final,
+                &final_verified,
                 selection_limit,
                 max_per_endpoint,
                 max_per_family,
@@ -681,13 +687,17 @@ async fn main() -> Result<(), String> {
                 .saturating_add(20)
                 .max(remaining),
         );
-        let untested = ranked_global
-            .into_iter()
+
+        let untested = global_verified
+            .iter()
             .filter(|config| {
-                !final_metadata.contains_key(config)
-                    && final_attempts.get(config).copied().unwrap_or(0) < MAX_FINAL_RECHECK_ATTEMPTS
+                !final_metadata.contains_key(*config)
+                    && final_attempts.get(*config).copied().unwrap_or(0)
+                        < MAX_FINAL_RECHECK_ATTEMPTS
             })
+            .cloned()
             .collect::<Vec<_>>();
+
         let final_candidates =
             diversify_recheck_candidates(&untested, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
 
@@ -724,15 +734,9 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
-        let positions = global_verified
-            .iter()
-            .enumerate()
-            .map(|(index, config)| (config.clone(), index))
-            .collect::<HashMap<_, _>>();
-
-        let ranked_final = ranked(final_verified.clone(), &final_metadata, &positions);
+        sort_ranked(&mut final_verified, &final_metadata, &global_positions);
         let selected = select_verified_configs(
-            &ranked_final,
+            &final_verified,
             selection_limit,
             max_per_endpoint,
             max_per_family,
@@ -768,14 +772,9 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    let positions = global_verified
-        .iter()
-        .enumerate()
-        .map(|(index, config)| (config.clone(), index))
-        .collect::<HashMap<_, _>>();
-    let ranked_final = ranked(final_verified, &final_metadata, &positions);
+    sort_ranked(&mut final_verified, &final_metadata, &global_positions);
     let selected = select_verified_configs(
-        &ranked_final,
+        &final_verified,
         selection_limit,
         max_per_endpoint,
         max_per_family,

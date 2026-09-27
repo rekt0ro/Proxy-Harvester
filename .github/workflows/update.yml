@@ -62,17 +62,8 @@ jobs:
           echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
           echo "Xray version: ${xray_version}"
 
-      - name: Update Rust dependencies
-        run: |
-          set -euo pipefail
-          test -f Cargo.toml
-          cargo update
-
-          if git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
-            echo "Cargo.lock is tracked and was refreshed to the latest compatible versions."
-          else
-            echo "Cargo.lock created with the latest compatible versions."
-          fi
+      - name: Verify Rust dependency lock
+        run: test -s Cargo.lock
 
       - name: Restore Rust build cache
         id: cargo-build-restore
@@ -154,10 +145,8 @@ jobs:
           path: ~/.local/bin/sing-box
           key: ${{ runner.os }}-sing-box-1.14.1
 
-      - name: Validate Rust
-        run: |
-          cargo fmt --all -- --check
-          cargo check --release --bins
+      - name: Validate Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Check runner network
         run: |
@@ -165,7 +154,11 @@ jobs:
           curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
 
       - name: Build Rust binaries
-        run: cargo build --release --bins
+        run: |
+          cargo build --release --bins
+          test -x ./target/release/ProxyRift
+          test -x ./target/release/polish_light
+          test -x ./target/release/encode_subscriptions
 
       - name: Save Rust registry cache
         if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
@@ -283,14 +276,14 @@ jobs:
         if: always()
         run: |
           rm -rf /tmp/proxyrift /tmp/xray-build /tmp/xray-download /tmp/singbox-download
-          rm -f subscriptions/.*.txt
+          rm -f subscriptions/.light-candidates.txt subscriptions/.all.txt
 
       - name: Commit changes
         run: |
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions Cargo.lock
+          git add subscriptions
 
           if git diff --cached --quiet; then
             echo "No changes."

@@ -633,25 +633,6 @@ fn start_singbox(
         .map_err(|error| error.to_string())
 }
 
-fn check_singbox_config(binary: &str, config_path: &std::path::Path) -> Result<(), String> {
-    let output = Command::new(binary)
-        .args(["check", "-c"])
-        .arg(config_path)
-        .output()
-        .map_err(|error| error.to_string())?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(if stderr.trim().is_empty() {
-        "sing-box rejected configuration".to_string()
-    } else {
-        stderr.trim().to_string()
-    })
-}
-
 async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     let workers = ports.len().clamp(1, 64);
@@ -750,7 +731,6 @@ async fn check_batch_targets(
     binary: &str,
     entries: &[(String, Value)],
     targets: &[String],
-    target_hosts: &[String],
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
@@ -776,20 +756,6 @@ async fn check_batch_targets(
             serde_json::to_vec(&config).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-
-        if let Err(error) = check_singbox_config(binary, &config_path) {
-            let _ = fs::remove_dir_all(&work);
-
-            if batch_entries.len() > 1 {
-                let mid = batch_entries.len() / 2;
-                pending.push(batch_entries[..mid].to_vec());
-                pending.push(batch_entries[mid..].to_vec());
-                continue;
-            }
-
-            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
-            continue;
-        }
 
         let mut child = start_singbox(binary, &config_path, &log_path)?;
 
@@ -822,10 +788,10 @@ async fn check_batch_targets(
             continue;
         }
 
-        let mut active = Vec::with_capacity(batch_entries.len());
-        for (index, (config, _)) in batch_entries.iter().enumerate() {
+        let mut clients = Vec::with_capacity(batch_entries.len());
+        for (index, _) in batch_entries.iter().enumerate() {
             match client_for_port(local_ports[index], request_timeout) {
-                Ok(client) => active.push((config.clone(), client, index)),
+                Ok(client) => clients.push(client),
                 Err(error) => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -835,40 +801,49 @@ async fn check_batch_targets(
             }
         }
 
-        let mut successes = HashMap::<String, usize>::new();
-        let mut attempts = HashMap::<String, usize>::new();
-        let mut late_success_streak = HashMap::<String, usize>::new();
-        let mut latencies = HashMap::<String, Vec<f64>>::new();
-        let mut successful_targets = HashMap::<String, HashSet<String>>::new();
+        let count = batch_entries.len();
+        let mut successes = vec![0usize; count];
+        let mut attempts = vec![0usize; count];
+        let mut late_streak = vec![0usize; count];
+        let mut latencies = vec![Vec::<f64>::new(); count];
+        let mut active = (0..count).collect::<Vec<_>>();
 
         for attempt in 0..stability_attempts {
-            let results = stream::iter(active.clone())
-                .map(|(config, client, entry_index)| {
-                    let target = targets[(entry_index + attempt) % targets.len()].clone();
-                    async move {
-                        let target_host =
-                            target_hosts[(entry_index + attempt) % target_hosts.len()].clone();
-                        let result = request_url(&client, &target).await;
-                        (config, target_host, result)
-                    }
+            if active.is_empty() {
+                break;
+            }
+
+            let results = stream::iter(active.iter().copied())
+                .map(|entry_index| {
+                    let client = &clients[entry_index];
+                    let target = targets[0].clone();
+                    async move { (entry_index, request_url(client, &target).await) }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
                 .await;
 
-            for (config, target_host, result) in results {
-                *attempts.entry(config.clone()).or_insert(0) += 1;
-                if let Ok(latency) = result {
-                    *successes.entry(config.clone()).or_insert(0) += 1;
-                    *late_success_streak.entry(config.clone()).or_insert(0) += 1;
-                    latencies.entry(config.clone()).or_default().push(latency);
-                    successful_targets
-                        .entry(config)
-                        .or_default()
-                        .insert(target_host);
-                } else {
-                    late_success_streak.insert(config.clone(), 0);
+            for (entry_index, result) in results {
+                attempts[entry_index] += 1;
+                match result {
+                    Ok(latency) => {
+                        successes[entry_index] += 1;
+                        late_streak[entry_index] += 1;
+                        latencies[entry_index].push(latency);
+                    }
+                    Err(_) => late_streak[entry_index] = 0,
                 }
+            }
+
+            let remaining = stability_attempts.saturating_sub(attempt + 1);
+            if remaining == 0 {
+                active.clear();
+            } else {
+                active.retain(|&entry_index| {
+                    successes[entry_index] + remaining >= min_successful_attempts
+                        && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                            || late_streak[entry_index] + remaining >= STRICT_LATE_SUCCESS_STREAK)
+                });
             }
 
             if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
@@ -876,22 +851,56 @@ async fn check_batch_targets(
             }
         }
 
-        for (config, _) in &batch_entries {
-            let wins = successes.get(config).copied().unwrap_or(0);
-            let values = latencies.get(config).cloned().unwrap_or_default();
-            let destinations = successful_targets.get(config).map_or(0, HashSet::len);
-            let terminal_streak = late_success_streak.get(config).copied().unwrap_or(0);
-            let terminal_streak_ok = stability_attempts < STRICT_STABILITY_ATTEMPTS
-                || terminal_streak >= STRICT_LATE_SUCCESS_STREAK;
+        let mut secondary_success = vec![false; count];
+        if min_successful_targets > 1 {
+            for target in targets.iter().skip(1) {
+                let eligible = (0..count)
+                    .filter(|&entry_index| {
+                        !secondary_success[entry_index]
+                            && successes[entry_index] >= min_successful_attempts
+                            && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                                || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
+                    })
+                    .collect::<Vec<_>>();
 
-            if wins >= min_successful_attempts
-                && terminal_streak_ok
-                && destinations >= min_successful_targets
-                && !values.is_empty()
-                && values.len() >= min_successful_attempts
-                && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
+                if eligible.is_empty() {
+                    break;
+                }
+
+                let results = stream::iter(eligible)
+                    .map(|entry_index| {
+                        let client = &clients[entry_index];
+                        let target = target.clone();
+                        async move { (entry_index, request_url(client, &target).await) }
+                    })
+                    .buffer_unordered(workers.max(1))
+                    .collect::<Vec<_>>()
+                    .await;
+
+                for (entry_index, result) in results {
+                    if result.is_ok() {
+                        secondary_success[entry_index] = true;
+                    }
+                }
+            }
+        }
+
+        for index in 0..count {
+            let target_count =
+                usize::from(successes[index] > 0) + usize::from(secondary_success[index]);
+
+            if successes[index] >= min_successful_attempts
+                && target_count >= min_successful_targets
+                && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                    || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
+                && latencies[index].len() >= min_successful_attempts
+                && latencies[index]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    <= max_latency_ms
             {
-                let mut values = values;
+                let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
                 let median = if values.len() % 2 == 1 {
                     values[values.len() / 2]
@@ -901,10 +910,10 @@ async fn check_batch_targets(
                 };
 
                 verified.insert(
-                    config.clone(),
+                    batch_entries[index].0.clone(),
                     ProxyMetrics {
-                        successes: wins,
-                        attempts: attempts.get(config).copied().unwrap_or(0),
+                        successes: successes[index],
+                        attempts: attempts[index],
                         median_ms: median,
                         min_ms: values[0],
                     },
@@ -1167,13 +1176,6 @@ async fn validate_candidates_with_targets_policy(
         .iter()
         .map(|target| target.to_string())
         .collect::<Vec<_>>();
-    let target_hosts = target_values
-        .iter()
-        .filter_map(|target| Url::parse(target).ok()?.host_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    if target_hosts.len() != target_values.len() {
-        return Err("Light validation target host parsing failed".to_string());
-    }
     let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
     let total_batches = (parsed.len() + batch_size - 1) / batch_size;
     let mut metadata = HashMap::new();
@@ -1195,7 +1197,6 @@ async fn validate_candidates_with_targets_policy(
                 binary,
                 batch,
                 &target_values,
-                &target_hosts,
                 workers.max(1),
                 request_timeout,
                 max_latency_ms,

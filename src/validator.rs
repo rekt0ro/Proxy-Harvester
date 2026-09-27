@@ -1103,7 +1103,9 @@ async fn functional_attempt(
     target: &Url,
     compatibility_target: Option<&Url>,
 ) -> Result<f64, ProbeError> {
-    if let Some(compatibility_target) = compatibility_target {
+    if let Some(compatibility_target) = compatibility_target
+        .filter(|compatibility_target| *compatibility_target != target)
+    {
         probe_request(client, compatibility_target.clone()).await?;
     }
 
@@ -1277,7 +1279,7 @@ pub async fn validate_candidates_with_targets(
         timeout_seconds,
         STABILITY_ATTEMPTS,
         MIN_SUCCESSFUL_TARGETS,
-        MIN_SUCCESSFUL_TARGETS,
+        1,
     )
     .await
 }
@@ -1504,60 +1506,62 @@ async fn check_batch_targets(
             continue;
         }
 
-        let mut active = Vec::with_capacity(batch_entries.len());
-        for (index, (config, _)) in batch_entries.iter().enumerate() {
-            let client = match client_for_port(local_ports[index], timeout_seconds) {
-                Ok(client) => client,
+        let mut clients = Vec::with_capacity(batch_entries.len());
+        for (index, _) in batch_entries.iter().enumerate() {
+            match client_for_port(local_ports[index], timeout_seconds) {
+                Ok(client) => clients.push(client),
                 Err(error) => {
                     let _ = child.kill();
                     let _ = child.wait();
                     let _ = fs::remove_dir_all(&work);
                     return Err(error);
                 }
-            };
-
-            active.push((config.clone(), client, index));
+            }
         }
 
-        let mut successes = HashMap::<String, usize>::new();
-        let mut attempts = HashMap::<String, usize>::new();
-        let mut late_success_streak = HashMap::<String, usize>::new();
-        let mut latencies = HashMap::<String, Vec<f64>>::new();
-        let mut successful_targets = HashMap::<String, HashSet<String>>::new();
+        let count = batch_entries.len();
+        let mut successes = vec![0usize; count];
+        let mut attempts = vec![0usize; count];
+        let mut late_streak = vec![0usize; count];
+        let mut latencies = vec![Vec::<f64>::new(); count];
+        let mut active = (0..count).collect::<Vec<_>>();
 
         for attempt in 0..stability_attempts {
             if active.is_empty() {
                 break;
             }
 
-            let results = stream::iter(active.clone())
-                .map(|(config, client, entry_index)| {
-                    let target = targets[(entry_index + attempt) % targets.len()].clone();
-                    async move {
-                        let result = probe_request(&client, target.clone()).await;
-                        (config, target, result)
-                    }
+            let results = stream::iter(active.iter().copied())
+                .map(|entry_index| {
+                    let client = &clients[entry_index];
+                    let target = targets[0].clone();
+                    async move { (entry_index, probe_request(client, target).await) }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
                 .await;
 
-            for (config, target, result) in results {
-                *attempts.entry(config.clone()).or_insert(0) += 1;
+            for (entry_index, result) in results {
+                attempts[entry_index] += 1;
                 match result {
                     Ok(latency) => {
-                        *successes.entry(config.clone()).or_insert(0) += 1;
-                        *late_success_streak.entry(config.clone()).or_insert(0) += 1;
-                        latencies.entry(config.clone()).or_default().push(latency);
-                        successful_targets
-                            .entry(config)
-                            .or_default()
-                            .extend(target.host_str().into_iter().map(str::to_owned));
+                        successes[entry_index] += 1;
+                        late_streak[entry_index] += 1;
+                        latencies[entry_index].push(latency);
                     }
-                    Err(ProbeError::Failed) => {
-                        late_success_streak.insert(config.clone(), 0);
-                    }
+                    Err(ProbeError::Failed) => late_streak[entry_index] = 0,
                 }
+            }
+
+            let remaining = stability_attempts.saturating_sub(attempt + 1);
+            if remaining == 0 {
+                active.clear();
+            } else {
+                active.retain(|&entry_index| {
+                    successes[entry_index] + remaining >= min_successful_attempts
+                        && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                            || late_streak[entry_index] + remaining >= STRICT_LATE_SUCCESS_STREAK)
+                });
             }
 
             if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
@@ -1565,22 +1569,56 @@ async fn check_batch_targets(
             }
         }
 
-        for (config, _) in &batch_entries {
-            let values = latencies.get(config).cloned().unwrap_or_default();
-            let wins = successes.get(config).copied().unwrap_or(0);
-            let destinations = successful_targets.get(config).map_or(0, HashSet::len);
-            let terminal_streak = late_success_streak.get(config).copied().unwrap_or(0);
-            let terminal_streak_ok = stability_attempts < STRICT_STABILITY_ATTEMPTS
-                || terminal_streak >= STRICT_LATE_SUCCESS_STREAK;
+        let mut secondary_success = vec![false; count];
+        if min_successful_targets > 1 {
+            for target in targets.iter().skip(1) {
+                let eligible = (0..count)
+                    .filter(|&entry_index| {
+                        !secondary_success[entry_index]
+                            && successes[entry_index] >= min_successful_attempts
+                            && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                                || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
+                    })
+                    .collect::<Vec<_>>();
 
-            if wins >= min_successful_attempts
-                && terminal_streak_ok
-                && destinations >= min_successful_targets
-                && !values.is_empty()
-                && values.len() >= min_successful_attempts
-                && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+                if eligible.is_empty() {
+                    break;
+                }
+
+                let results = stream::iter(eligible)
+                    .map(|entry_index| {
+                        let client = &clients[entry_index];
+                        let target = target.clone();
+                        async move { (entry_index, probe_request(client, target).await) }
+                    })
+                    .buffer_unordered(workers.max(1))
+                    .collect::<Vec<_>>()
+                    .await;
+
+                for (entry_index, result) in results {
+                    if result.is_ok() {
+                        secondary_success[entry_index] = true;
+                    }
+                }
+            }
+        }
+
+        for index in 0..count {
+            let target_count =
+                usize::from(successes[index] > 0) + usize::from(secondary_success[index]);
+
+            if successes[index] >= min_successful_attempts
+                && target_count >= min_successful_targets
+                && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                    || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
+                && latencies[index].len() >= min_successful_attempts
+                && latencies[index]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    <= MAX_LATENCY_MS
             {
-                let mut values = values;
+                let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
                 let median = if values.len() % 2 == 1 {
                     values[values.len() / 2]
@@ -1590,10 +1628,10 @@ async fn check_batch_targets(
                 };
 
                 combined.insert(
-                    config.clone(),
+                    batch_entries[index].0.clone(),
                     ProxyMetrics {
-                        successes: wins,
-                        attempts: attempts.get(config).copied().unwrap_or(0),
+                        successes: successes[index],
+                        attempts: attempts[index],
                         median_ms: median,
                         min_ms: values[0],
                     },
