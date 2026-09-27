@@ -861,6 +861,10 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     }
 }
 
+async fn transport_reachable(config: &str) -> bool {
+    transport_latency(config).await.is_some()
+}
+
 async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
     let mut tcp_by_endpoint: HashMap<(String, u16), Vec<usize>> = HashMap::new();
     let mut transport_indices = Vec::new();
