@@ -43,6 +43,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Record Rust version
+        id: rust-version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
       - name: Restore Rust registry cache
         id: cargo-registry-restore
         uses: actions/cache/restore@v6
@@ -81,9 +85,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-
+            ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
 
       - name: Restore Xray binary cache
         id: xray-cache-restore
@@ -132,6 +136,7 @@ jobs:
       - name: Save Rust registry cache
         if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
+        continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
@@ -141,9 +146,10 @@ jobs:
       - name: Save Rust build cache
         if: steps.cargo-build-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
+        continue-on-error: true
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Collect and transport-test configs
         run: ./target/release/proxy-harvester
@@ -194,7 +200,7 @@ jobs:
           set -euo pipefail
 
           current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
-          current_build_key="${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}"
+          current_build_key="${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}"
           current_xray_key="${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}"
 
           cleanup_prefix() {
@@ -219,7 +225,7 @@ jobs:
           }
 
           cleanup_prefix "${{ runner.os }}-cargo-registry-" "$current_registry_key"
-          cleanup_prefix "${{ runner.os }}-cargo-build-" "$current_build_key"
+          cleanup_prefix "${{ runner.os }}-cargo-build-rust-" "$current_build_key"
           cleanup_prefix "${{ runner.os }}-xray-" "$current_xray_key"
 
       - name: Clean generated temporary files
