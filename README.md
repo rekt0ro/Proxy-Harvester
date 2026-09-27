@@ -2,7 +2,7 @@
 
 ### Light (Recommended)
 
-Up to 200 verified proxy configurations, with additional ranking and filtering.
+Up to 200 verified proxy configurations that pass both Xray and sing-box consumer-style tests, with additional ranking and filtering.
 
 Plain text:
 
@@ -36,7 +36,7 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base6
 
 All subscriptions are validated through the Rust-based validation pipeline.
 
-Light applies additional ranking and filtering to provide a smaller curated subscription.
+Light runs repeated Xray and sing-box checks against Cloudflare connectivity endpoints, then keeps only configurations verified by both cores before ranking and publishing.
 
 ## Supported Protocols
 
