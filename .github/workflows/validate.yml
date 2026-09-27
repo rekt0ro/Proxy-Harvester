@@ -9,6 +9,7 @@ on:
       - ".github/workflows/**"
       - ".github/dependabot.yml"
       - ".gitignore"
+      - "README.md"
 
 permissions:
   contents: read
