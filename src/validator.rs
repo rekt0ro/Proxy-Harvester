@@ -925,10 +925,7 @@ fn make_temp_dir() -> Result<std::path::PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "proxyrift-xray-{}-{nanos}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("proxyrift-xray-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
