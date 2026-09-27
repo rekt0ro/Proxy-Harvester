@@ -171,7 +171,7 @@ async fn main() -> Result<(), String> {
             "Usage: polish_light --candidates FILE --output FILE [--workers N] \
              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N] \
              [--max-candidates N] [--selected-workers N] [--selected-batch-size N] \
-             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]""
+             [--primary-target URL] [--selection-limit N] [--max-per-endpoint N] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
