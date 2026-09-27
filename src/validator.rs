@@ -1163,8 +1163,7 @@ async fn check_batch(
             let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS
-                    && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
             });
         }
 
