@@ -474,7 +474,13 @@ fn urlencoding(value: &str) -> String {
 }
 
 fn parse_trojan(config: &str) -> Result<Value, String> {
-    let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    let mut url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    if !url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("security"))
+    {
+        url.query_pairs_mut().append_pair("security", "tls");
+    }
     let (host, port) = endpoint_from_url(&url, None)?;
     let password_source = url
         .password()
@@ -1439,6 +1445,18 @@ mod tests {
             .expect("user/password Trojan URI should parse");
 
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
+    }
+
+    #[test]
+    fn defaults_trojan_to_tls_when_security_is_omitted() {
+        let config = parse_trojan("trojan://user:secret@example.com:443?sni=example.com")
+            .expect("Trojan without an explicit security mode should parse");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["serverName"],
+            "example.com"
+        );
     }
 
     #[test]
