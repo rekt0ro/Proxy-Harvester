@@ -12,7 +12,6 @@ on:
       - ".github/dependabot.yml"
       - ".gitignore"
       - "README.md"
-      - "README.md"
   pull_request:
     paths:
       - "Cargo.toml"
@@ -36,6 +35,30 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Record Rust version
+        id: rust-version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Rust registry cache
+        id: cargo-registry-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore Rust build cache
+        id: cargo-build-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -44,3 +67,21 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
+
+      - name: Save Rust registry cache
+        if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Rust build cache
+        if: steps.cargo-build-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
