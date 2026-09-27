@@ -640,5 +640,4 @@ mod tests {
             vec![configs[0].clone(), configs[2].clone(), configs[3].clone()]
         );
     }
-
 }
