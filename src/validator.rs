@@ -274,39 +274,41 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
     let mut path = first_query(url, &["path"], Some(""));
     let host_header = first_query(url, &["host"], Some(""));
+    let mut ws_early_data = String::new();
+    let mut ws_early_data_header = String::new();
 
     if network == "ws" {
-        let mut early_data = first_query(
+        ws_early_data = first_query(
             url,
             &["ed", "maxEarlyData", "max_early_data"],
             Some(""),
         );
-        let mut early_data_header =
+        ws_early_data_header =
             first_query(url, &["eh", "earlyDataHeaderName", "early_data_header_name"], Some(""));
 
         if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
-            if early_data.is_empty() {
-                early_data = encoded_early_data
+            if ws_early_data.is_empty() {
+                ws_early_data = encoded_early_data
                     .split('&')
                     .next()
                     .unwrap_or("")
                     .to_string();
             }
-            if early_data_header.is_empty() {
-                early_data_header = "Sec-WebSocket-Protocol".to_string();
+            if ws_early_data_header.is_empty() {
+                ws_early_data_header = "Sec-WebSocket-Protocol".to_string();
             }
             path = base_path.to_string();
         }
 
-        if !early_data.is_empty() {
-            let early_data = early_data
+        if !ws_early_data.is_empty() {
+            let early_data = ws_early_data
                 .parse::<u64>()
                 .map_err(|_| "invalid WebSocket early-data size".to_string())?;
             if early_data > u32::MAX as u64 {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
-        if early_data.is_empty() && !early_data_header.is_empty() {
+        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
             return Err("WebSocket early-data header is set without early data".to_string());
         }
     }
@@ -349,23 +351,13 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !host_header.is_empty() {
                 settings["headers"] = json!({ "Host": host_header });
             }
-            let early_data = first_query(
-                url,
-                &["ed", "maxEarlyData", "max_early_data"],
-                Some(""),
-            );
-            let early_data_header = first_query(
-                url,
-                &["eh", "earlyDataHeaderName", "early_data_header_name"],
-                Some(""),
-            );
-            if !early_data.is_empty() {
-                settings["maxEarlyData"] = json!(early_data
+            if !ws_early_data.is_empty() {
+                settings["maxEarlyData"] = json!(ws_early_data
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !early_data_header.is_empty() {
-                settings["earlyDataHeaderName"] = json!(early_data_header);
+            if !ws_early_data_header.is_empty() {
+                settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
         }
@@ -1782,6 +1774,36 @@ mod tests {
         assert_eq!(
             parsed["streamSettings"]["tlsSettings"]["serverName"],
             "edge.example"
+        );
+    }
+
+    #[test]
+    #[test]
+    fn vless_ws_path_early_data_is_normalized() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=/?ed=2560",
+        )
+        .expect("VLESS WS should parse");
+
+        assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
+        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+        assert_eq!(
+            config["streamSettings"]["wsSettings"]["earlyDataHeaderName"],
+            "Sec-WebSocket-Protocol"
+        );
+    }
+
+    #[test]
+    fn vless_ws_long_early_data_parameters_are_preserved() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&max_early_data=2048&early_data_header_name=Sec-WebSocket-Protocol",
+        )
+        .expect("VLESS WS should parse");
+
+        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2048);
+        assert_eq!(
+            config["streamSettings"]["wsSettings"]["earlyDataHeaderName"],
+            "Sec-WebSocket-Protocol"
         );
     }
 
