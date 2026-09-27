@@ -1,4 +1,3 @@
-
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
@@ -116,7 +115,6 @@ fn json_u64(value: Option<&Value>) -> u64 {
     }
 }
 
-
 fn csv(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -128,7 +126,9 @@ fn csv(value: &str) -> Vec<String> {
 
 fn truthy(url: &Url, names: &[&str]) -> bool {
     matches!(
-        first_query(url, names, Some("")).to_ascii_lowercase().as_str(),
+        first_query(url, names, Some(""))
+            .to_ascii_lowercase()
+            .as_str(),
         "1" | "true" | "yes" | "on"
     )
 }
@@ -246,7 +246,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
     match network.as_str() {
         "raw" => {
-            if first_query(url, &["headerType", "header_type"], Some("")).eq_ignore_ascii_case("http") {
+            if first_query(url, &["headerType", "header_type"], Some(""))
+                .eq_ignore_ascii_case("http")
+            {
                 let mut request = json!({});
                 if !path.is_empty() {
                     request["path"] = json!([path]);
@@ -366,9 +368,15 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess endpoint missing".to_string())?;
     let port = match value.get("port") {
-        Some(Value::String(value)) => value.parse::<u16>().map_err(|_| "invalid VMess port".to_string())?,
-        Some(Value::Number(value)) => u16::try_from(value.as_u64().ok_or_else(|| "invalid VMess port".to_string())?)
+        Some(Value::String(value)) => value
+            .parse::<u16>()
             .map_err(|_| "invalid VMess port".to_string())?,
+        Some(Value::Number(value)) => u16::try_from(
+            value
+                .as_u64()
+                .ok_or_else(|| "invalid VMess port".to_string())?,
+        )
+        .map_err(|_| "invalid VMess port".to_string())?,
         _ => return Err("VMess port missing".to_string()),
     };
     if port == 0 {
@@ -382,8 +390,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess UUID missing".to_string())?;
 
-    let network = json_text(value.get("net"))
-        .unwrap_or_else(|| "tcp".to_string());
+    let network = json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string());
     if network.eq_ignore_ascii_case("h2") {
         return Err("VMess h2 transport unsupported".to_string());
     }
@@ -451,7 +458,9 @@ fn urlencoding(value: &str) -> String {
     value
         .bytes()
         .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => vec![byte as char],
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
             _ => format!("%{byte:02X}").chars().collect(),
         })
         .collect()
@@ -479,7 +488,10 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-    if url.query_pairs().any(|(key, _)| key.eq_ignore_ascii_case("plugin")) {
+    if url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+    {
         return Err("Shadowsocks plugins unsupported".to_string());
     }
 
@@ -508,7 +520,8 @@ fn parse_ss(config: &str) -> Result<Value, String> {
         let (method, password) = decoded
             .split_once(':')
             .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
-        let remote_url = Url::parse(&format!("ss://{remote}")).map_err(|error| error.to_string())?;
+        let remote_url =
+            Url::parse(&format!("ss://{remote}")).map_err(|error| error.to_string())?;
         let (host, port) = endpoint_from_url(&remote_url, None)?;
         (host, port, method.to_string(), password.to_string())
     };
@@ -529,10 +542,9 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 fn parse_hy2(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let (host, port) = endpoint_from_url(&url, None)?;
-    if url
-        .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case("obfs") || key.eq_ignore_ascii_case("obfs-password"))
-    {
+    if url.query_pairs().any(|(key, _)| {
+        key.eq_ignore_ascii_case("obfs") || key.eq_ignore_ascii_case("obfs-password")
+    }) {
         return Err("Hysteria2 obfs unsupported by Xray".to_string());
     }
 
@@ -597,7 +609,12 @@ fn parse_wg(config: &str) -> Result<Value, String> {
     let private = if url.username().is_empty() {
         first_query(
             &url,
-            &["privatekey", "private-key", "private_key", "private_key_base64"],
+            &[
+                "privatekey",
+                "private-key",
+                "private_key",
+                "private_key_base64",
+            ],
             Some(""),
         )
     } else {
@@ -649,7 +666,8 @@ fn parse_wg(config: &str) -> Result<Value, String> {
         peer["preSharedKey"] = json!(psk);
     }
 
-    if let Ok(keepalive) = first_query(&url, &["keepalive", "keep-alive"], Some("")).parse::<u64>() {
+    if let Ok(keepalive) = first_query(&url, &["keepalive", "keep-alive"], Some("")).parse::<u64>()
+    {
         peer["keepAlive"] = json!(keepalive);
     }
 
@@ -740,9 +758,14 @@ fn allocated_ports(count: usize) -> Result<Vec<u16>, String> {
     let mut listeners = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|error| error.to_string())?;
-        ports.push(listener.local_addr().map_err(|error| error.to_string())?.port());
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+        ports.push(
+            listener
+                .local_addr()
+                .map_err(|error| error.to_string())?
+                .port(),
+        );
         listeners.push(listener);
     }
 
@@ -896,9 +919,7 @@ async fn probe_request(
             .header("Accept-Encoding", "identity")
             .header("Content-Type", "application/octet-stream")
             .body(body),
-        None => client
-            .get(url)
-            .header("Accept-Encoding", "identity"),
+        None => client.get(url).header("Accept-Encoding", "identity"),
     };
 
     let response = request
@@ -947,23 +968,19 @@ fn target_with(target: &Url, path: &str, query: Option<&str>) -> Url {
 
 async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeError> {
     for retry in 0..=RATE_LIMIT_RETRIES {
-        let download_url = target_with(
-            target,
-            "/__down",
-            Some(&format!("bytes={DOWNLOAD_BYTES}")),
-        );
+        let download_url = target_with(target, "/__down", Some(&format!("bytes={DOWNLOAD_BYTES}")));
 
-        let (download_latency, download_len) =
-            match probe_request(client, download_url, None).await {
-                Ok(value) => value,
-                Err(ProbeError::RateLimited(wait)) if retry < RATE_LIMIT_RETRIES => {
-                    if wait > Duration::ZERO {
-                        sleep(wait).await;
-                    }
-                    continue;
+        let (download_latency, download_len) = match probe_request(client, download_url, None).await
+        {
+            Ok(value) => value,
+            Err(ProbeError::RateLimited(wait)) if retry < RATE_LIMIT_RETRIES => {
+                if wait > Duration::ZERO {
+                    sleep(wait).await;
                 }
-                Err(error) => return Err(error),
-            };
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         if download_len < DOWNLOAD_BYTES {
             return Err(ProbeError::Failed(format!(
@@ -993,7 +1010,6 @@ async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeE
     ))
 }
 
-
 async fn check_batch(
     binary: &str,
     entries: &[(String, Value)],
@@ -1021,12 +1037,12 @@ async fn check_batch(
         .map_err(|error| error.to_string())?;
 
         let mut child = match start_xray(binary, &config_path, &log_path) {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&work);
-            return Err(error);
-        }
-    };
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
         if !ports_ready(&mut child, &local_ports).await {
             let _ = child.kill();
@@ -1108,8 +1124,7 @@ async fn check_batch(
             let remaining_attempts = STABILITY_ATTEMPTS - attempt - 1;
             active.retain(|(config, _, _)| {
                 let wins = successes.get(config).copied().unwrap_or(0);
-                wins < MIN_SUCCESSFUL_TARGETS
-                    && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
+                wins < MIN_SUCCESSFUL_TARGETS && wins + remaining_attempts >= MIN_SUCCESSFUL_TARGETS
             });
         }
 
@@ -1220,10 +1235,7 @@ pub async fn validate_candidates(
     Ok(metadata)
 }
 
-pub fn write_metadata(
-    path: &str,
-    metadata: &HashMap<String, ProxyMetrics>,
-) -> Result<(), String> {
+pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> Result<(), String> {
     let mut output = serde_json::Map::new();
     for (config, metrics) in metadata {
         output.insert(
