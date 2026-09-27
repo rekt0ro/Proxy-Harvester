@@ -510,7 +510,7 @@ mod tests {
             "hysteria2://e@example.org:443".to_string(),
         ];
 
-        let selected = protocol_round_robin(&configs, 5, 1);
+        let selected = protocol_round_robin(&configs, 5, 1, 1);
 
         assert_eq!(selected.len(), 4);
         assert_eq!(selected[0], configs[4]);
@@ -529,7 +529,7 @@ mod tests {
             "hysteria2://e@example.org:443".to_string(),
         ];
 
-        let selected = protocol_round_robin(&configs, 5, 1);
+        let selected = protocol_round_robin(&configs, 5, 1, 1);
 
         assert_eq!(selected.len(), 3);
         assert!(selected.contains(&configs[0]));
