@@ -30,6 +30,7 @@ pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
 pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
 pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 3;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
+pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -1528,6 +1529,7 @@ async fn check_batch_targets(
 
         let mut successes = HashMap::<String, usize>::new();
         let mut attempts = HashMap::<String, usize>::new();
+        let mut late_success_streak = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
         let mut successful_targets = HashMap::<String, HashSet<String>>::new();
 
@@ -1553,13 +1555,16 @@ async fn check_batch_targets(
                 match result {
                     Ok(latency) => {
                         *successes.entry(config.clone()).or_insert(0) += 1;
+                        *late_success_streak.entry(config.clone()).or_insert(0) += 1;
                         latencies.entry(config.clone()).or_default().push(latency);
                         successful_targets
                             .entry(config)
                             .or_default()
                             .extend(target.host_str().into_iter().map(str::to_owned));
                     }
-                    Err(ProbeError::Failed) => {}
+                    Err(ProbeError::Failed) => {
+                        late_success_streak.insert(config.clone(), 0);
+                    }
                 }
             }
 
@@ -1572,8 +1577,12 @@ async fn check_batch_targets(
             let values = latencies.get(config).cloned().unwrap_or_default();
             let wins = successes.get(config).copied().unwrap_or(0);
             let destinations = successful_targets.get(config).map_or(0, HashSet::len);
+            let terminal_streak = late_success_streak.get(config).copied().unwrap_or(0);
+            let terminal_streak_ok = stability_attempts < STRICT_STABILITY_ATTEMPTS
+                || terminal_streak >= STRICT_LATE_SUCCESS_STREAK;
 
             if wins >= min_successful_attempts
+                && terminal_streak_ok
                 && destinations >= min_successful_targets
                 && !values.is_empty()
                 && values.len() >= min_successful_attempts
