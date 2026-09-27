@@ -1007,6 +1007,17 @@ fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
         .map_err(|error| error.to_string())
 }
 
+fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
+    match url.as_str() {
+        PRIMARY_TARGET => body.len() == 16_384,
+        "https://www.google.com/robots.txt" => body
+            .strip_prefix(b"")
+            .is_some_and(|body| body.windows(b"User-agent:".len()).any(|window| window == b"User-agent:")),
+        "https://detectportal.firefox.com/success.txt" => body == b"success",
+        _ => true,
+    }
+}
+
 async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
@@ -1033,7 +1044,10 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     }
 
     let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
-    if body.len() < MIN_RESPONSE_BYTES || body.len() > MAX_RESPONSE_BYTES {
+    if body.len() < MIN_RESPONSE_BYTES
+        || body.len() > MAX_RESPONSE_BYTES
+        || !valid_probe_body(&url, &body)
+    {
         return Err(ProbeError::Failed);
     }
 
@@ -1680,6 +1694,22 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn default_probe_targets_require_expected_payloads() {
+        let primary = Url::parse(PRIMARY_TARGET).expect("primary target should parse");
+        assert!(valid_probe_body(&primary, &vec![0_u8; 16_384]));
+        assert!(!valid_probe_body(&primary, &vec![0_u8; 16_383]));
+
+        let google = Url::parse("https://www.google.com/robots.txt").expect("Google target");
+        assert!(valid_probe_body(&google, b"User-agent: *\nDisallow: /"));
+        assert!(!valid_probe_body(&google, b"blocked by upstream"));
+
+        let firefox =
+            Url::parse("https://detectportal.firefox.com/success.txt").expect("Firefox target");
+        assert!(valid_probe_body(&firefox, b"success"));
+        assert!(!valid_probe_body(&firefox, b"success page"));
+    }
 
     #[test]
     fn vless_percent_encoded_username_is_decoded() {
