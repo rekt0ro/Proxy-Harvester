@@ -2,24 +2,24 @@
 
 Automated collection, validation, and publishing of publicly available proxy configurations.
 
-Built in Rust, with native Rust tooling powering the collection, validation, and publishing pipeline.
+Built entirely in Rust.
 
 ## Subscriptions
 
 ### Light (Recommended)
 
-Up to 200 verified proxy configurations, selected for reliability and performance.
+Up to 200 verified proxy configurations, with additional ranking and filtering.
 
 Plain text:
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light.txt
 ```
 
 Base64:
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/light-base64.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light-base64.txt
 ```
 
 ### All
@@ -29,20 +29,20 @@ All configurations that pass validation.
 Plain text:
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt
 ```
 
 Base64:
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/all-base64.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base64.txt
 ```
 
 ## Validation
 
 All subscriptions are validated through the Rust-based validation pipeline.
 
-Light applies additional verification, ranking, and selection to provide a smaller curated subscription.
+Light applies additional ranking and filtering to provide a smaller curated subscription.
 
 ## Supported Protocols
 
