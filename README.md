@@ -1,9 +1,3 @@
-# ProxyRift
-
-Automated collection, validation, and publishing of publicly available proxy configurations.
-
-Built entirely in Rust.
-
 ## Subscriptions
 
 ### Light (Recommended)
