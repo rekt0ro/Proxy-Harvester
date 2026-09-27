@@ -15,7 +15,7 @@ DISCOVERY_CHUNK_SIZE = 4000
 FINAL_RECHECK_LIMIT = 500
 DEFAULT_SELECTION_LIMIT = 200
 DEFAULT_MAX_PER_ENDPOINT = 1
-PRIMARY_TARGET = "http://cp.cloudflare.com:80/"
+PRIMARY_TARGET = "https://speed.cloudflare.com"
 
 
 def scheme(config):
