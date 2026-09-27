@@ -183,7 +183,9 @@ fn normalize_xhttp_extra(value: Value) -> Value {
                 .map(|(key, value)| (key, normalize_xhttp_extra(value)))
                 .collect(),
         ),
-        Value::Array(values) => Value::Array(values.into_iter().map(normalize_xhttp_extra).collect()),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(normalize_xhttp_extra).collect())
+        }
         Value::Number(number) => {
             if number.as_i64().is_some() {
                 return Value::Number(number);
@@ -1351,18 +1353,17 @@ async fn validate_candidates_targets_inner(
             stability_attempts
         );
 
-        let batch_metadata =
-            check_batch_targets(
-                binary,
-                batch,
-                &targets,
-                workers.max(1),
-                timeout_seconds,
-                stability_attempts,
-                min_successful_attempts,
-                min_successful_targets,
-            )
-            .await?;
+        let batch_metadata = check_batch_targets(
+            binary,
+            batch,
+            &targets,
+            workers.max(1),
+            timeout_seconds,
+            stability_attempts,
+            min_successful_attempts,
+            min_successful_targets,
+        )
+        .await?;
         metadata.extend(batch_metadata);
     }
 
