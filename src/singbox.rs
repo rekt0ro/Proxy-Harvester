@@ -687,6 +687,17 @@ fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, Strin
         .map_err(|error| error.to_string())
 }
 
+fn valid_probe_body(url: &str, body: &[u8]) -> bool {
+    match url {
+        "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
+        "https://www.google.com/robots.txt" => body
+            .windows(b"User-agent:".len())
+            .any(|window| window == b"User-agent:"),
+        "https://detectportal.firefox.com/success.txt" => body == b"success",
+        _ => true,
+    }
+}
+
 async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     let started = std::time::Instant::now();
     let response = client
@@ -712,8 +723,11 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
 
     let body = response.bytes().await.map_err(|error| error.to_string())?;
 
-    if body.len() < MIN_RESPONSE_BYTES || body.len() > MAX_RESPONSE_BYTES {
-        return Err("response body is empty or exceeds validation limit".to_string());
+    if body.len() < MIN_RESPONSE_BYTES
+        || body.len() > MAX_RESPONSE_BYTES
+        || !valid_probe_body(url, &body)
+    {
+        return Err("response body is empty, exceeds validation limit, or is not the expected probe payload".to_string());
     }
 
     Ok(started.elapsed().as_secs_f64() * 1000.0)
@@ -1284,6 +1298,34 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_probe_targets_require_expected_payloads() {
+        assert!(valid_probe_body(
+            "https://speed.cloudflare.com/__down?bytes=16384",
+            &vec![0_u8; 16_384]
+        ));
+        assert!(!valid_probe_body(
+            "https://speed.cloudflare.com/__down?bytes=16384",
+            &vec![0_u8; 16_383]
+        ));
+        assert!(valid_probe_body(
+            "https://www.google.com/robots.txt",
+            b"User-agent: *\nDisallow: /"
+        ));
+        assert!(!valid_probe_body(
+            "https://www.google.com/robots.txt",
+            b"blocked by upstream"
+        ));
+        assert!(valid_probe_body(
+            "https://detectportal.firefox.com/success.txt",
+            b"success"
+        ));
+        assert!(!valid_probe_body(
+            "https://detectportal.firefox.com/success.txt",
+            b"success page"
+        ));
+    }
 
     #[test]
     fn maps_vmess_empty_security_to_auto() {
