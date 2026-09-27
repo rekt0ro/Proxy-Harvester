@@ -574,7 +574,7 @@ async fn main() -> Result<(), String> {
                 "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
                 selected.len()
             );
-            write_lines(&output, &selected)?;
+            write_light_lines(&output, &selected)?;
             println!(
                 "[INFO] Published {} Light configs from {} globally verified candidates.",
                 selected.len(),
