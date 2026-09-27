@@ -656,8 +656,7 @@ mod tests {
 
     #[test]
     fn routes_normal_vless_to_singbox() {
-        let config =
-            "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::SingBox);
     }
 
