@@ -206,7 +206,7 @@ jobs:
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
             --selected-workers 10 \
             --selected-batch-size 500 \
-            --primary-target http://cp.cloudflare.com/ \
+            --primary-target https://cp.cloudflare.com/ \
             --singbox "$HOME/.local/bin/sing-box" \
             --selection-limit 200 \
             --max-per-endpoint 1
