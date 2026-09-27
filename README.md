@@ -22,6 +22,10 @@ https://raw.githubusercontent.com/rekt0ro/Proxy-Harvester/main/subscriptions/lig
 
 Light validation is implemented entirely in Rust. Each candidate is tested through Xray with a real HTTPS transaction: a tiny 4 KiB download and 1 KiB upload. A candidate can pass early after two successful attempts, while impossible candidates are stopped early. Candidates are processed in adaptive 1,000-config discovery waves, with a hard 4,000-candidate ceiling. Later waves are only tested when the current final pool does not fill the 200-slot Light subscription.
 
+Cloudflare HTTP 429 responses are handled with a shared process-wide backoff. The validator uses the server's `Retry-After` value when present, falls back to a conservative 5-second delay, and caps any single wait at 5 minutes. A 429 backoff is shared across concurrent workers so they do not immediately continue sending requests.
+
+The normal scheduled update runs every 2 hours with the full 4,000-candidate ceiling. Manual workflow runs default to 1,000 candidates and expose 500, 1,000, 2,000, and 4,000 as explicit choices for faster development checks.
+
 The validator prioritizes reliability first, then median latency, then minimum latency. Final selection is limited to one config per parsed endpoint.
 
 ### All

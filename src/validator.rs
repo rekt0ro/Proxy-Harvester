@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -21,7 +22,11 @@ pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_RETRIES: usize = 1;
-pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(2);
+pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
+pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
+pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(300);
+
+static RATE_LIMIT_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct ProxyMetrics {
@@ -33,7 +38,7 @@ pub struct ProxyMetrics {
 
 #[derive(Debug)]
 enum ProbeError {
-    RateLimited(Duration),
+    RateLimited,
     Failed(String),
 }
 
@@ -912,6 +917,7 @@ async fn probe_request(
     url: Url,
     body: Option<Vec<u8>>,
 ) -> Result<(f64, usize), ProbeError> {
+    wait_for_rate_limit().await;
     let started = Instant::now();
     let request = match body {
         Some(body) => client
@@ -928,16 +934,9 @@ async fn probe_request(
         .map_err(|error| ProbeError::Failed(error.to_string()))?;
 
     if response.status().as_u16() == 429 {
-        let retry = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .map(Duration::from_secs_f64)
-            .unwrap_or(Duration::ZERO)
-            .min(RATE_LIMIT_MAX_WAIT);
-        return Err(ProbeError::RateLimited(retry));
+        let retry = rate_limit_wait(response.headers());
+        extend_rate_limit(retry);
+        return Err(ProbeError::RateLimited);
     }
 
     if !response.status().is_success() {
@@ -973,10 +972,8 @@ async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeE
         let (download_latency, download_len) = match probe_request(client, download_url, None).await
         {
             Ok(value) => value,
-            Err(ProbeError::RateLimited(wait)) if retry < RATE_LIMIT_RETRIES => {
-                if wait > Duration::ZERO {
-                    sleep(wait).await;
-                }
+            Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
+                wait_for_rate_limit().await;
                 continue;
             }
             Err(error) => return Err(error),
@@ -993,10 +990,8 @@ async fn functional_attempt(client: &Client, target: &Url) -> Result<f64, ProbeE
 
         let (upload_latency, _) = match probe_request(client, upload_url, Some(upload_body)).await {
             Ok(value) => value,
-            Err(ProbeError::RateLimited(wait)) if retry < RATE_LIMIT_RETRIES => {
-                if wait > Duration::ZERO {
-                    sleep(wait).await;
-                }
+            Err(ProbeError::RateLimited) if retry < RATE_LIMIT_RETRIES => {
+                wait_for_rate_limit().await;
                 continue;
             }
             Err(error) => return Err(error),
@@ -1119,7 +1114,7 @@ async fn check_batch(
                     }
                     Err(error) => {
                         let message = match error {
-                            ProbeError::RateLimited(_) => "target rate limited".to_string(),
+                            ProbeError::RateLimited => "target rate limited".to_string(),
                             ProbeError::Failed(message) => message,
                         };
                         errors.insert(config, message);
@@ -1264,6 +1259,7 @@ pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> R
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
+    use reqwest::header::{HeaderMap, HeaderValue};
 
     #[test]
     fn vless_percent_encoded_username_is_decoded() {
@@ -1334,5 +1330,22 @@ mod tests {
             endpoint(&config).expect("VMess endpoint"),
             ("proxy.example".to_string(), 8443)
         );
+    }
+
+    #[test]
+    fn retry_after_is_conservative_and_bounded() {
+        let mut headers = HeaderMap::new();
+
+        headers.insert("retry-after", HeaderValue::from_static("30"));
+        assert_eq!(rate_limit_wait(&headers), Duration::from_secs(30));
+
+        headers.insert("retry-after", HeaderValue::from_static("0"));
+        assert_eq!(rate_limit_wait(&headers), RATE_LIMIT_MIN_WAIT);
+
+        headers.insert("retry-after", HeaderValue::from_static("900"));
+        assert_eq!(rate_limit_wait(&headers), RATE_LIMIT_MAX_WAIT);
+
+        headers.insert("retry-after", HeaderValue::from_static("invalid"));
+        assert_eq!(rate_limit_wait(&headers), RATE_LIMIT_DEFAULT_WAIT);
     }
 }
