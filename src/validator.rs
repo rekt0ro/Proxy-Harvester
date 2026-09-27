@@ -340,7 +340,12 @@ fn parse_vless(config: &str) -> Result<Value, String> {
     });
     let flow = first_query(&url, &["flow"], Some(""));
     if !flow.is_empty() {
-        user["flow"] = json!(flow);
+        match flow.as_str() {
+            "xtls-rprx-vision" | "xtls-rprx-vision-udp443" => {
+                user["flow"] = json!(flow);
+            }
+            _ => return Err(format!("unsupported VLESS flow {flow}")),
+        }
     }
     Ok(json!({
         "protocol": "vless",
@@ -1438,14 +1443,22 @@ mod tests {
 
     #[test]
     fn ignores_removed_allow_insecure_hysteria2_option() {
-        let config = parse_hy2(
-            "hysteria2://password@example.com:443?insecure=1&sni=example.com",
-        )
-        .expect("Hysteria2 TLS should parse");
+        let config =
+            parse_hy2("hysteria2://password@example.com:443?insecure=1&sni=example.com")
+                .expect("Hysteria2 TLS should parse");
 
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
             .is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_vless_flow() {
+        let result = parse_vless(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-direct-udp443",
+        );
+
+        assert!(result.is_err());
     }
 
 }
