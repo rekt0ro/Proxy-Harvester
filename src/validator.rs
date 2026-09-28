@@ -234,32 +234,37 @@ pub fn config_label(config: &str) -> String {
     }
 }
 
-fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
+fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
     let rest = config.split_once("://")?.1;
-    let authority = rest.split(['?', '/']).next()?.split('#').next()?;
-    let host_port = authority
+    let authority = rest.split(['?', '#', '/']).next()?;
+    let (auth_raw, host_port) = authority
         .rsplit_once('@')
-        .map(|(_, value)| value)
-        .unwrap_or(authority);
+        .map(|(auth, host)| (auth, host))
+        .unwrap_or(("", authority));
 
     let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
         let (host, remainder) = stripped.split_once(']')?;
         if host.is_empty() || host.chars().any(char::is_whitespace) {
             return None;
         }
-        (host.to_string(), remainder.strip_prefix(':').unwrap_or(""))
+        (host.to_string(), remainder.strip_prefix(':').unwrap_or("").to_string())
     } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
         if host.is_empty() || host.contains(':') || host.chars().any(char::is_whitespace) {
             return None;
         }
-        (host.to_string(), port_spec)
+        (host.to_string(), port_spec.to_string())
     } else {
         if host_port.is_empty() || host_port.chars().any(char::is_whitespace) {
             return None;
         }
-        (host_port.to_string(), "")
+        (host_port.to_string(), String::new())
     };
 
+    Some((host, port_spec, auth_raw.to_string()))
+}
+
+fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
+    let (host, port_spec, _) = hysteria2_parts(config)?;
     let port = if port_spec.is_empty() {
         443
     } else {
@@ -749,35 +754,158 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 }
 
 fn parse_hy2(config: &str) -> Result<Value, String> {
-    let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-    let (host, port) = endpoint_from_url(&url, None)?;
-    if url.query_pairs().any(|(key, _)| {
-        key.eq_ignore_ascii_case("obfs") || key.eq_ignore_ascii_case("obfs-password")
-    }) {
-        return Err("Hysteria2 obfs unsupported by Xray".to_string());
-    }
+    let (host, port_spec, auth_raw) =
+        hysteria2_parts(config).ok_or_else(|| "invalid Hysteria2 URL".to_string())?;
 
-    let mut password = decode_component(url.username());
-    if let Some(pass) = url.password() {
-        if !password.is_empty() {
-            password.push(':');
-        }
-        password.push_str(&decode_component(pass));
-    }
+    let password = percent_decode_str(&auth_raw)
+        .decode_utf8()
+        .map_err(|error| error.to_string())?
+        .into_owned();
     if password.is_empty() {
         return Err("Hysteria2 password missing".to_string());
     }
 
+    let mut first_port = 443u16;
+    let mut has_port_hopping = false;
+    if !port_spec.is_empty() {
+        for (index, entry) in port_spec
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .enumerate()
+        {
+            if let Some((start, end)) = entry.split_once('-') {
+                let start = start
+                    .parse::<u16>()
+                    .map_err(|_| "invalid Hysteria2 port range".to_string())?;
+                let end = end
+                    .parse::<u16>()
+                    .map_err(|_| "invalid Hysteria2 port range".to_string())?;
+                if start == 0 || end == 0 || start > end {
+                    return Err("invalid Hysteria2 port range".to_string());
+                }
+                if index == 0 {
+                    first_port = start;
+                }
+                has_port_hopping = true;
+            } else {
+                let port = entry
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port != 0)
+                    .ok_or_else(|| "invalid Hysteria2 port".to_string())?;
+                if index == 0 {
+                    first_port = port;
+                }
+                if entry.contains(',') {
+                    has_port_hopping = true;
+                }
+            }
+        }
+
+        if port_spec.contains(',') {
+            has_port_hopping = true;
+        }
+    }
+
+    let rest = config.split_once("://").map(|(_, rest)| rest).unwrap_or("");
+    let query = rest
+        .split_once('?')
+        .map(|(_, value)| value.split('#').next().unwrap_or(value))
+        .unwrap_or("");
+
+    let mut sni = host.clone();
+    let mut alpn = Vec::new();
+    let mut fingerprint = String::new();
+    let mut insecure = false;
+    let mut obfs = None;
+    let mut obfs_password = None;
+
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.to_ascii_lowercase().as_str() {
+            "sni" | "server_name" => {
+                if !value.is_empty() {
+                    sni = value.into_owned();
+                }
+            }
+            "alpn" => {
+                alpn.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned),
+                );
+            }
+            "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true
+            }
+            "obfs" => obfs = Some(value.into_owned()),
+            "obfs-password" => obfs_password = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
     let mut tls = json!({
-        "serverName": first_query(&url, &["sni", "server_name"], Some(&host)),
+        "serverName": sni,
     });
-    let alpn = csv(&first_query(&url, &["alpn"], Some("")));
+    if insecure {
+        tls["allowInsecure"] = json!(true);
+    }
     if !alpn.is_empty() {
         tls["alpn"] = json!(alpn);
     }
-    let fp = first_query(&url, &["fp", "fingerprint"], Some(""));
-    if !fp.is_empty() {
-        tls["fingerprint"] = json!(fp);
+    if !fingerprint.is_empty() {
+        tls["fingerprint"] = json!(fingerprint);
+    }
+
+    let mut stream_settings = json!({
+        "network": "hysteria",
+        "security": "tls",
+        "tlsSettings": tls,
+        "hysteriaSettings": {
+            "version": 2,
+            "auth": password,
+        }
+    });
+
+    let mut finalmask = json!({});
+    if let Some(obfs_type) = obfs.filter(|value| !value.is_empty()) {
+        let obfs_type = obfs_type.to_ascii_lowercase();
+        if !matches!(obfs_type.as_str(), "salamander" | "gecko") {
+            return Err(format!("unsupported Hysteria2 obfs type {obfs_type}"));
+        }
+
+        let obfs_password = obfs_password
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Hysteria2 obfs password missing".to_string())?;
+        finalmask["udp"] = json!([{
+            "type": obfs_type,
+            "settings": {
+                "password": obfs_password,
+            }
+        }]);
+    } else if obfs_password.is_some() {
+        return Err("Hysteria2 obfs-password requires obfs".to_string());
+    }
+
+    if has_port_hopping {
+        finalmask["quicParams"] = json!({
+            "udpHop": {
+                "ports": port_spec,
+                "interval": 30,
+            }
+        });
+    }
+
+    if !finalmask.as_object().is_some_and(|object| object.is_empty()) {
+        stream_settings["finalmask"] = finalmask;
     }
 
     Ok(json!({
@@ -785,17 +913,9 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
         "settings": {
             "version": 2,
             "address": host,
-            "port": port,
+            "port": first_port,
         },
-        "streamSettings": {
-            "network": "hysteria",
-            "security": "tls",
-            "tlsSettings": tls,
-            "hysteriaSettings": {
-                "version": 2,
-                "auth": password,
-            }
-        }
+        "streamSettings": stream_settings,
     }))
 }
 
@@ -2226,6 +2346,43 @@ mod tests {
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
             .is_none());
+    }
+
+    #[test]
+    fn parses_hysteria2_obfuscation_and_port_hopping() {
+        let config = parse_hy2(
+            "hysteria2://password@example.com:1234,5000-6000?obfs=salamander&obfs-password=secret&insecure=1",
+        )
+        .expect("Hysteria2 obfuscation and port hopping should parse");
+
+        assert_eq!(config["settings"]["port"], 1234);
+        assert_eq!(
+            config["streamSettings"]["finalmask"]["udp"][0]["type"],
+            "salamander"
+        );
+        assert_eq!(
+            config["streamSettings"]["finalmask"]["udp"][0]["settings"]["password"],
+            "secret"
+        );
+        assert_eq!(
+            config["streamSettings"]["finalmask"]["quicParams"]["udpHop"]["ports"],
+            "1234,5000-6000"
+        );
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
+    }
+
+    #[test]
+    fn parses_hysteria2_with_default_port() {
+        let config = parse_hy2("hy2://password@example.com").expect("Hysteria2 should parse");
+
+        assert_eq!(config["settings"]["port"], 443);
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["serverName"],
+            "example.com"
+        );
     }
 
     #[test]
