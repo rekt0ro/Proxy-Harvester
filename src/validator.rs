@@ -833,34 +833,33 @@ fn parse_ss(config: &str) -> Result<Value, String> {
             .ok_or_else(|| "invalid Shadowsocks payload".to_string())?
             .1;
 
-        let (method, password, remote) = if let Some((credentials, remote)) =
-            payload.rsplit_once('@')
-        {
-            // SIP002: base64(method:password)@host:port. The credentials may be
-            // percent-encoded (`%3D` for padding), so decode that first.
-            let decoded = String::from_utf8(
-                b64decode(&decode_component(credentials))
-                    .ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
-            )
-            .map_err(|error| error.to_string())?;
-            let (method, password) = decoded
-                .split_once(':')
-                .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
+        let (method, password, remote) =
+            if let Some((credentials, remote)) = payload.rsplit_once('@') {
+                // SIP002: base64(method:password)@host:port. The credentials may be
+                // percent-encoded (`%3D` for padding), so decode that first.
+                let decoded = String::from_utf8(
+                    b64decode(&decode_component(credentials))
+                        .ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let (method, password) = decoded
+                    .split_once(':')
+                    .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
 
-            (method.to_string(), password.to_string(), remote.to_string())
-        } else {
-            // Legacy: base64(method:password@host:port) with no authority.
-            let decoded = ss_legacy_decode(payload)
-                .ok_or_else(|| "invalid Shadowsocks base64".to_string())?;
-            let (credentials, remote) = decoded
-                .rsplit_once('@')
-                .ok_or_else(|| "invalid Shadowsocks payload".to_string())?;
-            let (method, password) = credentials
-                .split_once(':')
-                .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
+                (method.to_string(), password.to_string(), remote.to_string())
+            } else {
+                // Legacy: base64(method:password@host:port) with no authority.
+                let decoded = ss_legacy_decode(payload)
+                    .ok_or_else(|| "invalid Shadowsocks base64".to_string())?;
+                let (credentials, remote) = decoded
+                    .rsplit_once('@')
+                    .ok_or_else(|| "invalid Shadowsocks payload".to_string())?;
+                let (method, password) = credentials
+                    .split_once(':')
+                    .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
 
-            (method.to_string(), password.to_string(), remote.to_string())
-        };
+                (method.to_string(), password.to_string(), remote.to_string())
+            };
 
         let remote_url =
             Url::parse(&format!("ss://{remote}")).map_err(|error| error.to_string())?;
@@ -2555,10 +2554,7 @@ mod tests {
             STANDARD.encode("aes-256-gcm:secret@example.com:8388")
         );
 
-        assert_eq!(
-            endpoint(&config),
-            Some(("example.com".to_string(), 8388))
-        );
+        assert_eq!(endpoint(&config), Some(("example.com".to_string(), 8388)));
 
         let parsed = parse_config(&config).expect("legacy Shadowsocks should parse");
         assert_eq!(parsed["settings"]["servers"][0]["method"], "aes-256-gcm");
