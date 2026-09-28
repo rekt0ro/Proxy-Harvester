@@ -179,6 +179,19 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
     endpoint_from_url(&url, default).ok()
 }
 
+pub fn config_label(config: &str) -> String {
+    let scheme = config
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match endpoint(config) {
+        Some((host, port)) if host.contains(':') => format!("{scheme}://[{host}]:{port}"),
+        Some((host, port)) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://<invalid>"),
+    }
+}
+
 fn normalize_xhttp_extra(value: Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -1379,7 +1392,7 @@ async fn validate_candidates_targets_inner(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {config} :: {reason}");
+        println!("rejected: {} :: {reason}", config_label(config));
     }
 
     if !rejected.is_empty() {
@@ -1664,7 +1677,7 @@ async fn validate_candidates_inner(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {config} :: {reason}");
+        println!("rejected: {} :: {reason}", config_label(config));
     }
 
     if !rejected.is_empty() {
@@ -1871,6 +1884,14 @@ mod tests {
             endpoint("socks5://127.0.0.1").expect("SOCKS endpoint"),
             ("127.0.0.1".to_string(), 1080)
         );
+        assert_eq!(
+            endpoint("http://127.0.0.1").expect("HTTP endpoint"),
+            ("127.0.0.1".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn endpoint_defaults_match_proxy_parser() {
         assert_eq!(
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
             ("127.0.0.1".to_string(), 8080)

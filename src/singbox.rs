@@ -1,6 +1,7 @@
 use crate::validator::ProxyMetrics;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use crate::validator::config_label;
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -1149,7 +1150,7 @@ async fn validate_candidates_with_targets_policy(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {config} :: {reason}");
+        println!("sing-box rejected: {} :: {reason}", config_label(config));
     }
 
     if parsed.is_empty() {
@@ -1236,7 +1237,7 @@ pub async fn validate_candidates_with_settings(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {config} :: {reason}");
+        println!("sing-box rejected: {} :: {reason}", config_label(config));
     }
 
     if parsed.is_empty() {

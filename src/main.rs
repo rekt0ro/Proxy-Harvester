@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use proxyrift::validator::{config_label, endpoint};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
 use quinn::crypto::rustls::QuicClientConfig;
@@ -56,28 +57,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut source_results = stream::iter(sources.iter().cloned())
         .map(|url| {
             let client = client.clone();
+            let source_label = source_label(&url);
             async move {
-                println!("[INFO] Downloading {url}");
+                println!("[INFO] Downloading source {source_label}");
                 match client.get(&url).send().await {
                     Ok(response) => match response.error_for_status() {
                         Ok(response) => match response.text().await {
                             Ok(text) => {
                                 let configs = extract_configs(&text);
-                                println!("[INFO] Found {} configs from {url}.", configs.len());
+                                println!(
+                                    "[INFO] Found {} configs from source {source_label}.",
+                                    configs.len()
+                                );
                                 configs
                             }
                             Err(error) => {
-                                println!("[WARN] Failed to read {url}: {error}");
+                                println!("[WARN] Failed to read source {source_label}: {error}");
                                 Vec::new()
                             }
                         },
                         Err(error) => {
-                            println!("[WARN] Failed to download {url}: {error}");
+                            println!("[WARN] Failed to download source {source_label}: {error}");
                             Vec::new()
                         }
                     },
                     Err(error) => {
-                        println!("[WARN] Failed to download {url}: {error}");
+                        println!("[WARN] Failed to download source {source_label}: {error}");
                         Vec::new()
                     }
                 }
@@ -799,38 +804,11 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn endpoint(config: &str) -> Option<(String, u16)> {
-    let url = Url::parse(config).ok()?;
-    let scheme = url.scheme().to_ascii_lowercase();
-
-    if scheme == "vmess" {
-        let encoded = config.split_once("://")?.1.split('#').next()?.trim();
-        let decoded = decode_vmess_payload(encoded)?;
-        let value: Value = serde_json::from_str(&decoded).ok()?;
-
-        let add = value.get("add")?.as_str()?.trim().to_string();
-        let port = match value.get("port") {
-            Some(Value::String(port)) => port.parse::<u16>().ok()?,
-            Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
-            _ => return None,
-        };
-
-        if add.is_empty() || port == 0 {
-            return None;
-        }
-
-        return Some((add, port));
-    }
-
-    let host = url.host_str()?.to_string();
-    let port = url.port().or_else(|| match scheme.as_str() {
-        "http" => Some(80),
-        "https" => Some(443),
-        "socks" | "socks4" | "socks5" | "socks5h" => Some(1080),
-        _ => None,
-    })?;
-
-    Some((host, port))
+fn source_label(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "<invalid source>".to_string())
 }
 async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
@@ -1306,7 +1284,7 @@ async fn diagnose_configs(configs: &[String]) {
             "[DIAG] Sample {} [{}]: {}",
             index + 1,
             config_scheme(config),
-            config
+            config_label(config)
         );
         println!(
             "[DIAG] Transport result: {}",
