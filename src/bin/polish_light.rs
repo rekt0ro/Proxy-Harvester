@@ -197,22 +197,32 @@ fn normalize_light_config(config: &str) -> String {
 
     if url
         .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case("security"))
+        .any(|(key, value)| key.eq_ignore_ascii_case("security") && !value.trim().is_empty())
     {
         return config.to_string();
     }
 
-    let separator = if base.contains('?') {
-        if base.ends_with('?') {
-            ""
-        } else {
-            "&"
-        }
-    } else {
-        "?"
-    };
+    let query_parts = url
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            let mut pairs = url::form_urlencoded::parse(part.as_bytes());
+            !matches!(
+                pairs.next(),
+                Some((key, value))
+                    if key.eq_ignore_ascii_case("security") && value.trim().is_empty()
+            )
+        })
+        .collect::<Vec<_>>();
 
-    format!("{base}{separator}security=tls{fragment}")
+    let path = base.split_once('?').map(|(path, _)| path).unwrap_or(base);
+    if query_parts.is_empty() {
+        format!("{path}?security=tls{fragment}")
+    } else {
+        format!("{path}?{}&security=tls{fragment}", query_parts.join("&"))
+    }
 }
 
 fn write_light_lines(output: &str, values: &[String]) -> Result<(), String> {
@@ -906,6 +916,14 @@ mod tests {
         assert_eq!(
             normalize_light_config("trojan://pass@example.com:443?security=tls"),
             "trojan://pass@example.com:443?security=tls"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?security="),
+            "trojan://pass@example.com:443?security=tls"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?path=%2Fa%3Fb&security="),
+            "trojan://pass@example.com:443?path=%2Fa%3Fb&security=tls"
         );
     }
 
