@@ -155,11 +155,7 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
     let url = Url::parse(clean(config)).ok()?;
 
-    if url
-        .scheme()
-        .eq_ignore_ascii_case("hysteria2")
-        || url.scheme().eq_ignore_ascii_case("hy2")
-    {
+    if url.scheme().eq_ignore_ascii_case("hysteria2") || url.scheme().eq_ignore_ascii_case("hy2") {
         return hysteria2_probe_endpoint(clean(config));
     }
 
