@@ -2090,7 +2090,7 @@ mod tests {
         let private_key = STANDARD.encode([7_u8; 32]);
         let public_key = STANDARD.encode([9_u8; 32]);
         let config = format!(
-            "wg://unused@[2001:db8::1]:51820?privatekey={private_key}&publickey={public_key}"
+            "wg://[2001:db8::1]:51820?privatekey={private_key}&publickey={public_key}"
         );
 
         let parsed = parse_config(&config).expect("WireGuard IPv6 endpoint should parse");
