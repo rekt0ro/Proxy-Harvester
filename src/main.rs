@@ -248,14 +248,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let sampled_transport_count = light_candidates.len();
 
-    for config in hysteria2_candidates {
+    for config in &hysteria2_candidates {
         if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
             break;
         }
 
-        if let Some(ep) = endpoint(&config) {
+        if let Some(ep) = endpoint(config) {
             if light_candidate_endpoints.insert(ep) {
-                light_candidates.push(config);
+                light_candidates.push(config.clone());
             }
         }
     }
@@ -274,17 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
-    let mut working_configs = Vec::with_capacity(MAX_ALL_CONFIGS.min(ranked_working_configs.len()));
-    let mut seen = HashSet::new();
-
-    for (config, _) in ranked_working_configs {
-        if seen.insert(config.clone()) {
-            working_configs.push(config);
-            if working_configs.len() >= MAX_ALL_CONFIGS {
-                break;
-            }
-        }
-    }
+    let working_configs = select_all_candidates(&ranked_working_configs, &hysteria2_candidates);
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
@@ -979,6 +969,25 @@ mod tests {
     }
 
     #[test]
+    fn all_candidates_include_hysteria2_after_transport_screening() {
+        let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
+        let hysteria2 = vec![
+            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret".to_string(),
+        ];
+
+        let selected = super::select_all_candidates(&working, &hysteria2);
+
+        assert_eq!(
+            selected,
+            vec![
+                "vless://uuid@example.com:443".to_string(),
+                "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn hysteria2_probe_ports_supports_port_hopping() {
         assert_eq!(
             super::hysteria2_probe_ports("hy2://password@example.com"),
@@ -1005,6 +1014,34 @@ mod tests {
         assert!(ports.contains(&1000));
         assert!(ports.contains(&65000));
     }
+}
+
+fn select_all_candidates(
+    ranked_working_configs: &[(String, u64)],
+    hysteria2_candidates: &[String],
+) -> Vec<String> {
+    let mut selected = Vec::with_capacity(MAX_ALL_CONFIGS);
+    let mut seen = HashSet::new();
+
+    for (config, _) in ranked_working_configs {
+        if selected.len() >= MAX_ALL_CONFIGS {
+            break;
+        }
+        if seen.insert(config.clone()) {
+            selected.push(config.clone());
+        }
+    }
+
+    for config in hysteria2_candidates {
+        if selected.len() >= MAX_ALL_CONFIGS {
+            break;
+        }
+        if seen.insert(config.clone()) {
+            selected.push(config.clone());
+        }
+    }
+
+    selected
 }
 
 fn config_scheme(config: &str) -> String {
