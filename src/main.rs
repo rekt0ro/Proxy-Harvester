@@ -80,56 +80,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let source_number = source_index + 1;
                 println!("[INFO] Downloading source #{source_number}");
                 match client.get(&url).send().await {
-                    Ok(response) => match response.error_for_status() {
-                        Ok(response) => {
-                            if response
-                                .content_length()
-                                .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
-                            {
+                    Ok(response) => {
+                        let status = response.status();
+                        if !status.is_success() {
+                            println!(
+                                "[WARN] Source #{source_number} returned HTTP status {status}"
+                            );
+                            return Vec::new();
+                        }
+
+                        if response
+                            .content_length()
+                            .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
+                        {
+                            println!(
+                                "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
+                                MAX_SOURCE_BYTES
+                            );
+                            return Vec::new();
+                        }
+
+                        match read_source_body(response).await {
+                            Ok(bytes) => match String::from_utf8(bytes) {
+                                Ok(text) => {
+                                    let configs = extract_configs(&text);
+                                    println!(
+                                        "[INFO] Found {} configs from source #{source_number}.",
+                                        configs.len()
+                                    );
+                                    configs
+                                }
+                                Err(error) => {
+                                    println!(
+                                        "[WARN] Failed to decode source #{source_number} as UTF-8: {error}"
+                                    );
+                                    Vec::new()
+                                }
+                            },
+                            Err(SourceBodyError::TooLarge) => {
                                 println!(
                                     "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
                                     MAX_SOURCE_BYTES
                                 );
-                                return Vec::new();
+                                Vec::new()
                             }
-
-                            match read_source_body(response).await {
-                                Ok(bytes) => match String::from_utf8(bytes) {
-                                    Ok(text) => {
-                                        let configs = extract_configs(&text);
-                                        println!(
-                                            "[INFO] Found {} configs from source #{source_number}.",
-                                            configs.len()
-                                        );
-                                        configs
-                                    }
-                                    Err(error) => {
-                                        println!(
-                                            "[WARN] Failed to decode source #{source_number} as UTF-8: {error}"
-                                        );
-                                        Vec::new()
-                                    }
-                                },
-                                Err(SourceBodyError::TooLarge) => {
-                                    println!(
-                                        "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
-                                        MAX_SOURCE_BYTES
-                                    );
-                                    Vec::new()
-                                }
-                                Err(SourceBodyError::Read(error)) => {
-                                    println!("[WARN] Failed to read source #{source_number}: {error}");
-                                    Vec::new()
-                                }
+                            Err(SourceBodyError::Read(_)) => {
+                                println!("[WARN] Failed to read source #{source_number}.");
+                                Vec::new()
                             }
-                        },
-                        Err(error) => {
-                            println!("[WARN] Failed to download source #{source_number}: {error}");
-                            Vec::new()
                         }
-                    },
-                    Err(error) => {
-                        println!("[WARN] Failed to download source #{source_number}: {error}");
+                    }
+                    Err(_error) => {
+                        println!("[WARN] Failed to download source #{source_number}.");
                         Vec::new()
                     }
                 }
