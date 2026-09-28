@@ -253,7 +253,7 @@ jobs:
       - name: Generate Base64 subscriptions
         run: ./target/release/encode_subscriptions
 
-      # Only the four published files leave this job (never sources.txt or temp files).
+      # Only the published subscriptions and bounded Light history leave this job.
       - name: Upload subscriptions
         uses: actions/upload-artifact@v6
         with:
@@ -263,6 +263,7 @@ jobs:
             subscriptions/light.txt
             subscriptions/all-base64.txt
             subscriptions/light-base64.txt
+            subscriptions/light-history.json
           if-no-files-found: error
           retention-days: 1
 
@@ -270,7 +271,7 @@ jobs:
         if: always()
         run: |
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
-          rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next
+          rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
   # Job 2: the ONLY job with a write token. It just copies four files and pushes.
   publish:
@@ -301,6 +302,11 @@ jobs:
             test -s "${src}/${f}"
             cp "${src}/${f}" "subscriptions/${f}"
           done
+
+          if [ -s "${src}/light-history.json" ]; then
+            cp "${src}/light-history.json" "subscriptions/light-history.json"
+            git add -- "subscriptions/light-history.json"
+          fi
 
           git config user.name "rekt0ro"
           git config user.email "104654981+rekt0ro@users.noreply.github.com"

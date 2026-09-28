@@ -1081,7 +1081,7 @@ fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     }
 }
 
-async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
+async fn request_url(client: &Client, url: &str) -> Result<crate::validator::ProbeSample, String> {
     wait_for_rate_limit().await;
     let started = std::time::Instant::now();
     let response = client
@@ -1120,7 +1120,10 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         );
     }
 
-    Ok(started.elapsed().as_secs_f64() * 1000.0)
+    Ok(crate::validator::ProbeSample {
+        latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+        bytes: body.len(),
+    })
 }
 
 async fn check_batch_targets(
@@ -1203,6 +1206,7 @@ async fn check_batch_targets(
         let mut attempts = vec![0usize; count];
         let mut late_streak = vec![0usize; count];
         let mut latencies = vec![Vec::<f64>::new(); count];
+        let mut throughputs = vec![Vec::<f64>::new(); count];
         let mut active = (0..count).collect::<Vec<_>>();
 
         for attempt in 0..policy.stability_attempts {
@@ -1241,10 +1245,14 @@ async fn check_batch_targets(
             for (entry_index, result) in results {
                 attempts[entry_index] += 1;
                 match result {
-                    Ok(latency) => {
+                    Ok(sample) => {
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
-                        latencies[entry_index].push(latency);
+                        latencies[entry_index].push(sample.latency_ms);
+                        if targets[0] == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                            throughputs[entry_index]
+                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                        }
                     }
                     Err(_) => late_streak[entry_index] = 0,
                 }
@@ -1296,8 +1304,14 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= policy.max_latency_ms) {
-                        secondary_success[entry_index] = true;
+                    if let Ok(sample) = result {
+                        if sample.latency_ms <= policy.max_latency_ms {
+                            secondary_success[entry_index] = true;
+                        }
+                        if target == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                            throughputs[entry_index]
+                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                        }
                     }
                 }
             }
@@ -1329,6 +1343,8 @@ async fn check_batch_targets(
                         attempts: attempts[index],
                         median_ms: median,
                         min_ms: values[0],
+                        jitter_ms: crate::validator::latency_jitter(&values),
+                        throughput_kbps: crate::validator::throughput_kbps(&throughputs[index]),
                     },
                 );
             }
@@ -1436,9 +1452,12 @@ async fn check_batch(
 
             for (config, result) in results {
                 *attempts.entry(config.clone()).or_insert(0) += 1;
-                if let Ok(latency) = result {
+                if let Ok(sample) = result {
                     *successes.entry(config.clone()).or_insert(0) += 1;
-                    latencies.entry(config).or_default().push(latency);
+                    latencies
+                        .entry(config)
+                        .or_default()
+                        .push(sample.latency_ms);
                 }
             }
         }
@@ -1467,6 +1486,8 @@ async fn check_batch(
                         attempts: attempts.get(config).copied().unwrap_or(0),
                         median_ms: median,
                         min_ms: values[0],
+                        jitter_ms: crate::validator::latency_jitter(&values),
+                        throughput_kbps: 0.0,
                     },
                 );
             }

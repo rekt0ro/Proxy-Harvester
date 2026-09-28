@@ -45,6 +45,7 @@ const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_ALL_CONFIGS: usize = 2000;
+const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
 #[derive(Debug)]
@@ -352,11 +353,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     write_atomic(&all_path, all_subscription).await?;
 
+    let all_unique_endpoints = working_configs
+        .iter()
+        .filter_map(|config| endpoint(config))
+        .collect::<HashSet<_>>()
+        .len();
+
     println!(
-        "[INFO] Prepared {} core-validation candidates for All ({} transport-reachable; cap {}).",
+        "[INFO] Prepared {} All configs directly from transport-reachable results ({} transport-reachable probes; {} unique endpoints; cap {}; max {} per endpoint).",
         working_configs.len(),
         reachable_probes,
-        MAX_ALL_CONFIGS
+        all_unique_endpoints,
+        MAX_ALL_CONFIGS,
+        MAX_ALL_PER_ENDPOINT
     );
 
     println!(
@@ -1322,7 +1331,8 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
+        normalize_config, select_all_candidates, split_concatenated_configs, trim_config,
+        MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -1480,6 +1490,30 @@ mod tests {
         );
 
         assert_eq!(trim_config(config), "hy2://password@example.com:443");
+    }
+
+    #[test]
+    fn all_candidates_prefer_endpoint_diversity_before_filling_duplicates() {
+        let working = vec![
+            ("vless://uuid1@example.com:443".to_string(), 10),
+            ("vless://uuid2@example.com:443".to_string(), 20),
+            ("vless://uuid3@example.com:443".to_string(), 30),
+            ("vless://uuid4@example.com:443".to_string(), 40),
+            ("vless://uuid5@other.example.com:443".to_string(), 50),
+        ];
+
+        let selected = select_all_candidates(&working, &[]);
+
+        assert_eq!(
+            selected,
+            vec![
+                "vless://uuid1@example.com:443",
+                "vless://uuid2@example.com:443",
+                "vless://uuid3@example.com:443",
+                "vless://uuid5@other.example.com:443",
+                "vless://uuid4@example.com:443",
+            ]
+        );
     }
 
     #[test]
@@ -1775,24 +1809,44 @@ fn select_all_candidates(
 ) -> Vec<String> {
     let mut selected = Vec::with_capacity(MAX_ALL_CONFIGS);
     let mut seen = HashSet::new();
+    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut deferred = Vec::new();
 
-    for (config, _) in ranked_working_configs {
+    for config in ranked_working_configs
+        .iter()
+        .map(|(config, _)| config)
+        .chain(special_candidates.iter())
+    {
         if selected.len() >= MAX_ALL_CONFIGS {
             break;
         }
 
-        if seen.insert(config.clone()) {
+        if seen.contains(config) {
+            continue;
+        }
+
+        let endpoint_allowed = endpoint(config)
+            .map(|ep| endpoint_counts.get(&ep).copied().unwrap_or(0) < MAX_ALL_PER_ENDPOINT)
+            .unwrap_or(true);
+
+        if endpoint_allowed {
+            seen.insert(config.clone());
+            if let Some(ep) = endpoint(config) {
+                *endpoint_counts.entry(ep).or_default() += 1;
+            }
             selected.push(config.clone());
+        } else {
+            deferred.push(config.clone());
         }
     }
 
-    for config in special_candidates {
+    for config in deferred {
         if selected.len() >= MAX_ALL_CONFIGS {
             break;
         }
 
         if seen.insert(config.clone()) {
-            selected.push(config.clone());
+            selected.push(config);
         }
     }
 
