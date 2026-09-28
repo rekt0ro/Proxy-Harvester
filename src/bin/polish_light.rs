@@ -80,31 +80,32 @@ fn family_key(config: &str) -> String {
     if scheme == "vmess" {
         if let Some(payload) = cleaned.split_once("://").map(|(_, value)| value) {
             let mut padded = payload.to_string();
-            while padded.len() % 4 != 0 {
+            while !padded.len().is_multiple_of(4) {
                 padded.push('=');
             }
             for encoded in [payload, padded.as_str()] {
-                for decoded in [
+                for bytes in [
                     STANDARD.decode(encoded),
                     URL_SAFE.decode(encoded),
                     URL_SAFE_NO_PAD.decode(encoded),
-                ] {
-                    if let Ok(bytes) = decoded {
-                        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                            let fields = [
-                                "id", "aid", "scy", "net", "tls", "sni", "host", "path", "type",
-                            ];
-                            let mut key = String::from("vmess|");
-                            for field in fields {
-                                if let Some(value) = value.get(field) {
-                                    key.push_str(field);
-                                    key.push('=');
-                                    key.push_str(&value.to_string());
-                                    key.push('|');
-                                }
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                        let fields = [
+                            "id", "aid", "scy", "net", "tls", "sni", "host", "path", "type",
+                        ];
+                        let mut key = String::from("vmess|");
+                        for field in fields {
+                            if let Some(value) = value.get(field) {
+                                key.push_str(field);
+                                key.push('=');
+                                key.push_str(&value.to_string());
+                                key.push('|');
                             }
-                            return key;
                         }
+                        return key;
                     }
                 }
             }
@@ -368,15 +369,15 @@ async fn merge_dual(
                 xray,
                 candidates,
                 targets,
-                workers,
-                batch_size,
-                timeout_seconds,
+                settings.workers,
+                settings.batch_size,
+                settings.timeout_seconds,
             )
             .await
         }
     };
     let singbox_future = async {
-        if strict {
+        if settings.strict {
             validate_singbox_targets_strict(
                 singbox,
                 candidates,
@@ -391,9 +392,9 @@ async fn merge_dual(
                 singbox,
                 candidates,
                 targets,
-                workers.min(32).max(1),
+                settings.workers.clamp(1, 32),
                 request_timeout,
-                timeout_seconds * 1000.0,
+                settings.timeout_seconds * 1000.0,
             )
             .await
         }
@@ -471,9 +472,9 @@ async fn validate_light_batch(
                 singbox,
                 &singbox_candidates,
                 targets,
-                workers.clamp(1, 32),
+                settings.workers.clamp(1, 32),
                 request_timeout,
-                timeout_seconds * 1000.0,
+                settings.timeout_seconds * 1000.0,
             )
             .await
         }
@@ -482,7 +483,7 @@ async fn validate_light_batch(
     let xray_future = async {
         if xray_candidates.is_empty() {
             Ok(HashMap::new())
-        } else if strict {
+        } else if settings.strict {
             validate_candidates_with_targets_strict(
                 xray,
                 &xray_candidates,
@@ -497,9 +498,9 @@ async fn validate_light_batch(
                 xray,
                 &xray_candidates,
                 targets,
-                workers.max(1),
-                batch_size,
-                timeout_seconds,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
             )
             .await
         }
