@@ -856,7 +856,9 @@ fn parse_wg(config: &str) -> Result<Value, String> {
         Some("0.0.0.0/0,::/0"),
     ));
 
-    let peer_endpoint = if host.contains(':') {
+    let peer_endpoint = if host.starts_with('[') {
+        format!("{host}:{port}")
+    } else if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
         format!("{host}:{port}")
