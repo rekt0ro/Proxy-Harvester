@@ -2,7 +2,7 @@
 
 ### Light (Recommended)
 
-Up to 200 verified proxy configurations that pass multi-target connectivity and stability checks. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
+Up to 200 verified proxy configurations selected from a capped 10,000-candidate screened pool. Light uses multi-target connectivity, adaptive strict rechecks, endpoint diversity, reliability/jitter scoring, a small transfer-throughput signal, and bounded history of prior strict checks. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
 
 Plain text:
 
@@ -18,7 +18,7 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light-bas
 
 ### All
 
-All configurations that pass validation.
+Up to 2,000 transport-reachable configurations from the ranked shared screening pool. All stays broad and does not run the expensive Light validation stage.
 
 Plain text:
 
