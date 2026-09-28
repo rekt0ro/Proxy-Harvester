@@ -1071,7 +1071,6 @@ async fn check_batch_targets(
             {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
-
         }
 
         let mut secondary_success = vec![false; count];
