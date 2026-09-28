@@ -1,11 +1,11 @@
 use proxyrift::singbox::validate_candidates_with_settings as validate_singbox_candidates;
 use proxyrift::validator::{
-    read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, PRIMARY_TARGET,
-    MAX_LATENCY_MS,
+    read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, MAX_LATENCY_MS,
+    PRIMARY_TARGET,
 };
 use std::collections::HashMap;
-use std::time::Duration;
 use std::env;
+use std::time::Duration;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -85,8 +85,15 @@ async fn main() -> Result<(), String> {
 
     if !xray_candidates.is_empty() {
         metadata.extend(
-            validate_candidates(&xray, &xray_candidates, &target, workers, batch_size, timeout)
-                .await?,
+            validate_candidates(
+                &xray,
+                &xray_candidates,
+                &target,
+                workers,
+                batch_size,
+                timeout,
+            )
+            .await?,
         );
     }
 
