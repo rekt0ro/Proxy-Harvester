@@ -890,6 +890,10 @@ fn client_for_port(
     builder.build().map_err(|error| error.to_string())
 }
 
+fn valid_probe_status(url: &str, status: u16) -> bool {
+    url != TARGET || status == 204
+}
+
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
         PRIMARY_TARGET => body.is_empty(),
@@ -911,7 +915,9 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         return Err("target returned HTTP 429".to_string());
     }
 
-    if !response.status().is_success() {
+    if !response.status().is_success()
+        || !valid_probe_status(url, response.status().as_u16())
+    {
         return Err(format!("target returned HTTP {}", response.status()));
     }
 
@@ -1506,6 +1512,13 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_probe_requires_http_204() {
+        assert!(valid_probe_status(TARGET, 204));
+        assert!(!valid_probe_status(TARGET, 200));
+        assert!(valid_probe_status("https://example.com/", 200));
+    }
 
     #[test]
     fn default_probe_targets_require_expected_payloads() {

@@ -1177,6 +1177,10 @@ fn client_for_port(
     builder.build().map_err(|error| error.to_string())
 }
 
+fn valid_probe_status(url: &Url, status: u16) -> bool {
+    url.as_str() != PRIMARY_TARGET || status == 204
+}
+
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
@@ -1200,7 +1204,9 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         return Err(ProbeError::Failed);
     }
 
-    if !response.status().is_success() {
+    if !response.status().is_success()
+        || !valid_probe_status(&url, response.status().as_u16())
+    {
         return Err(ProbeError::Failed);
     }
 
@@ -1901,6 +1907,16 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn primary_probe_requires_http_204() {
+        let primary = Url::parse(PRIMARY_TARGET).expect("primary target should parse");
+        assert!(valid_probe_status(&primary, 204));
+        assert!(!valid_probe_status(&primary, 200));
+
+        let other = Url::parse("https://example.com/").expect("example target should parse");
+        assert!(valid_probe_status(&other, 200));
+    }
 
     #[test]
     fn default_probe_targets_require_expected_payloads() {
