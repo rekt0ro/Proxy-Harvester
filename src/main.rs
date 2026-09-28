@@ -1348,7 +1348,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, trim_config, MAX_SOURCE_BYTES,
+        normalize_config, split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -1383,17 +1383,20 @@ mod tests {
 
     #[test]
     fn extracts_concatenated_urls_without_whitespace() {
-        let configs = extract_configs(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=nonevless://00000000-0000-0000-0000-000000000002@example.com:443?security=none",
-        );
+        let concatenated =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=nonevless://00000000-0000-0000-0000-000000000002@example.com:443?security=none";
+        let parts = split_concatenated_configs(concatenated);
 
         assert_eq!(
-            configs,
+            parts,
             vec![
                 "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none",
                 "vless://00000000-0000-0000-0000-000000000002@example.com:443?security=none",
             ]
         );
+
+        let configs = extract_configs(concatenated);
+        assert_eq!(configs, parts);
     }
 
     #[test]
