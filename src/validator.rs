@@ -2031,7 +2031,7 @@ mod tests {
     fn endpoint_defaults_match_proxy_parser() {
         assert_eq!(
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
-            ("127.0.0.1".to_string(), 8080)
+            ("127.0.0.1".to_string(), 80)
         );
     }
 
