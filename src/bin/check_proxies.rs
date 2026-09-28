@@ -112,7 +112,8 @@ async fn main() -> Result<(), String> {
                 &singbox_candidates,
                 &target,
                 workers,
-                Duration::from_secs_f64(timeout),
+                Duration::try_from_secs_f64(timeout)
+                    .map_err(|_| "invalid --timeout: value overflows Duration".to_string())?,
                 MAX_LATENCY_MS,
             )
             .await?,
