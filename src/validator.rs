@@ -1668,10 +1668,14 @@ async fn validate_candidates_targets_inner(
     timeout_seconds: f64,
     policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let mut seen_targets = HashSet::new();
     let targets = targets
         .iter()
         .map(|target| Url::parse(target).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|target| seen_targets.insert(target.as_str().to_string()))
+        .collect::<Vec<_>>();
 
     if targets.len() < policy.min_successful_targets {
         return Err(format!(
