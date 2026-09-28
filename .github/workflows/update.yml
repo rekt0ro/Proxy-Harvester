@@ -185,6 +185,7 @@ jobs:
         env:
           ALL_MIN_PUBLISH: "50"
         run: |
+          mkdir -p /tmp/proxyrift
           set +e
           ./target/release/check_proxies             --input subscriptions/.all.txt             --output /tmp/proxyrift/all.next.txt             --workers 32             --batch-size 250             --timeout 3             --target https://www.google.com/generate_204             --xray "$HOME/.local/bin/xray"
           status=$?
