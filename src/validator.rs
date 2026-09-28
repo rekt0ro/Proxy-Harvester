@@ -6,13 +6,12 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use url::Url;
+use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
@@ -84,6 +83,17 @@ fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
 }
 
+/// Lower-cased scheme taken from the raw text. `Url::parse` cannot be used for
+/// this because it rejects valid Hysteria2 port-hopping authorities such as
+/// `host:1234,5000-5002`.
+fn scheme_of(config: &str) -> String {
+    config
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .filter(|scheme| !scheme.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let mut seen = HashSet::new();
@@ -96,14 +106,22 @@ pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Write through a temporary sibling so a crash never leaves a truncated file.
+fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let temporary = format!("{path}.tmp");
+
+    fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
 pub fn write_lines(path: &str, values: &[String]) -> Result<(), String> {
-    let mut file = File::create(path).map_err(|error| error.to_string())?;
+    let mut content = values.join("\n");
+
     if !values.is_empty() {
-        file.write_all(values.join("\n").as_bytes())
-            .map_err(|error| error.to_string())?;
-        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        content.push('\n');
     }
-    Ok(())
+
+    write_atomic(path, content.as_bytes())
 }
 
 fn b64decode(value: &str) -> Option<Vec<u8>> {
@@ -178,11 +196,16 @@ fn csv(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Host and port of a parsed URL. IPv6 literals are returned WITHOUT brackets:
+/// that is what DNS lookup, Xray and sing-box expect, and `config_label` adds
+/// the brackets back for display. (`host_str()` keeps them, which broke IPv6
+/// probing and produced `[[::1]]` labels.)
 fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u16), String> {
-    let host = url
-        .host_str()
-        .ok_or_else(|| "missing host".to_string())?
-        .to_string();
+    let host = match url.host().ok_or_else(|| "missing host".to_string())? {
+        Host::Domain(domain) => domain.to_string(),
+        Host::Ipv4(address) => address.to_string(),
+        Host::Ipv6(address) => address.to_string(),
+    };
     let port = url
         .port()
         .or(default_port)
@@ -193,27 +216,31 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
     Ok((host, port))
 }
 
+/// Decode a legacy fully-base64 Shadowsocks payload
+/// (`ss://BASE64(method:password@host:port)`).
+fn ss_legacy_decode(payload: &str) -> Option<String> {
+    let encoded = payload.split('?').next()?.trim_end_matches('/');
+
+    String::from_utf8(b64decode(&decode_component(encoded))?).ok()
+}
+
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
     let config = clean(config);
-    let scheme = config
-        .split_once("://")
-        .map(|(scheme, _)| scheme)
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let scheme = scheme_of(config);
 
     if matches!(scheme.as_str(), "hysteria2" | "hy2") {
         return hysteria2_probe_endpoint(config);
     }
 
-    let url = Url::parse(config).ok()?;
-
+    // VMess carries its endpoint inside a base64 JSON blob, so handle it before
+    // any URL parsing.
     if scheme == "vmess" {
-        let payload = clean(config).split_once("://")?.1;
+        let payload = config.split_once("://")?.1;
         let decoded = b64decode(payload)?;
         let value: Value = serde_json::from_slice(&decoded).ok()?;
         let host = value.get("add")?.as_str()?.trim().to_string();
         let port = match value.get("port")? {
-            Value::String(value) => value.parse().ok()?,
+            Value::String(value) => value.trim().parse().ok()?,
             Value::Number(value) => u16::try_from(value.as_u64()?).ok()?,
             _ => return None,
         };
@@ -222,6 +249,22 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         }
         return Some((host, port));
     }
+
+    // Legacy Shadowsocks links have no authority at all; the endpoint is inside
+    // the base64 payload.
+    if scheme == "ss" {
+        let payload = config.split_once("://")?.1;
+
+        if !payload.contains('@') {
+            let decoded = ss_legacy_decode(payload)?;
+            let remote = decoded.rsplit_once('@')?.1;
+            let remote_url = Url::parse(&format!("ss://{remote}")).ok()?;
+
+            return endpoint_from_url(&remote_url, None).ok();
+        }
+    }
+
+    let url = Url::parse(config).ok()?;
 
     let default = match url.scheme().to_ascii_lowercase().as_str() {
         "http" => Some(80),
@@ -233,10 +276,7 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
 }
 
 pub fn config_label(config: &str) -> String {
-    let scheme = config
-        .split_once("://")
-        .map(|(scheme, _)| scheme.to_ascii_lowercase())
-        .unwrap_or_else(|| "unknown".to_string());
+    let scheme = scheme_of(config);
 
     match endpoint(config) {
         Some((host, port)) if host.contains(':') => format!("{scheme}://[{host}]:{port}"),
@@ -584,6 +624,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .ok_or_else(|| "VMess endpoint missing".to_string())?;
     let port = match value.get("port") {
         Some(Value::String(value)) => value
+            .trim()
             .parse::<u16>()
             .map_err(|_| "invalid VMess port".to_string())?,
         Some(Value::Number(value)) => u16::try_from(
@@ -625,6 +666,23 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
     {
         q.push(("headerType".to_string(), "http".to_string()));
     }
+
+    // In the VMess share format a gRPC link keeps its service name in `path`
+    // and its mode (`gun`/`multi`) in `type`; without this mapping the service
+    // name was silently dropped.
+    if network.eq_ignore_ascii_case("grpc") {
+        if let Some(service) = json_text(value.get("path")).filter(|value| !value.is_empty()) {
+            q.push(("serviceName".to_string(), service));
+        }
+
+        if let Some(mode) = json_text(value.get("type"))
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| matches!(value.as_str(), "gun" | "multi"))
+        {
+            q.push(("mode".to_string(), mode));
+        }
+    }
+
     for (source, destination) in [
         ("sni", "sni"),
         ("alpn", "alpn"),
@@ -741,24 +799,41 @@ fn parse_ss(config: &str) -> Result<Value, String> {
         let payload = clean(config)
             .split_once("://")
             .ok_or_else(|| "invalid Shadowsocks payload".to_string())?
-            .1
-            .split('#')
-            .next()
-            .unwrap_or("");
-        let (credentials, remote) = payload
-            .rsplit_once('@')
-            .ok_or_else(|| "invalid Shadowsocks payload".to_string())?;
-        let decoded = String::from_utf8(
-            b64decode(credentials).ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let (method, password) = decoded
-            .split_once(':')
-            .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
+            .1;
+
+        let (method, password, remote) = if let Some((credentials, remote)) =
+            payload.rsplit_once('@')
+        {
+            // SIP002: base64(method:password)@host:port. The credentials may be
+            // percent-encoded (`%3D` for padding), so decode that first.
+            let decoded = String::from_utf8(
+                b64decode(&decode_component(credentials))
+                    .ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            let (method, password) = decoded
+                .split_once(':')
+                .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
+
+            (method.to_string(), password.to_string(), remote.to_string())
+        } else {
+            // Legacy: base64(method:password@host:port) with no authority.
+            let decoded = ss_legacy_decode(payload)
+                .ok_or_else(|| "invalid Shadowsocks base64".to_string())?;
+            let (credentials, remote) = decoded
+                .rsplit_once('@')
+                .ok_or_else(|| "invalid Shadowsocks payload".to_string())?;
+            let (method, password) = credentials
+                .split_once(':')
+                .ok_or_else(|| "invalid Shadowsocks credentials".to_string())?;
+
+            (method.to_string(), password.to_string(), remote.to_string())
+        };
+
         let remote_url =
             Url::parse(&format!("ss://{remote}")).map_err(|error| error.to_string())?;
         let (host, port) = endpoint_from_url(&remote_url, None)?;
-        (host, port, method.to_string(), password.to_string())
+        (host, port, method, password)
     };
 
     Ok(json!({
@@ -844,7 +919,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
 
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match key.to_ascii_lowercase().as_str() {
-            "sni" | "server_name" => {
+            "sni" | "server_name" | "peer" => {
                 if !value.is_empty() {
                     sni = value.into_owned();
                 }
@@ -943,13 +1018,13 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }))
 }
 
+/// Validate a 32-byte base64 key and return it in canonical standard base64.
+/// Unescaped `+` in a query value is decoded to a space by URL parsers, so
+/// spaces are turned back into `+` first (base64 never contains spaces).
 fn decode_key(value: &str) -> Option<String> {
-    let bytes = b64decode(value)?;
-    if bytes.len() == 32 {
-        Some(value.to_string())
-    } else {
-        None
-    }
+    let bytes = b64decode(&value.replace(' ', "+"))?;
+
+    (bytes.len() == 32).then(|| STANDARD.encode(bytes))
 }
 
 fn parse_wg(config: &str) -> Result<Value, String> {
@@ -986,8 +1061,9 @@ fn parse_wg(config: &str) -> Result<Value, String> {
     if private.is_empty() || public.is_empty() {
         return Err("WireGuard keys missing".to_string());
     }
-    decode_key(&private).ok_or_else(|| "invalid WireGuard private key".to_string())?;
-    decode_key(&public).ok_or_else(|| "invalid WireGuard public key".to_string())?;
+    let private =
+        decode_key(&private).ok_or_else(|| "invalid WireGuard private key".to_string())?;
+    let public = decode_key(&public).ok_or_else(|| "invalid WireGuard public key".to_string())?;
 
     let address = csv(&first_query(
         &url,
@@ -1000,9 +1076,7 @@ fn parse_wg(config: &str) -> Result<Value, String> {
         Some("0.0.0.0/0,::/0"),
     ));
 
-    let peer_endpoint = if host.starts_with('[') {
-        format!("{host}:{port}")
-    } else if host.contains(':') {
+    let peer_endpoint = if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
         format!("{host}:{port}")
@@ -1020,7 +1094,7 @@ fn parse_wg(config: &str) -> Result<Value, String> {
         Some(""),
     );
     if !psk.is_empty() {
-        decode_key(&psk).ok_or_else(|| "invalid WireGuard preshared key".to_string())?;
+        let psk = decode_key(&psk).ok_or_else(|| "invalid WireGuard preshared key".to_string())?;
         peer["preSharedKey"] = json!(psk);
     }
 
@@ -1044,10 +1118,13 @@ fn parse_wg(config: &str) -> Result<Value, String> {
 fn parse_basic(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let scheme = url.scheme().to_ascii_lowercase();
+
+    // Must match `endpoint()`: HTTP proxies default to port 80 (this used to
+    // be 8080, so probing and validation targeted different ports).
     let default = if matches!(scheme.as_str(), "socks" | "socks5" | "socks5h") {
         1080
     } else {
-        8080
+        80
     };
     let (host, port) = endpoint_from_url(&url, Some(default))?;
     let protocol = if scheme == "http" { "http" } else { "socks" };
@@ -1070,10 +1147,9 @@ fn parse_basic(config: &str) -> Result<Value, String> {
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
-    let scheme = Url::parse(clean(config))
-        .map_err(|error| error.to_string())?
-        .scheme()
-        .to_ascii_lowercase();
+    // The scheme comes from the raw text, not `Url::parse`, which rejects
+    // Hysteria2 port-hopping authorities before they can reach `parse_hy2`.
+    let scheme = scheme_of(clean(config));
 
     match scheme.as_str() {
         "vless" => parse_vless(config),
@@ -1318,7 +1394,9 @@ fn client_for_port(
     timeout_seconds: f64,
     fresh_connections: bool,
 ) -> Result<Client, String> {
-    let request_timeout = timeout_duration(timeout_seconds).unwrap_or(Duration::from_secs(1));
+    // An invalid timeout used to be silently replaced by 1 second, hiding
+    // misconfiguration and failing every probe. Report it instead.
+    let request_timeout = timeout_duration(timeout_seconds)?;
 
     let mut builder = Client::builder()
         .proxy(
@@ -1326,6 +1404,10 @@ fn client_for_port(
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
+        // A proxy that answers with a redirect (captive portal / injected
+        // login page) must fail the probe, not be followed to a page that
+        // returns 200.
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent("ProxyRift/3.0");
 
     if fresh_connections {
@@ -1442,13 +1524,21 @@ async fn check_batch(
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
         let log_path = work.join("xray.log");
-        let (config, local_ports) = xray_config(&batch_entries)?;
+        let (config, local_ports) = match xray_config(&batch_entries) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
-        fs::write(
-            &config_path,
-            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        if let Err(error) = serde_json::to_vec(&config)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| fs::write(&config_path, bytes).map_err(|error| error.to_string()))
+        {
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
 
         let mut child = match start_xray(binary, &config_path, &log_path) {
             Ok(child) => child,
@@ -1477,7 +1567,12 @@ async fn check_batch(
                     .rev()
                     .collect::<String>();
 
-                println!("[WARN] Validation skipped: {}", batch_entries[0].0);
+                // Label only: the full URL carries credentials and CI logs of a
+                // public repository are world-readable.
+                println!(
+                    "[WARN] Validation skipped: {}",
+                    config_label(&batch_entries[0].0)
+                );
                 if !tail.is_empty() {
                     println!("[WARN] Xray core failed to start: {tail}");
                 }
@@ -1705,10 +1800,7 @@ async fn validate_candidates_targets_inner(
     if !rejected.is_empty() {
         let mut counts = HashMap::<String, usize>::new();
         for (config, _) in &rejected {
-            let scheme = Url::parse(clean(config))
-                .map(|url| url.scheme().to_ascii_lowercase())
-                .unwrap_or_else(|_| "unknown".to_string());
-            *counts.entry(scheme).or_insert(0) += 1;
+            *counts.entry(scheme_of(clean(config))).or_insert(0) += 1;
         }
         println!("rejected by scheme: {:?}", counts);
     }
@@ -1777,13 +1869,21 @@ async fn check_batch_targets(
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
         let log_path = work.join("xray.log");
-        let (config, local_ports) = xray_config(&batch_entries)?;
+        let (config, local_ports) = match xray_config(&batch_entries) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
-        fs::write(
-            &config_path,
-            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        if let Err(error) = serde_json::to_vec(&config)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| fs::write(&config_path, bytes).map_err(|error| error.to_string()))
+        {
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
 
         let mut child = match start_xray(binary, &config_path, &log_path) {
             Ok(child) => child,
@@ -1812,7 +1912,10 @@ async fn check_batch_targets(
                     .rev()
                     .collect::<String>();
 
-                println!("[WARN] Validation skipped: {}", batch_entries[0].0);
+                println!(
+                    "[WARN] Validation skipped: {}",
+                    config_label(&batch_entries[0].0)
+                );
                 if !tail.is_empty() {
                     println!("[WARN] Xray core failed to start: {tail}");
                 }
@@ -2004,10 +2107,7 @@ async fn validate_candidates_inner(
     if !rejected.is_empty() {
         let mut counts = HashMap::<String, usize>::new();
         for (config, _) in &rejected {
-            let scheme = Url::parse(clean(config))
-                .map(|url| url.scheme().to_ascii_lowercase())
-                .unwrap_or_else(|_| "unknown".to_string());
-            *counts.entry(scheme).or_insert(0) += 1;
+            *counts.entry(scheme_of(clean(config))).or_insert(0) += 1;
         }
         println!("rejected by scheme: {:?}", counts);
     }
@@ -2058,6 +2158,8 @@ async fn validate_candidates_inner(
         metadata.extend(batch_metadata);
     }
 
+    // The summaries below used to print MIN_SUCCESSFUL_TARGETS where the number
+    // of required successful attempts was meant.
     if let Some(compatibility_target) = compatibility_target.as_ref() {
         println!(
             "{}/{} verified by Xray against {} and {} with {}/{} successful attempts and every measured latency <= {}ms",
@@ -2065,7 +2167,7 @@ async fn validate_candidates_inner(
             candidates.len(),
             target,
             compatibility_target,
-            MIN_SUCCESSFUL_TARGETS,
+            MIN_SUCCESSFUL_ATTEMPTS,
             STABILITY_ATTEMPTS,
             MAX_LATENCY_MS
         );
@@ -2074,7 +2176,7 @@ async fn validate_candidates_inner(
             "{}/{} verified by Xray with {}/{} successful attempts and every measured latency <= {}ms",
             metadata.len(),
             candidates.len(),
-            MIN_SUCCESSFUL_TARGETS,
+            MIN_SUCCESSFUL_ATTEMPTS,
             STABILITY_ATTEMPTS,
             MAX_LATENCY_MS
         );
@@ -2097,11 +2199,10 @@ pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> R
         );
     }
 
-    fs::write(
+    write_atomic(
         path,
-        serde_json::to_vec(&Value::Object(output)).map_err(|error| error.to_string())?,
+        &serde_json::to_vec(&Value::Object(output)).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -2260,6 +2361,26 @@ mod tests {
     }
 
     #[test]
+    fn vmess_grpc_keeps_service_name_from_path() {
+        let payload = json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "grpc",
+            "tls": "tls",
+            "type": "gun",
+            "path": "TunService",
+        });
+        let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+        let parsed = parse_config(&config).expect("VMess gRPC should parse");
+
+        assert_eq!(
+            parsed["streamSettings"]["grpcSettings"]["serviceName"],
+            "TunService"
+        );
+    }
+
+    #[test]
     fn basic_proxy_endpoint_defaults_are_preserved() {
         assert_eq!(
             endpoint("socks5://127.0.0.1").expect("SOCKS endpoint"),
@@ -2269,6 +2390,12 @@ mod tests {
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
             ("127.0.0.1".to_string(), 80)
         );
+    }
+
+    #[test]
+    fn http_proxy_parser_uses_same_default_port_as_endpoint() {
+        let parsed = parse_config("http://127.0.0.1").expect("HTTP proxy should parse");
+        assert_eq!(parsed["settings"]["servers"][0]["port"], 80);
     }
 
     #[test]
@@ -2298,6 +2425,22 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_endpoints_are_unbracketed_and_labels_bracketed_once() {
+        assert_eq!(
+            endpoint("trojan://secret@[2001:db8::1]:443"),
+            Some(("2001:db8::1".to_string(), 443))
+        );
+        assert_eq!(
+            config_label("trojan://secret@[2001:db8::1]:443"),
+            "trojan://[2001:db8::1]:443"
+        );
+
+        let parsed =
+            parse_config("trojan://secret@[2001:db8::1]:443").expect("IPv6 Trojan should parse");
+        assert_eq!(parsed["settings"]["servers"][0]["address"], "2001:db8::1");
+    }
+
+    #[test]
     fn hysteria2_endpoint_defaults_to_443() {
         assert_eq!(
             endpoint("hysteria2://password@example.com"),
@@ -2311,6 +2454,14 @@ mod tests {
             endpoint("hy2://password@example.com:1234,5000-6000"),
             Some(("example.com".to_string(), 1234))
         );
+    }
+
+    #[test]
+    fn parse_config_accepts_hysteria2_port_hopping() {
+        let parsed = parse_config("hy2://password@example.com:1234,5000-5002")
+            .expect("port-hopping Hysteria2 should reach parse_hy2");
+
+        assert_eq!(parsed["settings"]["port"], 1234);
     }
 
     #[test]
@@ -2328,6 +2479,19 @@ mod tests {
     }
 
     #[test]
+    fn wireguard_keys_with_unescaped_plus_survive_query_parsing() {
+        // 0xfb bytes encode to base64 containing both '+' and '/'.
+        let key = STANDARD.encode([0xfb_u8; 32]);
+        assert!(key.contains('+'));
+
+        let config = format!("wg://192.0.2.1:51820?privatekey={key}&publickey={key}");
+        let parsed = parse_config(&config).expect("keys containing '+' should parse");
+
+        assert_eq!(parsed["settings"]["secretKey"], key);
+        assert_eq!(parsed["settings"]["peers"][0]["publicKey"], key);
+    }
+
+    #[test]
     fn vmess_endpoint_comes_from_decoded_payload() {
         let payload = json!({
             "add": "proxy.example",
@@ -2339,6 +2503,34 @@ mod tests {
             endpoint(&config).expect("VMess endpoint"),
             ("proxy.example".to_string(), 8443)
         );
+    }
+
+    #[test]
+    fn legacy_shadowsocks_links_have_an_endpoint_and_parse() {
+        let config = format!(
+            "ss://{}",
+            STANDARD.encode("aes-256-gcm:secret@example.com:8388")
+        );
+
+        assert_eq!(
+            endpoint(&config),
+            Some(("example.com".to_string(), 8388))
+        );
+
+        let parsed = parse_config(&config).expect("legacy Shadowsocks should parse");
+        assert_eq!(parsed["settings"]["servers"][0]["method"], "aes-256-gcm");
+        assert_eq!(parsed["settings"]["servers"][0]["password"], "secret");
+        assert_eq!(parsed["settings"]["servers"][0]["port"], 8388);
+    }
+
+    #[test]
+    fn sip002_shadowsocks_accepts_percent_encoded_padding() {
+        let credentials = STANDARD.encode("aes-256-gcm:pw");
+        let encoded = credentials.replace('=', "%3D");
+        let config = format!("ss://{encoded}@example.com:8388");
+
+        let parsed = parse_config(&config).expect("percent-encoded credentials should parse");
+        assert_eq!(parsed["settings"]["servers"][0]["password"], "pw");
     }
 
     #[test]
@@ -2356,6 +2548,13 @@ mod tests {
 
         headers.insert("retry-after", HeaderValue::from_static("invalid"));
         assert_eq!(rate_limit_wait(&headers), RATE_LIMIT_DEFAULT_WAIT);
+    }
+
+    #[test]
+    fn invalid_timeouts_are_reported_not_replaced() {
+        assert!(client_for_port(1080, 0.0, false).is_err());
+        assert!(client_for_port(1080, f64::NAN, false).is_err());
+        assert!(client_for_port(1080, 3.0, false).is_ok());
     }
 
     #[test]
