@@ -1249,7 +1249,9 @@ async fn check_batch_targets(
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
                         latencies[entry_index].push(sample.latency_ms);
-                        if targets[0] == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if targets[0] == crate::validator::THROUGHPUT_TARGET
+                            && sample.latency_ms > 0.0
+                        {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
@@ -1308,7 +1310,8 @@ async fn check_batch_targets(
                         if sample.latency_ms <= policy.max_latency_ms {
                             secondary_success[entry_index] = true;
                         }
-                        if target == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if target == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0
+                        {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
@@ -1454,10 +1457,7 @@ async fn check_batch(
                 *attempts.entry(config.clone()).or_insert(0) += 1;
                 if let Ok(sample) = result {
                     *successes.entry(config.clone()).or_insert(0) += 1;
-                    latencies
-                        .entry(config)
-                        .or_default()
-                        .push(sample.latency_ms);
+                    latencies.entry(config).or_default().push(sample.latency_ms);
                 }
             }
         }

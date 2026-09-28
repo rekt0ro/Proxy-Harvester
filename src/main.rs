@@ -491,7 +491,9 @@ fn split_concatenated_configs(config: &str) -> Vec<&str> {
     let mut starts = vec![0];
     let mut previous_end = SCHEMES
         .iter()
-        .find(|scheme| config.len() >= scheme.len() && config[..scheme.len()].eq_ignore_ascii_case(scheme))
+        .find(|scheme| {
+            config.len() >= scheme.len() && config[..scheme.len()].eq_ignore_ascii_case(scheme)
+        })
         .map(|scheme| scheme.len())
         .unwrap_or_default();
 
@@ -1736,9 +1738,7 @@ mod tests {
     #[test]
     fn vmess_accepts_custom_string_ids() {
         let make = |id: &str| {
-            let json = format!(
-                r#"{{"v":"2","add":"h.com","port":"443","id":"{id}"}}"#
-            );
+            let json = format!(r#"{{"v":"2","add":"h.com","port":"443","id":"{id}"}}"#);
             format!("vmess://{}", STANDARD.encode(json))
         };
 

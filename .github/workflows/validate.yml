@@ -59,7 +59,7 @@ jobs:
             ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
 
       - name: Format check
-        run: cargo fmt --all
+        run: cargo fmt --all -- --check
 
       - name: Run Rust tests
         run: cargo test --release --all-targets
