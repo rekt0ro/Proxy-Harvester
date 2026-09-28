@@ -1059,15 +1059,10 @@ async fn main() -> Result<(), String> {
         }
 
         sort_ranked(
-
             &mut final_verified,
-
             &final_metadata,
-
             &global_positions,
-
             &history,
-
         );
         let selected = select_verified_configs(
             &final_verified,
@@ -1116,15 +1111,10 @@ async fn main() -> Result<(), String> {
     }
 
     sort_ranked(
-
         &mut final_verified,
-
         &final_metadata,
-
         &global_positions,
-
         &history,
-
     );
     let selected = select_verified_configs(
         &final_verified,
