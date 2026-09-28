@@ -525,6 +525,30 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
     supported(method, METHODS).then(|| config.to_string())
 }
 
+fn valid_vless_encryption(value: &str) -> bool {
+    let blocks = value.split('.').collect::<Vec<_>>();
+    if blocks.len() < 4 || blocks[0] != "mlkem768x25519plus" {
+        return false;
+    }
+
+    if !matches!(blocks[1], "native" | "xorpub" | "random")
+        || !matches!(blocks[2], "1rtt" | "0rtt")
+    {
+        return false;
+    }
+
+    blocks[3..].iter().all(|block| {
+        if block.len() < 20 {
+            return true;
+        }
+
+        matches!(
+            URL_SAFE_NO_PAD.decode(block),
+            Ok(bytes) if bytes.len() == 32 || bytes.len() == 1184
+        )
+    })
+}
+
 fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     let uuid = percent_decode_str(url.username()).decode_utf8().ok()?;
 
@@ -551,7 +575,9 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     }
 
     if url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("encryption") && !value.eq_ignore_ascii_case("none")
+        key.eq_ignore_ascii_case("encryption")
+            && !value.eq_ignore_ascii_case("none")
+            && !valid_vless_encryption(value.as_ref())
     }) {
         return None;
     }
@@ -928,6 +954,19 @@ mod tests {
         ] {
             assert!(normalize_config(config).is_none(), "{config}");
         }
+    }
+
+    #[test]
+    fn accepts_vless_mlkem_encryption() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHOevTauCQwa_71U";
+
+        assert!(normalize_config(config).is_some());
+    }
+
+    #[test]
+    fn rejects_invalid_vless_mlkem_encryption() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.invalid.1rtt.seed";
+        assert!(normalize_config(config).is_none());
     }
 
     #[test]
