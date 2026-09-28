@@ -2130,7 +2130,10 @@ mod tests {
         )
         .expect("VLESS TLS should parse");
 
-        assert_eq!(config["streamSettings"]["tlsSettings"]["allowInsecure"], true);
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
 
         let config = parse_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&allowInsecure=1",
