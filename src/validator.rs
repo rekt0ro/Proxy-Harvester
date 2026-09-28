@@ -989,8 +989,20 @@ fn make_temp_dir() -> Result<std::path::PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("proxyrift-xray-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    let path =
+        std::env::temp_dir().join(format!("proxyrift-xray-{}-{nanos}", std::process::id()));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&path).map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(unix))]
+    std::fs::create_dir(&path).map_err(|error| error.to_string())?;
+
     Ok(path)
 }
 

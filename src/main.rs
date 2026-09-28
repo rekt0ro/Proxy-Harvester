@@ -32,6 +32,7 @@ const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
@@ -61,18 +62,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 println!("[INFO] Downloading source {source_label}");
                 match client.get(&url).send().await {
                     Ok(response) => match response.error_for_status() {
-                        Ok(response) => match response.text().await {
-                            Ok(text) => {
-                                let configs = extract_configs(&text);
+                        Ok(response) => {
+                            if response
+                                .content_length()
+                                .is_some_and(|length| length as usize > MAX_SOURCE_BYTES)
+                            {
                                 println!(
-                                    "[INFO] Found {} configs from source {source_label}.",
-                                    configs.len()
+                                    "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                    MAX_SOURCE_BYTES
                                 );
-                                configs
+                                return Vec::new();
                             }
-                            Err(error) => {
-                                println!("[WARN] Failed to read source {source_label}: {error}");
-                                Vec::new()
+
+                            match response.bytes().await {
+                                Ok(bytes) if bytes.len() <= MAX_SOURCE_BYTES => {
+                                    match String::from_utf8(bytes.to_vec()) {
+                                        Ok(text) => {
+                                            let configs = extract_configs(&text);
+                                            println!(
+                                                "[INFO] Found {} configs from source {source_label}.",
+                                                configs.len()
+                                            );
+                                            configs
+                                        }
+                                        Err(error) => {
+                                            println!(
+                                                "[WARN] Failed to decode source {source_label} as UTF-8: {error}"
+                                            );
+                                            Vec::new()
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    println!(
+                                        "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                        MAX_SOURCE_BYTES
+                                    );
+                                    Vec::new()
+                                }
+                                Err(error) => {
+                                    println!("[WARN] Failed to read source {source_label}: {error}");
+                                    Vec::new()
+                                }
                             }
                         },
                         Err(error) => {
