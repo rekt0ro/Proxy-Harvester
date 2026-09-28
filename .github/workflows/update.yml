@@ -310,7 +310,7 @@ jobs:
           git config user.name "rekt0ro"
           git config user.email "vultazhh@gmail.com"
 
-          git add subscriptions
+          git add -u subscriptions
 
           if git diff --cached --quiet; then
             echo "No changes."
@@ -319,5 +319,5 @@ jobs:
 
           git commit -m "Update subscriptions"
           git fetch origin main
-          git rebase origin/main
+          git rebase --autostash origin/main
           git push origin HEAD:main
