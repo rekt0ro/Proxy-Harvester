@@ -307,10 +307,7 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::SingBox;
     }
 
-    if matches!(
-        scheme.as_str(),
-        "http" | "socks" | "socks5" | "socks5h"
-    ) {
+    if matches!(scheme.as_str(), "http" | "socks" | "socks5" | "socks5h") {
         return LightBackend::Xray;
     }
 
