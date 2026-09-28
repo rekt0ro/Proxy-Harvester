@@ -519,12 +519,8 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "id": uuid,
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
-    let packet_encoding = first_query(
-        &url,
-        &["packetEncoding", "packet-encoding"],
-        Some(""),
-    )
-    .to_ascii_lowercase();
+    let packet_encoding =
+        first_query(&url, &["packetEncoding", "packet-encoding"], Some("")).to_ascii_lowercase();
     if !packet_encoding.is_empty() && packet_encoding != "none" {
         return Err(format!(
             "VLESS packet encoding {packet_encoding} requires sing-box Light validation"
