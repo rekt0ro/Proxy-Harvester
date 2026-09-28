@@ -206,39 +206,58 @@ jobs:
           key: ${{ steps.keys.outputs.build }}
 
       - name: Collect and transport-test configs
-        run: ./target/release/ProxyRift
+        run: |
+          set -euo pipefail
+          if [ -s subscriptions/all.txt ]; then
+            cp subscriptions/all.txt /tmp/proxyrift/all.previous.txt
+          else
+            rm -f /tmp/proxyrift/all.previous.txt
+          fi
+          ./target/release/ProxyRift
 
       - name: Validate All subscription
         env:
           ALL_MIN_PUBLISH: "50"
         run: |
-          mkdir -p /tmp/proxyrift
-          set +e
-          ./target/release/check_proxies \
-            --input subscriptions/.all.txt \
+          set -euo pipefail
+
+          if ! ./target/release/check_proxies \
+            --input subscriptions/all.txt \
             --output /tmp/proxyrift/all.next.txt \
             --workers 32 \
             --batch-size 250 \
             --timeout 3 \
             --target https://www.google.com/generate_204 \
             --xray "$HOME/.local/bin/xray"
-          status=$?
-          set -e
+          then
+            status=$?
+            if [ -s /tmp/proxyrift/all.previous.txt ]; then
+              cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
+              echo "Restored previous All subscription after validation failure."
+            fi
+            echo "::error::All subscription validation failed."
+            exit "$status"
+          fi
 
           if [ -s /tmp/proxyrift/all.next.txt ]; then
             all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
             echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
             if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
-              cp /tmp/proxyrift/all.next.txt subscriptions/.all.txt.next
-              mv -f subscriptions/.all.txt.next subscriptions/all.txt
+              mv -f /tmp/proxyrift/all.next.txt subscriptions/all.txt
               echo "Published refreshed All subscription."
+            elif [ -s /tmp/proxyrift/all.previous.txt ]; then
+              cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
+              echo "All verified pool is too small; restored the previous All subscription."
             else
-              echo "All verified pool is too small to replace the current subscription; preserving the previous All subscription."
+              echo "::error::All validation produced too few configs and no previous subscription is available."
+              exit 1
             fi
-          elif [ "${status}" -ne 0 ]; then
-            echo "All validation failed; preserving the previous All subscription."
+          elif [ -s /tmp/proxyrift/all.previous.txt ]; then
+            cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
+            echo "All validation produced no configs; restored the previous All subscription."
           else
-            echo "All validation produced no configs; preserving the previous All subscription."
+            echo "::error::All validation produced no configs and no previous subscription is available."
+            exit 1
           fi
 
       - name: Build Light subscription
@@ -288,7 +307,7 @@ jobs:
 
       # Only the four published files leave this job (never sources.txt or temp files).
       - name: Upload subscriptions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: subscriptions
           path: |
