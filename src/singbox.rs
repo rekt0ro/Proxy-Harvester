@@ -1,5 +1,6 @@
 use crate::validator::{
-    config_label, ProxyMetrics, ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES,
+    config_label, extend_rate_limit, rate_limit_wait, wait_for_rate_limit, ProxyMetrics,
+    ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES,
     MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
     STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
     STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_STABILITY_ATTEMPTS,
@@ -905,6 +906,7 @@ fn valid_probe_body(url: &str, body: &[u8]) -> bool {
 }
 
 async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
+    wait_for_rate_limit().await;
     let started = std::time::Instant::now();
     let response = client
         .get(url)
@@ -913,6 +915,7 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         .map_err(|error| error.to_string())?;
 
     if response.status().as_u16() == 429 {
+        extend_rate_limit(rate_limit_wait(response.headers()));
         return Err("target returned HTTP 429".to_string());
     }
 

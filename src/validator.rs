@@ -1111,7 +1111,7 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration {
+pub(crate) fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration {
     headers
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
@@ -1122,7 +1122,7 @@ fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration {
         .min(RATE_LIMIT_MAX_WAIT)
 }
 
-fn extend_rate_limit(wait: Duration) {
+pub(crate) fn extend_rate_limit(wait: Duration) {
     let wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
     let target = unix_now_ms().saturating_add(wait_ms);
     let mut current = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
@@ -1140,7 +1140,7 @@ fn extend_rate_limit(wait: Duration) {
     }
 }
 
-async fn wait_for_rate_limit() {
+pub(crate) async fn wait_for_rate_limit() {
     loop {
         let now = unix_now_ms();
         let until = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
