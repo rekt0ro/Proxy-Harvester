@@ -221,10 +221,7 @@ fn normalize_light_config(config: &str) -> String {
     if query_parts.is_empty() {
         format!("{path}?security=tls{fragment}")
     } else {
-        format!(
-            "{path}?{}&security=tls{fragment}",
-            query_parts.join("&")
-        )
+        format!("{path}?{}&security=tls{fragment}", query_parts.join("&"))
     }
 }
 
