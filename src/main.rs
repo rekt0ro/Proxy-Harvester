@@ -4,10 +4,12 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
 use proxyrift::validator::{config_label, endpoint};
 use quinn::crypto::rustls::QuicClientConfig;
-use quinn::Endpoint;
+use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
 use reqwest::Client;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde_json::Value;
@@ -27,12 +29,25 @@ use wireguard_sans_io::{
 };
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
-const TEST_CONCURRENCY: usize = 8;
-const TEST_CONNECTION_CONCURRENCY: usize = 64;
+
+// Keep total endpoint probes bounded. The previous 8 x 64 nesting could create
+// roughly 512 simultaneous probes before address fan-out was even considered.
+const TEST_CONCURRENCY: usize = 2;
+const TEST_CONNECTION_CONCURRENCY: usize = 32;
+
+const MAX_TCP_ADDRESS_CONCURRENCY: usize = 8;
+const MAX_QUIC_TARGET_CONCURRENCY: usize = 8;
+const MAX_WIREGUARD_ADDRESS_CONCURRENCY: usize = 4;
+
 const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
+// Bound total discovery work before transport probing. The final published pool
+// is capped separately by MAX_ALL_CONFIGS.
+const MAX_DISCOVERED_CONFIGS: usize = 20_000;
+
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
@@ -73,15 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build()?;
 
     let mut unique = HashSet::new();
-    let mut source_results = stream::iter(sources.iter().cloned().enumerate())
+
+    let source_results = stream::iter(sources.iter().cloned().enumerate())
         .map(|(source_index, url)| {
             let client = client.clone();
+
             async move {
                 let source_number = source_index + 1;
                 println!("[INFO] Downloading source #{source_number}");
+
                 match client.get(&url).send().await {
                     Ok(response) => {
                         let status = response.status();
+
                         if !status.is_success() {
                             println!(
                                 "[WARN] Source #{source_number} returned HTTP status {status}"
@@ -104,12 +123,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             Ok(bytes) => match String::from_utf8(bytes) {
                                 Ok(text) => {
                                     let configs = extract_configs(&text);
+
                                     println!(
                                         "[INFO] Found {} configs from source #{source_number}.",
                                         configs.len()
                                     );
+
                                     configs
                                 }
+
                                 Err(error) => {
                                     println!(
                                         "[WARN] Failed to decode source #{source_number} as UTF-8: {error}"
@@ -117,6 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     Vec::new()
                                 }
                             },
+
                             Err(SourceBodyError::TooLarge) => {
                                 println!(
                                     "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
@@ -124,14 +147,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 );
                                 Vec::new()
                             }
+
                             Err(SourceBodyError::Read) => {
                                 println!("[WARN] Failed to read source #{source_number}.");
                                 Vec::new()
                             }
                         }
                     }
-                    Err(_error) => {
-                        println!("[WARN] Failed to download source #{source_number}.");
+
+                    Err(error) => {
+                        println!(
+                            "[WARN] Failed to download source #{source_number}: {error}"
+                        );
                         Vec::new()
                     }
                 }
@@ -145,6 +172,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut configs: Vec<String> = unique.into_iter().collect();
     configs.sort_unstable();
+
+    if configs.len() > MAX_DISCOVERED_CONFIGS {
+        println!(
+            "[WARN] Discovery produced {} configs; sampling down to {} before transport testing.",
+            configs.len(),
+            MAX_DISCOVERED_CONFIGS
+        );
+
+        configs = sample_evenly(&configs, MAX_DISCOVERED_CONFIGS);
+    }
+
     configs = assign_config_names(configs);
 
     println!("[INFO] Collected {} unique configs.", configs.len());
@@ -154,8 +192,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut scheme_counts = HashMap::new();
+
     for config in &configs {
-        *scheme_counts.entry(config_scheme(config)).or_insert(0usize) += 1;
+        *scheme_counts
+            .entry(config_scheme(config))
+            .or_insert(0usize) += 1;
     }
 
     for (scheme, count) in scheme_counts {
@@ -185,16 +226,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .filter(|config| config_scheme(config) == "hysteria")
         .cloned()
         .collect::<Vec<_>>();
+
     let hysteria2_candidates = configs
         .iter()
         .filter(|config| matches!(config_scheme(config).as_str(), "hysteria2" | "hy2"))
         .cloned()
         .collect::<Vec<_>>();
+
     let mut special_hysteria_candidates = hysteria_candidates.clone();
     special_hysteria_candidates.extend(hysteria2_candidates.iter().cloned());
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
-        println!("[WARN] No usable configs remained after transport-aware reachability screening.");
+        println!(
+            "[WARN] No usable configs remained after transport-aware reachability screening."
+        );
+
         diagnose_configs(&configs).await;
         return Ok(());
     }
@@ -231,6 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             };
 
             let (config, _) = &ranked_working_configs[index];
+
             if let Some(endpoint) = endpoint(config) {
                 if light_candidate_endpoints.insert(endpoint) {
                     light_candidates.push(config.clone());
@@ -267,39 +314,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let special_count = light_candidates
+        .len()
+        .saturating_sub(sampled_transport_count);
+
     println!(
-        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs, including {} Hysteria2 candidates.",
-        light_candidates.len(),
-        ranked_working_configs.len(),
-        light_candidates.len().saturating_sub(sampled_transport_count)
+        "[INFO] Light candidate sampling: selected {} transport-reachable configs and retained {} Hysteria/Hysteria2 candidates for core validation.",
+        sampled_transport_count,
+        special_count
     );
+
     let light_candidates_path = output_dir.join(".light-candidates.txt");
+
     let light_candidates_subscription = if light_candidates.is_empty() {
         String::new()
     } else {
         format!("{}\n", light_candidates.join("\n"))
     };
+
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
     let working_configs =
         select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
 
-    let all_subscription = format!("{}\n", working_configs.join("\n"));
+    let all_subscription = if working_configs.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", working_configs.join("\n"))
+    };
+
     let temporary_all = output_dir.join(".all.txt");
+
     fs::write(&temporary_all, all_subscription).await?;
     fs::rename(&temporary_all, &all_path).await?;
 
     println!(
-        "[INFO] Published {} configs to All, prioritizing the fastest transport-reachable configs ({} reachable configs; cap {}).",
+        "[INFO] Prepared {} core-validation candidates for All ({} transport-reachable; cap {}).",
         working_configs.len(),
         reachable_probes,
         MAX_ALL_CONFIGS
     );
+
     println!(
-        "[INFO] Prepared {} transport-reachable Light candidates (cap {}).",
+        "[INFO] Prepared {} Light candidates (cap {}).",
         light_candidates.len(),
         MAX_LIGHT_CANDIDATES
     );
+
     println!("[INFO] Done.");
 
     Ok(())
@@ -309,25 +370,42 @@ fn append_limited_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
     if chunk.len() > MAX_SOURCE_BYTES.saturating_sub(body.len()) {
         return false;
     }
+
     body.extend_from_slice(chunk);
     true
 }
 
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    let cwd = env::current_dir()?;
+
+    if cwd.join("sources.txt").is_file() {
+        return Ok(cwd);
+    }
+
     let exe = env::current_exe()?;
-    let root = exe
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or("failed to determine project root")?;
-    Ok(root.to_path_buf())
+
+    for ancestor in exe.ancestors() {
+        if ancestor.join("sources.txt").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+
+    for ancestor in exe.ancestors() {
+        if ancestor.join("Cargo.toml").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+
+    Err("failed to determine project root".into())
 }
 
 async fn load_sources(
     path: &Path,
 ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let content = fs::read_to_string(path).await?;
+
     let mut seen = HashSet::new();
+
     Ok(content
         .lines()
         .map(str::trim)
@@ -337,11 +415,42 @@ async fn load_sources(
         .collect())
 }
 
+fn sample_evenly(configs: &[String], target: usize) -> Vec<String> {
+    if target == 0 || configs.is_empty() {
+        return Vec::new();
+    }
+
+    if target >= configs.len() {
+        return configs.to_vec();
+    }
+
+    if target == 1 {
+        return vec![configs[0].clone()];
+    }
+
+    let last = configs.len() - 1;
+    let last_slot = target - 1;
+
+    let mut sampled = Vec::with_capacity(target);
+
+    for slot in 0..target {
+        let index = slot
+            .saturating_mul(last)
+            .checked_div(last_slot)
+            .unwrap_or_default();
+
+        sampled.push(configs[index].clone());
+    }
+
+    sampled
+}
+
 fn config_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
+
     PATTERN.get_or_init(|| {
         Regex::new(
-            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
+            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria|hysteria2|hy2|wg|http)://[^\s<>"']+"#,
         )
         .expect("config regex must compile")
     })
@@ -405,6 +514,13 @@ fn normalize_config(config: &str) -> Option<String> {
         return normalize_vmess(&config);
     }
 
+    // Hysteria2 supports port-hopping syntax such as:
+    // host:1234,5000-5002
+    // which Url::parse rejects because the authority is not a single u16 port.
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+        return normalize_hysteria2(&config);
+    }
+
     let Ok(url) = Url::parse(&config) else {
         return None;
     };
@@ -460,11 +576,13 @@ fn has_bracketed_ipv4_host(config: &str) -> bool {
         return false;
     };
 
-    let Some(host_port) = authority.rsplit_once('@').map(|(_, host)| host) else {
-        return false;
-    };
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
 
     let decoded = percent_decode_str(host_port).decode_utf8_lossy();
+
     let host = if let Some(stripped) = decoded.strip_prefix('[') {
         stripped.split_once(']').map(|(host, _)| host)
     } else {
@@ -475,7 +593,7 @@ fn has_bracketed_ipv4_host(config: &str) -> bool {
         return false;
     };
 
-    host.parse::<std::net::Ipv4Addr>().is_ok()
+    host.parse::<Ipv4Addr>().is_ok()
 }
 
 fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
@@ -499,6 +617,7 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
 
     if !url.username().is_empty() {
         let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
+
         let method = if url.password().is_some() {
             userinfo.to_string()
         } else if let Some((method, _)) = userinfo.split_once(':') {
@@ -507,6 +626,7 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
             let decoded = decode_base64_string(&userinfo)?;
             decoded.split_once(':')?.0.to_string()
         };
+
         return supported(&method, METHODS).then(|| config.to_string());
     }
 
@@ -515,6 +635,7 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
     if let Some((credentials, _remote)) = payload.rsplit_once('@') {
         let decoded = decode_base64_string(credentials)?;
         let method = decoded.split_once(':')?.0;
+
         return supported(method, METHODS).then(|| config.to_string());
     }
 
@@ -527,16 +648,19 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
 
 fn valid_vless_encryption(value: &str) -> bool {
     let blocks = value.split('.').collect::<Vec<_>>();
+
     if blocks.len() < 4 || blocks[0] != "mlkem768x25519plus" {
         return false;
     }
 
-    if !matches!(blocks[1], "native" | "xorpub" | "random") || !matches!(blocks[2], "1rtt" | "0rtt")
+    if !matches!(blocks[1], "native" | "xorpub" | "random")
+        || !matches!(blocks[2], "1rtt" | "0rtt")
     {
         return false;
     }
 
     let mut has_key = false;
+
     if !blocks[3..].iter().all(|block| {
         if block.len() < 20 {
             return true;
@@ -546,6 +670,7 @@ fn valid_vless_encryption(value: &str) -> bool {
             URL_SAFE_NO_PAD.decode(block),
             Ok(bytes) if bytes.len() == 32 || bytes.len() == 1184
         );
+
         has_key |= valid;
         valid
     }) {
@@ -590,7 +715,8 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     }
 
     if url.query_pairs().any(|(key, value)| {
-        (key.eq_ignore_ascii_case("packetencoding") || key.eq_ignore_ascii_case("packet-encoding"))
+        (key.eq_ignore_ascii_case("packetencoding")
+            || key.eq_ignore_ascii_case("packet-encoding"))
             && !value.trim().is_empty()
             && !matches!(
                 value.to_ascii_lowercase().as_str(),
@@ -607,12 +733,8 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
         return None;
     }
 
-    if url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("path") && value.to_ascii_lowercase().contains("security=tls")
-    }) {
-        return None;
-    }
-
+    // Do not reject a valid path merely because its literal path text happens
+    // to contain "security=tls". The path is not re-parsed as a query.
     if is_invalid_vless_reality_public_key(url) {
         return None;
     }
@@ -638,8 +760,6 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
 
     let public_key = public_key.trim();
 
-    // sing-box Reality public keys are 32-byte X25519 keys encoded as
-    // unpadded base64url, which is exactly 43 characters.
     if public_key.len() != 43
         || !public_key
             .bytes()
@@ -649,6 +769,93 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
     }
 
     !matches!(URL_SAFE_NO_PAD.decode(public_key), Ok(bytes) if bytes.len() == 32)
+}
+
+fn normalize_hysteria2(config: &str) -> Option<String> {
+    let (_, port_spec, _) = hysteria2_parts(config)?;
+
+    if !port_spec.is_empty() {
+        hysteria2_probe_ports(config)?;
+    }
+
+    for key in ["fp", "fingerprint"] {
+        if hysteria2_query_values(config, key)
+            .into_iter()
+            .any(|value| value.eq_ignore_ascii_case("unsafe"))
+        {
+            return None;
+        }
+    }
+
+    Some(config.to_string())
+}
+
+fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
+    let rest = config.split_once("://")?.1;
+    let authority = rest.split(['?', '#']).next()?;
+
+    let (auth_raw, host_port) = authority.rsplit_once('@')?;
+
+    if auth_raw.is_empty() || host_port.is_empty() {
+        return None;
+    }
+
+    let password = percent_decode_str(auth_raw).decode_utf8().ok()?;
+
+    if password.is_empty() {
+        return None;
+    }
+
+    let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
+        let (host, remainder) = stripped.split_once(']')?;
+
+        if host.is_empty()
+            || host.chars().any(|c| c.is_whitespace() || c.is_control())
+            || host.parse::<Ipv6Addr>().is_err()
+        {
+            return None;
+        }
+
+        if !remainder.is_empty() && !remainder.starts_with(':') {
+            return None;
+        }
+
+        (
+            host.to_string(),
+            remainder.strip_prefix(':').unwrap_or("").to_string(),
+        )
+    } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
+        if host.is_empty()
+            || host.contains(':')
+            || host.contains('[')
+            || host.contains(']')
+            || host.chars().any(|c| {
+                c.is_whitespace()
+                    || c.is_control()
+                    || matches!(c, '/' | '\\')
+            })
+        {
+            return None;
+        }
+
+        (host.to_string(), port_spec.to_string())
+    } else {
+        if host_port.chars().any(|c| {
+            c.is_whitespace()
+                || c.is_control()
+                || matches!(c, '[' | ']' | '/' | '\\')
+        }) {
+            return None;
+        }
+
+        (host_port.to_string(), String::new())
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+
+    Some((host, port_spec, auth_raw.to_string()))
 }
 
 fn normalize_vmess(config: &str) -> Option<String> {
@@ -668,11 +875,13 @@ fn normalize_vmess(config: &str) -> Option<String> {
         Some(Value::Number(version)) => version.as_u64() == Some(2),
         _ => false,
     };
+
     if !version_ok {
         return None;
     }
 
     let add = object.get("add")?.as_str()?.trim();
+
     if add.is_empty()
         || add
             .chars()
@@ -683,14 +892,18 @@ fn normalize_vmess(config: &str) -> Option<String> {
 
     let port = match object.get("port") {
         Some(Value::String(port)) => port.parse::<u16>().ok()?,
-        Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
+        Some(Value::Number(port)) => port
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok())?,
         _ => return None,
     };
+
     if port == 0 {
         return None;
     }
 
     let id = object.get("id")?.as_str()?.trim();
+
     if !is_uuid(id) {
         return None;
     }
@@ -711,11 +924,13 @@ fn normalize_vmess(config: &str) -> Option<String> {
     }
 
     let canonical = STANDARD.encode(decoded.as_bytes());
+
     Some(format!("vmess://{canonical}"))
 }
 
 fn is_uuid(value: &str) -> bool {
     let bytes = value.as_bytes();
+
     if bytes.len() != 36 {
         return false;
     }
@@ -735,6 +950,7 @@ fn is_uuid(value: &str) -> bool {
 
 fn decode_base64_string(encoded: &str) -> Option<String> {
     let mut padded = encoded.to_string();
+
     while !padded.len().is_multiple_of(4) {
         padded.push('=');
     }
@@ -779,12 +995,52 @@ fn decode_html_entities(text: &str) -> String {
 fn trim_config(config: &str) -> String {
     let config = config.trim();
 
-    let Ok(mut url) = Url::parse(config) else {
-        return config.to_string();
-    };
+    // Strip fragment before URL parsing so syntaxes that Url::parse rejects,
+    // especially Hysteria2 port hopping, still get normalized consistently.
+    let config = config.split('#').next().unwrap_or(config).trim();
 
-    url.set_fragment(None);
-    url.to_string()
+    if let Ok(mut url) = Url::parse(config) {
+        url.set_fragment(None);
+        return url.to_string();
+    }
+
+    config.to_string()
+}
+
+fn percent_encode_fragment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~' => encoded.push(byte as char),
+
+            _ => {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0F) as usize] as char);
+            }
+        }
+    }
+
+    encoded
+}
+
+fn set_config_fragment(config: &str, name: &str) -> String {
+    let base = config.split('#').next().unwrap_or(config);
+
+    format!(
+        "{}#{}",
+        base,
+        percent_encode_fragment(name)
+    )
 }
 
 fn assign_config_names(configs: Vec<String>) -> Vec<String> {
@@ -793,16 +1049,23 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
 
     for config in configs {
         let scheme = config_scheme(&config);
-        let counter = counters.entry(scheme.clone()).or_insert(0);
+        let display = display_protocol(&scheme).to_string();
+
+        let counter = counters.entry(display.clone()).or_insert(0);
         *counter += 1;
 
-        let name = format!("{} {:03}", display_protocol(&scheme), *counter);
+        let name = format!("{} {:03}", display, *counter);
 
         if scheme == "vmess" {
             if let Some(named_config) = name_vmess_config(&config, &name) {
                 named.push(named_config);
                 continue;
             }
+        }
+
+        if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+            named.push(set_config_fragment(&config, &name));
+            continue;
         }
 
         if let Ok(mut url) = Url::parse(&config) {
@@ -819,10 +1082,17 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
 fn name_vmess_config(config: &str, name: &str) -> Option<String> {
     let encoded = config.split_once("://")?.1.split('#').next()?.trim();
     let decoded = decode_vmess_payload(encoded)?;
-    let mut object: serde_json::Map<String, Value> = serde_json::from_str(&decoded).ok()?;
-    object.insert("ps".to_string(), Value::String(name.to_string()));
+
+    let mut object: serde_json::Map<String, Value> =
+        serde_json::from_str(&decoded).ok()?;
+
+    object.insert(
+        "ps".to_string(),
+        Value::String(name.to_string()),
+    );
 
     let payload = serde_json::to_vec(&Value::Object(object)).ok()?;
+
     Some(format!("vmess://{}", STANDARD.encode(payload)))
 }
 
@@ -850,16 +1120,22 @@ fn looks_like_base64(value: &str) -> bool {
     value.len() >= 16
         && value.len() <= MAX_BASE64_BYTES
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
         })
 }
 
 fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
 
-    if !text.contains("://") && text.len() <= MAX_BASE64_BYTES.saturating_mul(2) {
+    if !text.contains("://")
+        && text.len() <= MAX_BASE64_BYTES.saturating_mul(2)
+    {
         let compact = text.split_whitespace().collect::<String>();
-        if compact.len() <= MAX_BASE64_BYTES && looks_like_base64(&compact) {
+
+        if compact.len() <= MAX_BASE64_BYTES
+            && looks_like_base64(&compact)
+        {
             inputs.push(compact);
         }
     }
@@ -870,6 +1146,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
             .filter(|line| looks_like_base64(line))
             .map(ToOwned::to_owned),
     );
+
     inputs.sort_unstable();
     inputs.dedup();
 
@@ -877,6 +1154,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 
     for input in inputs {
         let mut padded = input.clone();
+
         while !padded.len().is_multiple_of(4) {
             padded.push('=');
         }
@@ -898,7 +1176,10 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
             {
                 if bytes
                     .iter()
-                    .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t'))
+                    .filter(|byte| {
+                        **byte < 0x20
+                            && !matches!(**byte, b'\n' | b'\r' | b'\t')
+                    })
                     .count()
                     > 8
                 {
@@ -906,6 +1187,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
                 }
 
                 let decoded = String::from_utf8_lossy(&bytes);
+
                 if decoded.contains("://") {
                     results.push(decoded.into_owned());
                 }
@@ -921,8 +1203,8 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_limited_chunk, decode_base64_variants, extract_configs, normalize_config,
-        MAX_SOURCE_BYTES,
+        append_limited_chunk, decode_base64_variants, extract_configs,
+        normalize_config, assign_config_names, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -930,11 +1212,17 @@ mod tests {
     #[test]
     fn bounded_source_chunk_stops_at_limit() {
         let mut body = Vec::new();
+
         assert!(append_limited_chunk(&mut body, &[1, 2, 3]));
         assert_eq!(body.len(), 3);
 
         let remaining = MAX_SOURCE_BYTES - body.len();
-        assert!(append_limited_chunk(&mut body, &vec![0u8; remaining]));
+
+        assert!(append_limited_chunk(
+            &mut body,
+            &vec![0u8; remaining]
+        ));
+
         assert_eq!(body.len(), MAX_SOURCE_BYTES);
 
         assert!(!append_limited_chunk(&mut body, &[0]));
@@ -943,8 +1231,10 @@ mod tests {
 
     #[test]
     fn decodes_large_single_line_base64_sources() {
-        let payload = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls\n"
-            .repeat(300);
+        let payload =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls\n"
+                .repeat(300);
+
         let encoded = STANDARD.encode(payload.as_bytes());
 
         assert!(encoded.len() > 8192);
@@ -960,7 +1250,10 @@ mod tests {
             "tuic://token@127.0.0.1:443",
             "naive+https://user:pass@example.com:443",
         ] {
-            assert!(normalize_config(config).is_none(), "{config}");
+            assert!(
+                normalize_config(config).is_none(),
+                "{config}"
+            );
         }
     }
 
@@ -974,37 +1267,57 @@ mod tests {
     #[test]
     fn rejects_invalid_vless_mlkem_encryption() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.invalid.1rtt.seed";
+
         assert!(normalize_config(config).is_none());
     }
 
     #[test]
     fn accepts_shadowsocks_plain_and_base64_userinfo() {
-        assert!(normalize_config("ss://aes-256-gcm:secret@example.com:8388").is_some());
+        assert!(
+            normalize_config(
+                "ss://aes-256-gcm:secret@example.com:8388"
+            )
+            .is_some()
+        );
 
-        assert!(normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some());
+        assert!(
+            normalize_config(
+                "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388"
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn accepts_legacy_base64_shadowsocks_urls() {
-        let legacy = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
+        let legacy =
+            "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
+
         assert!(normalize_config(legacy).is_some());
     }
 
     #[test]
     fn retains_supported_proxy_schemes() {
-        assert!(normalize_config("http://127.0.0.1:8080").is_some(), "http");
+        assert!(
+            normalize_config("http://127.0.0.1:8080").is_some(),
+            "http"
+        );
+
         assert!(
             normalize_config("socks4://127.0.0.1:1080").is_some(),
             "socks4"
         );
+
         assert!(
             normalize_config("socks5://127.0.0.1:1080").is_some(),
             "socks5"
         );
+
         assert!(
             normalize_config("socks5h://127.0.0.1:1080").is_some(),
             "socks5h"
         );
+
         assert!(
             normalize_config("socks4a://127.0.0.1:1080").is_some(),
             "socks4a"
@@ -1016,6 +1329,7 @@ mod tests {
         let configs = extract_configs(
             "socks4://127.0.0.1:1080 socks4a://127.0.0.1:1081 socks5://127.0.0.1:1082 socks5h://127.0.0.1:1083",
         );
+
         assert_eq!(
             configs,
             vec![
@@ -1030,32 +1344,54 @@ mod tests {
     #[test]
     fn preserves_punctuation_in_uri_credentials_and_queries() {
         assert_eq!(
-            normalize_config("trojan://secret.@example.com:443?security=tls&path=/foo,;#label."),
-            Some("trojan://secret.@example.com:443?security=tls&path=/foo,;".to_string())
+            normalize_config(
+                "trojan://secret.@example.com:443?security=tls&path=/foo,;#label."
+            ),
+            Some(
+                "trojan://secret.@example.com:443?security=tls&path=/foo,;"
+                    .to_string()
+            )
         );
     }
 
     #[test]
     fn all_candidates_include_hysteria_v1_after_transport_screening() {
         let working = Vec::<(String, u64)>::new();
-        let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
 
-        let selected = super::select_all_candidates(&working, &hysteria);
+        let hysteria =
+            vec![
+                "hysteria://example.com:443?upmbps=100&downmbps=100"
+                    .to_string(),
+            ];
+
+        let selected =
+            super::select_all_candidates(&working, &hysteria);
 
         assert_eq!(
             selected,
-            vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()]
+            vec![
+                "hysteria://example.com:443?upmbps=100&downmbps=100"
+                    .to_string()
+            ]
         );
     }
 
     #[test]
     fn all_candidates_include_hysteria2_after_transport_screening() {
-        let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
-        let hysteria2 = vec![
-            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret".to_string(),
+        let working = vec![
+            (
+                "vless://uuid@example.com:443".to_string(),
+                20
+            )
         ];
 
-        let selected = super::select_all_candidates(&working, &hysteria2);
+        let hysteria2 = vec![
+            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret"
+                .to_string()
+        ];
+
+        let selected =
+            super::select_all_candidates(&working, &hysteria2);
 
         assert_eq!(
             selected,
@@ -1071,19 +1407,29 @@ mod tests {
     fn retains_vless_with_empty_packet_encoding_value() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&packetEncoding=";
-        assert_eq!(normalize_config(config), Some(config.to_string()));
+
+        assert_eq!(
+            normalize_config(config),
+            Some(config.to_string())
+        );
     }
 
     #[test]
     fn retains_vless_with_empty_encryption_value() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=";
-        assert_eq!(normalize_config(config), Some(config.to_string()));
+
+        assert_eq!(
+            normalize_config(config),
+            Some(config.to_string())
+        );
     }
 
     #[test]
     fn rejects_vless_encryption_without_public_key() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=mlkem768x25519plus.native.1rtt.padding";
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=mlkem768x25519plus.native.1rtt.padding";
+
         assert!(super::normalize_config(config).is_none());
     }
 
@@ -1091,47 +1437,150 @@ mod tests {
     fn retains_vless_with_empty_security_value() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=&type=tcp";
-        assert_eq!(super::normalize_config(config), Some(config.to_string()));
+
+        assert_eq!(
+            super::normalize_config(config),
+            Some(config.to_string())
+        );
     }
 
     #[test]
     fn retains_legacy_hysteria_links() {
-        let config = "hysteria://example.com:443?upmbps=100&downmbps=100&peer=edge.example.com";
-        assert_eq!(super::normalize_config(config), Some(config.to_string()));
+        let config =
+            "hysteria://example.com:443?upmbps=100&downmbps=100&peer=edge.example.com";
+
+        assert_eq!(
+            super::normalize_config(config),
+            Some(config.to_string())
+        );
+    }
+
+    #[test]
+    fn accepts_hysteria2_port_hopping() {
+        let config =
+            "hy2://password@example.com:1234,5000-5002";
+
+        assert_eq!(
+            normalize_config(config),
+            Some(config.to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_hysteria2_port_hopping() {
+        assert!(
+            normalize_config(
+                "hy2://password@example.com:5000-4000"
+            )
+            .is_none()
+        );
+
+        assert!(
+            normalize_config(
+                "hy2://password@example.com:not-a-port"
+            )
+            .is_none()
+        );
+
+        assert!(
+            normalize_config(
+                "hy2://password@example.com:0"
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn hysteria2_probe_ports_supports_port_hopping() {
         assert_eq!(
-            super::hysteria2_probe_ports("hy2://password@example.com"),
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com"
+            ),
             Some(vec![443])
         );
+
         assert_eq!(
-            super::hysteria2_probe_ports("hy2://password@example.com:1234,5000-5002"),
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com:1234,5000-5002"
+            ),
             Some(vec![1234, 5000, 5001, 5002])
         );
     }
 
     #[test]
     fn hysteria2_probe_ports_rejects_invalid_explicit_ports() {
-        assert!(super::hysteria2_probe_ports("hy2://password@example.com:not-a-port").is_none());
-        assert!(super::hysteria2_probe_ports("hy2://password@example.com:0").is_none());
-        assert!(super::hysteria2_probe_ports("hy2://password@example.com:5000-4000").is_none());
+        assert!(
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com:not-a-port"
+            )
+            .is_none()
+        );
+
+        assert!(
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com:0"
+            )
+            .is_none()
+        );
+
+        assert!(
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com:5000-4000"
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn hysteria2_probe_ports_bounds_large_ranges() {
-        let ports = super::hysteria2_probe_ports("hy2://password@example.com:1000-65000")
-            .expect("large range should produce bounded probe ports");
-        assert!(ports.len() <= super::MAX_HYSTERIA2_PROBE_PORTS);
+        let ports =
+            super::hysteria2_probe_ports(
+                "hy2://password@example.com:1000-65000"
+            )
+            .expect(
+                "large range should produce bounded probe ports"
+            );
+
+        assert!(
+            ports.len()
+                <= super::MAX_HYSTERIA2_PROBE_PORTS
+        );
+
         assert!(ports.contains(&1000));
         assert!(ports.contains(&65000));
+    }
+
+    #[test]
+    fn preserves_vless_path_that_contains_security_text() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&path=%2Ffoo%3Fsecurity%3Dtls";
+
+        assert!(
+            normalize_config(config).is_some()
+        );
+    }
+
+    #[test]
+    fn alias_protocols_share_display_counter() {
+        let configs = vec![
+            "hy2://password@example.com:443".to_string(),
+            "hysteria2://password@example.net:443".to_string(),
+            "socks4://127.0.0.1:1080".to_string(),
+            "socks5://127.0.0.1:1081".to_string(),
+        ];
+
+        let named = assign_config_names(configs);
+
+        assert!(named[0].contains("#Hysteria2%20001"));
+        assert!(named[1].contains("#Hysteria2%20002"));
+        assert!(named[2].contains("#SOCKS%20001"));
+        assert!(named[3].contains("#SOCKS%20002"));
     }
 }
 
 fn select_all_candidates(
     ranked_working_configs: &[(String, u64)],
-    hysteria2_candidates: &[String],
+    special_candidates: &[String],
 ) -> Vec<String> {
     let mut selected = Vec::with_capacity(MAX_ALL_CONFIGS);
     let mut seen = HashSet::new();
@@ -1140,15 +1589,17 @@ fn select_all_candidates(
         if selected.len() >= MAX_ALL_CONFIGS {
             break;
         }
+
         if seen.insert(config.clone()) {
             selected.push(config.clone());
         }
     }
 
-    for config in hysteria2_candidates {
+    for config in special_candidates {
         if selected.len() >= MAX_ALL_CONFIGS {
             break;
         }
+
         if seen.insert(config.clone()) {
             selected.push(config.clone());
         }
@@ -1164,10 +1615,11 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
-    let start = Instant::now();
-
-    let mut addresses = timeout(
+async fn resolve_host_addresses(
+    host: &str,
+    port: u16,
+) -> Option<Vec<SocketAddr>> {
+    let addresses = timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
         tokio::net::lookup_host((host, port)),
     )
@@ -1176,47 +1628,114 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     .ok()?
     .collect::<Vec<_>>();
 
-    addresses.sort_by_key(|address| !address.is_ipv4());
-
     if addresses.is_empty() {
         return None;
     }
 
-    match timeout(
+    let mut seen = HashSet::new();
+    let mut unique = Vec::with_capacity(addresses.len());
+
+    for address in addresses {
+        if seen.insert(address) {
+            unique.push(address);
+        }
+    }
+
+    Some(unique)
+}
+
+async fn resolve_host_ips(
+    host: &str,
+    port: u16,
+) -> Option<Vec<IpAddr>> {
+    let addresses =
+        resolve_host_addresses(host, port).await?;
+
+    let mut seen = HashSet::new();
+    let mut ips = Vec::with_capacity(addresses.len());
+
+    for address in addresses {
+        if seen.insert(address.ip()) {
+            ips.push(address.ip());
+        }
+    }
+
+    Some(ips)
+}
+
+async fn tcp_latency_endpoint(
+    host: &str,
+    port: u16,
+) -> Option<u64> {
+    let addresses =
+        resolve_host_addresses(host, port).await?;
+
+    let start = Instant::now();
+
+    let probe = stream::iter(addresses)
+        .map(|address| async move {
+            match TcpStream::connect(address).await {
+                Ok(stream) => {
+                    drop(stream);
+                    Some(start.elapsed().as_millis() as u64)
+                }
+
+                Err(_) => None,
+            }
+        })
+        .buffer_unordered(MAX_TCP_ADDRESS_CONCURRENCY)
+        .filter_map(|result| async move { result })
+        .next();
+
+    timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
-        TcpStream::connect(addresses.as_slice()),
+        probe,
     )
     .await
-    {
-        Ok(Ok(_)) => Some(start.elapsed().as_millis() as u64),
-        _ => None,
-    }
+    .ok()
+    .flatten()
 }
 
 async fn transport_reachable(config: &str) -> bool {
     transport_latency(config).await.is_some()
 }
 
-async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
-    let mut tcp_by_endpoint: HashMap<(String, u16), Vec<usize>> = HashMap::new();
+async fn test_transport_configs(
+    configs: &[String],
+) -> Vec<(String, u64)> {
+    let mut tcp_by_endpoint: HashMap<
+        (String, u16),
+        Vec<usize>,
+    > = HashMap::new();
+
     let mut transport_indices = Vec::new();
 
     for (index, config) in configs.iter().enumerate() {
         let scheme = config_scheme(config);
+
         if matches!(
             scheme.as_str(),
-            "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+            "hysteria"
+                | "hysteria2"
+                | "hy2"
+                | "tuic"
+                | "wg"
         ) {
             transport_indices.push(index);
             continue;
         }
 
         if let Some(endpoint) = endpoint(config) {
-            tcp_by_endpoint.entry(endpoint).or_default().push(index);
+            tcp_by_endpoint
+                .entry(endpoint)
+                .or_default()
+                .push(index);
         }
     }
 
-    let tcp_config_count: usize = tcp_by_endpoint.values().map(Vec::len).sum();
+    let tcp_config_count: usize =
+        tcp_by_endpoint.values().map(Vec::len).sum();
+
     if tcp_config_count > 0 {
         println!(
             "[INFO] TCP endpoint deduplication: {} configs -> {} unique endpoints.",
@@ -1225,26 +1744,33 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
         );
     }
 
-    let tcp_results = stream::iter(tcp_by_endpoint.keys().cloned())
-        .map(|(host, port)| async move {
-            tcp_latency_endpoint(&host, port)
-                .await
-                .map(|latency| ((host, port), latency))
-        })
-        .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
-        .filter_map(async move |result| result)
-        .collect::<Vec<_>>()
-        .await;
+    let tcp_results = stream::iter(
+        tcp_by_endpoint.keys().cloned(),
+    )
+    .map(|(host, port)| async move {
+        tcp_latency_endpoint(&host, port)
+            .await
+            .map(|latency| ((host, port), latency))
+    })
+    .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
+    .filter_map(|result| async move { result })
+    .collect::<Vec<_>>()
+    .await;
 
     let mut working = Vec::new();
 
     for ((host, port), latency_ms) in tcp_results {
-        if let Some(indices) = tcp_by_endpoint.get(&(host, port)) {
-            working.extend(
-                indices
-                    .iter()
-                    .map(|&index| (configs[index].clone(), latency_ms)),
-            );
+        if let Some(indices) =
+            tcp_by_endpoint.get(&(host, port))
+        {
+            working.extend(indices.iter().map(
+                |&index| {
+                    (
+                        configs[index].clone(),
+                        latency_ms,
+                    )
+                },
+            ));
         }
     }
 
@@ -1254,21 +1780,35 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
             transport_indices.len()
         );
 
-        let udp_results = stream::iter(transport_indices)
-            .map(|index| async move {
-                transport_latency(&configs[index])
+        let udp_results =
+            stream::iter(transport_indices)
+                .map(|index| async move {
+                    transport_latency(
+                        &configs[index],
+                    )
                     .await
-                    .map(|latency| (index, latency))
-            })
-            .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
-            .filter_map(async move |result| result)
-            .collect::<Vec<_>>()
-            .await;
+                    .map(|latency| {
+                        (index, latency)
+                    })
+                })
+                .buffer_unordered(
+                    TEST_CONNECTION_CONCURRENCY,
+                )
+                .filter_map(|result| async move {
+                    result
+                })
+                .collect::<Vec<_>>()
+                .await;
 
         working.extend(
-            udp_results
-                .into_iter()
-                .map(|(index, latency)| (configs[index].clone(), latency)),
+            udp_results.into_iter().map(
+                |(index, latency)| {
+                    (
+                        configs[index].clone(),
+                        latency,
+                    )
+                },
+            ),
         );
     }
 
@@ -1278,14 +1818,18 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
 async fn test_chunk(
     index: usize,
     configs: &[String],
-) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    (usize, Vec<(String, u64)>),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     println!(
         "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
         index,
         configs.len()
     );
 
-    let working = test_transport_configs(configs).await;
+    let working =
+        test_transport_configs(configs).await;
 
     println!(
         "[INFO] Chunk {} complete: {}/{} transport-reachable.",
@@ -1310,7 +1854,10 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
+    ) -> Result<
+        ServerCertVerified,
+        rustls::Error,
+    > {
         Ok(ServerCertVerified::assertion())
     }
 
@@ -1319,7 +1866,10 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _message: &[u8],
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<
+        HandshakeSignatureValid,
+        rustls::Error,
+    > {
         Ok(HandshakeSignatureValid::assertion())
     }
 
@@ -1328,38 +1878,64 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _message: &[u8],
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<
+        HandshakeSignatureValid,
+        rustls::Error,
+    > {
         Ok(HandshakeSignatureValid::assertion())
     }
 
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+    fn supported_verify_schemes(
+        &self,
+    ) -> Vec<SignatureScheme> {
         rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
     }
 }
 
-fn quic_client_config(alpn: &[String]) -> Option<quinn::ClientConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
+fn quic_client_config(
+    alpn: &[String],
+) -> Option<ClientConfig> {
+    let provider =
+        Arc::new(rustls::crypto::ring::default_provider());
+
+    let mut tls =
+        rustls::ClientConfig::builder_with_provider(
+            provider,
+        )
+        .with_protocol_versions(&[
+            &rustls::version::TLS13
+        ])
         .ok()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(ProbeCertVerifier))
+        .with_custom_certificate_verifier(
+            Arc::new(ProbeCertVerifier),
+        )
         .with_no_client_auth();
 
-    tls.alpn_protocols = alpn.iter().map(|value| value.as_bytes().to_vec()).collect();
+    tls.alpn_protocols = alpn
+        .iter()
+        .map(|value| value.as_bytes().to_vec())
+        .collect();
 
-    let crypto = QuicClientConfig::try_from(tls).ok()?;
-    Some(quinn::ClientConfig::new(Arc::new(crypto)))
+    let crypto =
+        QuicClientConfig::try_from(tls).ok()?;
+
+    Some(ClientConfig::new(Arc::new(crypto)))
 }
 
-fn query_values(config: &str, key: &str) -> Vec<String> {
+fn query_values(
+    config: &str,
+    key: &str,
+) -> Vec<String> {
     Url::parse(config)
         .ok()
         .map(|url| {
             url.query_pairs()
-                .filter(|(name, _)| name.eq_ignore_ascii_case(key))
+                .filter(|(name, _)| {
+                    name.eq_ignore_ascii_case(key)
+                })
                 .map(|(_, value)| value.into_owned())
                 .filter(|value| !value.is_empty())
                 .collect()
@@ -1367,24 +1943,63 @@ fn query_values(config: &str, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn query_value(config: &str, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| query_values(config, key).into_iter().next())
+fn query_csv_values(
+    config: &str,
+    key: &str,
+) -> Vec<String> {
+    query_values(config, key)
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
-fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
+fn query_value(
+    config: &str,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        query_values(config, key)
+            .into_iter()
+            .next()
+    })
+}
+
+fn quic_params(
+    config: &str,
+) -> Option<(
+    String,
+    u16,
+    String,
+    Vec<String>,
+)> {
     let url = Url::parse(config).ok()?;
-    let host = url.host_str()?.to_string();
+
+    let host =
+        url.host_str()?.to_string();
+
     let port = url.port()?;
 
     if query_value(config, &["obfs"]).is_some() {
         return None;
     }
 
-    let sni = query_value(config, &["sni", "server_name"]).unwrap_or_else(|| host.clone());
+    let sni = query_value(
+        config,
+        &["sni", "server_name"],
+    )
+    .unwrap_or_else(|| host.clone());
 
     let alpn = {
-        let values = query_values(config, "alpn");
+        let values =
+            query_csv_values(config, "alpn");
+
         if values.is_empty() {
             vec!["h3".to_string()]
         } else {
@@ -1392,99 +2007,332 @@ fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
         }
     };
 
-    Some((host, port, sni, alpn))
+    Some((
+        host,
+        port,
+        sni,
+        alpn,
+    ))
 }
 
 const MAX_HYSTERIA2_PROBE_PORTS: usize = 8;
 
-fn hysteria2_port_spec(config: &str) -> Option<String> {
-    let rest = config.split_once("://")?.1;
-    let authority = rest.split(['?', '#']).next().unwrap_or(rest);
-    let host_port = authority
-        .rsplit_once('@')
-        .map(|(_, value)| value)
-        .unwrap_or(authority);
+fn hysteria2_port_spec(
+    config: &str,
+) -> Option<String> {
+    let (_, port_spec, _) =
+        hysteria2_parts(config)?;
 
-    if let Some(stripped) = host_port.strip_prefix('[') {
-        let (_, remainder) = stripped.split_once(']')?;
-        return Some(remainder.strip_prefix(':').unwrap_or("").to_string());
-    }
-
-    host_port
-        .rsplit_once(':')
-        .map(|(_, port_spec)| port_spec.to_string())
-        .or_else(|| Some(String::new()))
+    Some(port_spec)
 }
 
-fn hysteria2_probe_ports(config: &str) -> Option<Vec<u16>> {
-    let spec = hysteria2_port_spec(config)?;
+fn hysteria2_probe_ports(
+    config: &str,
+) -> Option<Vec<u16>> {
+    let spec =
+        hysteria2_port_spec(config)?;
+
     if spec.is_empty() {
         return Some(vec![443]);
     }
 
     let mut candidates = Vec::new();
+
     for entry in spec
         .split(',')
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
     {
-        if let Some((start, end)) = entry.split_once('-') {
-            let start = start.parse::<u16>().ok()?;
-            let end = end.parse::<u16>().ok()?;
-            if start == 0 || end == 0 || start > end {
+        if let Some((start, end)) =
+            entry.split_once('-')
+        {
+            let start =
+                start.parse::<u16>().ok()?;
+
+            let end =
+                end.parse::<u16>().ok()?;
+
+            if start == 0
+                || end == 0
+                || start > end
+            {
                 return None;
             }
 
             candidates.push(start);
+
             if end != start {
-                candidates.push(start + (end - start) / 2);
+                candidates.push(
+                    start + (end - start) / 2
+                );
+
                 candidates.push(end);
             }
         } else {
-            let port = entry.parse::<u16>().ok().filter(|port| *port != 0)?;
+            let port =
+                entry.parse::<u16>()
+                    .ok()
+                    .filter(|port| *port != 0)?;
+
             candidates.push(port);
         }
     }
 
     candidates.sort_unstable();
     candidates.dedup();
+
     if candidates.is_empty() {
         return None;
     }
-    if candidates.len() <= MAX_HYSTERIA2_PROBE_PORTS {
+
+    if candidates.len()
+        <= MAX_HYSTERIA2_PROBE_PORTS
+    {
         return Some(candidates);
     }
 
-    let mut sampled = Vec::with_capacity(MAX_HYSTERIA2_PROBE_PORTS);
-    let last = candidates.len() - 1;
+    let mut sampled =
+        Vec::with_capacity(
+            MAX_HYSTERIA2_PROBE_PORTS
+        );
+
+    let last =
+        candidates.len() - 1;
+
     for slot in 0..MAX_HYSTERIA2_PROBE_PORTS {
-        let index = slot * last / (MAX_HYSTERIA2_PROBE_PORTS - 1);
+        let index = slot
+            .saturating_mul(last)
+            .checked_div(
+                MAX_HYSTERIA2_PROBE_PORTS - 1,
+            )
+            .unwrap_or_default();
+
         sampled.push(candidates[index]);
     }
+
+    sampled.sort_unstable();
     sampled.dedup();
+
     Some(sampled)
 }
 
-fn hysteria2_query_values(config: &str, key: &str) -> Vec<String> {
-    let Some((_, query)) = config.split_once('?') else {
+fn hysteria2_query_values(
+    config: &str,
+    key: &str,
+) -> Vec<String> {
+    let Some((_, query)) =
+        config.split_once('?')
+    else {
         return Vec::new();
     };
-    let query = query.split('#').next().unwrap_or(query);
-    url::form_urlencoded::parse(query.as_bytes())
-        .filter(|(name, value)| name.eq_ignore_ascii_case(key) && !value.is_empty())
-        .map(|(_, value)| value.into_owned())
+
+    let query =
+        query.split('#').next().unwrap_or(query);
+
+    url::form_urlencoded::parse(
+        query.as_bytes(),
+    )
+    .filter(|(name, value)| {
+        name.eq_ignore_ascii_case(key)
+            && !value.is_empty()
+    })
+    .map(|(_, value)| value.into_owned())
+    .collect()
+}
+
+fn hysteria2_query_csv_values(
+    config: &str,
+    key: &str,
+) -> Vec<String> {
+    hysteria2_query_values(config, key)
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
-async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
-    let (host, _) = proxyrift::validator::endpoint(config)?;
-    let ports = hysteria2_probe_ports(config)?;
-    let sni = hysteria2_query_values(config, "sni")
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| host.clone());
+async fn quic_probe_target(
+    address: SocketAddr,
+    sni: &str,
+    client_config: ClientConfig,
+) -> Option<u64> {
+    let local = if address.ip().is_ipv4() {
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            0,
+        )
+    } else {
+        SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            0,
+        )
+    };
+
+    let endpoint =
+        Endpoint::client(local).ok()?;
+
+    let connecting =
+        endpoint
+            .connect_with(
+                client_config,
+                address,
+                sni,
+            )
+            .ok()?;
+
+    let start = Instant::now();
+
+    let connected = match timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        connecting,
+    )
+    .await
+    {
+        Ok(Ok(connection)) => connection,
+
+        _ => {
+            endpoint.close(
+                0u32.into(),
+                b"probe timeout",
+            );
+            return None;
+        }
+    };
+
+    let latency =
+        start.elapsed().as_millis() as u64;
+
+    connected.close(
+        0u32.into(),
+        b"probe complete",
+    );
+
+    endpoint.close(
+        0u32.into(),
+        b"probe complete",
+    );
+
+    Some(latency)
+}
+
+async fn quic_latency_for_targets(
+    host: &str,
+    ports: &[u16],
+    sni: &str,
+    alpn: &[String],
+) -> Option<u64> {
+    let first_port = *ports.first()?;
+
+    let ips =
+        resolve_host_ips(
+            host,
+            first_port,
+        )
+        .await?;
+
+    let client_config =
+        quic_client_config(alpn)?;
+
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+
+    for port in ports {
+        for ip in &ips {
+            let address =
+                SocketAddr::new(*ip, *port);
+
+            if seen.insert(address) {
+                targets.push(address);
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return None;
+    }
+
+    let sni = sni.to_string();
+
+    let probe = stream::iter(targets)
+        .map(|address| {
+            let sni = sni.clone();
+            let client_config =
+                client_config.clone();
+
+            async move {
+                quic_probe_target(
+                    address,
+                    &sni,
+                    client_config,
+                )
+                .await
+            }
+        })
+        .buffer_unordered(
+            MAX_QUIC_TARGET_CONCURRENCY,
+        )
+        .filter_map(|result| async move {
+            result
+        })
+        .next();
+
+    timeout(
+        Duration::from_secs(TCP_TIMEOUT_SECS),
+        probe,
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn hysteria2_quic_latency(
+    config: &str,
+) -> Option<u64> {
+    let (host, _) =
+        endpoint(config)?;
+
+    // Generic QUIC cannot emulate Hysteria2 Salamander obfuscation.
+    // Let the actual core validator handle these candidates.
+    if hysteria2_query_values(
+        config,
+        "obfs",
+    )
+    .into_iter()
+    .any(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let ports =
+        hysteria2_probe_ports(config)?;
+
+    let sni =
+        hysteria2_query_values(config, "sni")
+            .into_iter()
+            .next()
+            .or_else(|| {
+                hysteria2_query_values(
+                    config,
+                    "server_name",
+                )
+                .into_iter()
+                .next()
+            })
+            .unwrap_or_else(|| host.clone());
+
     let alpn = {
-        let values = hysteria2_query_values(config, "alpn");
+        let values =
+            hysteria2_query_csv_values(
+                config,
+                "alpn",
+            );
+
         if values.is_empty() {
             vec!["h3".to_string()]
         } else {
@@ -1492,114 +2340,106 @@ async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
         }
     };
 
-    for port in ports {
-        let mut addresses = timeout(
-            Duration::from_secs(TCP_TIMEOUT_SECS),
-            tokio::net::lookup_host((host.as_str(), port)),
+    quic_latency_for_targets(
+        &host,
+        &ports,
+        &sni,
+        &alpn,
+    )
+    .await
+}
+
+async fn quic_latency(
+    config: &str,
+) -> Option<u64> {
+    if matches!(
+        config_scheme(config).as_str(),
+        "hysteria2" | "hy2"
+    ) {
+        return hysteria2_quic_latency(
+            config
         )
-        .await
-        .ok()?
-        .ok()?
-        .collect::<Vec<_>>();
+        .await;
+    }
 
-        addresses.sort_by_key(|address| !address.is_ipv4());
+    let (
+        host,
+        port,
+        sni,
+        alpn,
+    ) = quic_params(config)?;
 
-        for address in addresses {
-            let local = if address.ip().is_ipv4() {
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-            } else {
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-            };
+    quic_latency_for_targets(
+        &host,
+        &[port],
+        &sni,
+        &alpn,
+    )
+    .await
+}
 
-            let endpoint = Endpoint::client(local).ok()?;
-            let client_config = quic_client_config(&alpn)?;
-            let connecting = endpoint.connect_with(client_config, address, &sni).ok()?;
-            let start = Instant::now();
+struct OsEntropy;
 
-            let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
-                Ok(Ok(connection)) => connection,
-                _ => {
-                    endpoint.close(0u32.into(), b"probe timeout");
-                    continue;
-                }
-            };
+impl EntropySource for OsEntropy {
+    fn fill(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), EntropyError> {
+        getrandom::fill(buf)
+            .map_err(|_| EntropyError)
+    }
+}
 
-            let latency = start.elapsed().as_millis() as u64;
-            connected.close(0u32.into(), b"probe complete");
-            endpoint.close(0u32.into(), b"probe complete");
-            return Some(latency);
+fn decode_key_32(
+    encoded: &str,
+) -> Option<[u8; 32]> {
+    let encoded = encoded.trim();
+
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let mut padded =
+        encoded.to_string();
+
+    while !padded.len().is_multiple_of(4) {
+        padded.push('=');
+    }
+
+    for candidate in [
+        encoded,
+        padded.as_str(),
+    ] {
+        for decoded in [
+            STANDARD.decode(candidate),
+            URL_SAFE.decode(candidate),
+            URL_SAFE_NO_PAD.decode(candidate),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if decoded.len() == 32 {
+                return decoded.try_into().ok();
+            }
         }
     }
 
     None
 }
 
-async fn quic_latency(config: &str) -> Option<u64> {
-    if matches!(config_scheme(config).as_str(), "hysteria2" | "hy2") {
-        return hysteria2_quic_latency(config).await;
-    }
+fn wireguard_key(
+    config: &str,
+    keys: &[&str],
+) -> Option<[u8; 32]> {
+    let encoded =
+        query_value(config, keys)?;
 
-    let (host, port, sni, alpn) = quic_params(config)?;
-
-    let mut addresses = timeout(
-        Duration::from_secs(TCP_TIMEOUT_SECS),
-        tokio::net::lookup_host((host.as_str(), port)),
-    )
-    .await
-    .ok()?
-    .ok()?
-    .collect::<Vec<_>>();
-
-    addresses.sort_by_key(|address| !address.is_ipv4());
-
-    for address in addresses {
-        let local = if address.ip().is_ipv4() {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-        } else {
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-        };
-
-        let endpoint = Endpoint::client(local).ok()?;
-        let client_config = quic_client_config(&alpn)?;
-        let connecting = endpoint.connect_with(client_config, address, &sni).ok()?;
-        let start = Instant::now();
-
-        let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
-            Ok(Ok(connection)) => connection,
-            _ => {
-                endpoint.close(0u32.into(), b"probe timeout");
-                continue;
-            }
-        };
-
-        let latency = start.elapsed().as_millis() as u64;
-        connected.close(0u32.into(), b"probe complete");
-        endpoint.close(0u32.into(), b"probe complete");
-        return Some(latency);
-    }
-
-    None
+    decode_key_32(&encoded)
 }
 
-struct OsEntropy;
-
-impl EntropySource for OsEntropy {
-    fn fill(&mut self, buf: &mut [u8]) -> Result<(), EntropyError> {
-        getrandom::fill(buf).map_err(|_| EntropyError)
-    }
-}
-
-fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
-    let encoded = query_value(config, keys)?;
-    let decoded = STANDARD
-        .decode(encoded.as_bytes())
-        .or_else(|_| URL_SAFE_NO_PAD.decode(encoded.as_bytes()))
-        .ok()?;
-
-    decoded.try_into().ok()
-}
-
-fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
+fn wireguard_private_key(
+    config: &str,
+) -> Option<[u8; 32]> {
     if let Some(key) = wireguard_key(
         config,
         &[
@@ -1612,160 +2452,308 @@ fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
         return Some(key);
     }
 
-    let url = Url::parse(config).ok()?;
-    let username = percent_decode_str(url.username()).decode_utf8().ok()?;
+    let url =
+        Url::parse(config).ok()?;
+
+    let username =
+        percent_decode_str(
+            url.username(),
+        )
+        .decode_utf8()
+        .ok()?;
+
     if username.is_empty() {
         return None;
     }
 
-    let decoded = STANDARD
-        .decode(username.as_bytes())
-        .or_else(|_| URL_SAFE_NO_PAD.decode(username.as_bytes()))
-        .ok()?;
-
-    decoded.try_into().ok()
+    decode_key_32(username.as_ref())
 }
 
-async fn wireguard_latency(config: &str) -> Option<u64> {
-    let (host, port) = endpoint(config)?;
-    let private_key = wireguard_private_key(config)?;
-    let public_key = wireguard_key(
-        config,
-        &[
-            "publickey",
-            "public-key",
-            "public_key",
-            "peer-public-key",
-            "peer_public_key",
-            "pubkey",
-        ],
-    )?;
+async fn wireguard_latency_on_address(
+    address: SocketAddr,
+    private_key: [u8; 32],
+    public_key: [u8; 32],
+    psk: Option<[u8; 32]>,
+) -> Option<u64> {
+    let mut wg_config =
+        WireGuardConfig::new(
+            StaticSecret::from_bytes(
+                private_key
+            ),
+            PublicKey::from_bytes(
+                public_key
+            ),
+        );
+
+    if let Some(psk) = psk {
+        wg_config.psk =
+            PresharedKey::from_bytes(psk);
+    }
+
+    let mut tunnel =
+        Tunnel::new(wg_config).ok()?;
+
+    let local = if address.ip().is_ipv4() {
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            0,
+        )
+    } else {
+        SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            0,
+        )
+    };
+
+    let socket =
+        UdpSocket::bind(local)
+            .await
+            .ok()?;
+
+    socket
+        .connect(address)
+        .await
+        .ok()?;
+
+    let start =
+        std::time::Instant::now();
+
+    let mut rng = OsEntropy;
+    let mut send_buf = [0u8; 2048];
+
+    let init = tunnel
+        .initiate_handshake(
+            wireguard_now(start),
+            &mut send_buf,
+            &mut rng,
+        )
+        .ok()?
+        .to_vec();
+
+    socket.send(&init).await.ok()?;
+
+    let deadline =
+        start
+            + std::time::Duration::from_secs(
+                TCP_TIMEOUT_SECS,
+            );
+
+    let remote =
+        address.to_string().into_bytes();
+
+    let mut recv_buf = [0u8; 2048];
+
+    loop {
+        let now =
+            std::time::Instant::now();
+
+        if now >= deadline {
+            return None;
+        }
+
+        let remaining =
+            deadline.duration_since(now);
+
+        let received = match timeout(
+            remaining,
+            socket.recv(&mut recv_buf),
+        )
+        .await
+        {
+            Ok(Ok(size)) => size,
+            _ => return None,
+        };
+
+        match tunnel.decapsulate(
+            wireguard_now(start),
+            &remote,
+            false,
+            &recv_buf[..received],
+            &mut send_buf,
+            &mut rng,
+        ) {
+            Ok(
+                Received::HandshakeComplete
+            ) => {
+                return Some(
+                    start
+                        .elapsed()
+                        .as_millis()
+                        as u64,
+                );
+            }
+
+            Ok(Received::CookieStored) => {
+                let retry = tunnel
+                    .initiate_handshake(
+                        wireguard_now(start),
+                        &mut send_buf,
+                        &mut rng,
+                    )
+                    .ok()?
+                    .to_vec();
+
+                socket
+                    .send(&retry)
+                    .await
+                    .ok()?;
+            }
+
+            Ok(Received::Reply(reply)) => {
+                socket
+                    .send(reply)
+                    .await
+                    .ok()?;
+            }
+
+            Ok(Received::Keepalive)
+            | Ok(Received::Data(_)) => {}
+
+            Err(_) => {}
+        }
+    }
+}
+
+async fn wireguard_latency(
+    config: &str,
+) -> Option<u64> {
+    let (host, port) =
+        endpoint(config)?;
+
+    let private_key =
+        wireguard_private_key(config)?;
+
+    let public_key =
+        wireguard_key(
+            config,
+            &[
+                "publickey",
+                "public-key",
+                "public_key",
+                "peer-public-key",
+                "peer_public_key",
+                "pubkey",
+            ],
+        )?;
 
     let psk = wireguard_key(
         config,
-        &["presharedkey", "preshared-key", "preshared_key", "psk"],
+        &[
+            "presharedkey",
+            "preshared-key",
+            "preshared_key",
+            "psk",
+        ],
     );
 
-    let mut addresses = timeout(
+    let addresses =
+        resolve_host_addresses(
+            &host,
+            port,
+        )
+        .await?;
+
+    let probe = stream::iter(addresses)
+        .map(|address| async move {
+            wireguard_latency_on_address(
+                address,
+                private_key,
+                public_key,
+                psk,
+            )
+            .await
+        })
+        .buffer_unordered(
+            MAX_WIREGUARD_ADDRESS_CONCURRENCY,
+        )
+        .filter_map(|result| async move {
+            result
+        })
+        .next();
+
+    timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
-        tokio::net::lookup_host((host.as_str(), port)),
+        probe,
     )
     .await
-    .ok()?
-    .ok()?
-    .collect::<Vec<_>>();
-
-    addresses.sort_by_key(|address| !address.is_ipv4());
-
-    for address in addresses {
-        let mut wg_config = WireGuardConfig::new(
-            StaticSecret::from_bytes(private_key),
-            PublicKey::from_bytes(public_key),
-        );
-        if let Some(psk) = psk {
-            wg_config.psk = PresharedKey::from_bytes(psk);
-        }
-
-        let mut tunnel = Tunnel::new(wg_config).ok()?;
-
-        let local = if address.ip().is_ipv4() {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-        } else {
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-        };
-
-        let socket = UdpSocket::bind(local).await.ok()?;
-        socket.connect(address).await.ok()?;
-
-        let start = std::time::Instant::now();
-        let mut rng = OsEntropy;
-        let mut send_buf = [0u8; 2048];
-        let init = tunnel
-            .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
-            .ok()?
-            .to_vec();
-
-        socket.send(&init).await.ok()?;
-
-        let deadline = start + std::time::Duration::from_secs(TCP_TIMEOUT_SECS);
-        let remote = address.to_string().into_bytes();
-        let mut recv_buf = [0u8; 2048];
-
-        loop {
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                break;
-            }
-
-            let remaining = deadline.duration_since(now);
-            let received = match timeout(remaining, socket.recv(&mut recv_buf)).await {
-                Ok(Ok(size)) => size,
-                _ => break,
-            };
-
-            match tunnel.decapsulate(
-                wireguard_now(start),
-                &remote,
-                false,
-                &recv_buf[..received],
-                &mut send_buf,
-                &mut rng,
-            ) {
-                Ok(Received::HandshakeComplete) => {
-                    return Some(start.elapsed().as_millis() as u64);
-                }
-                Ok(Received::CookieStored) => {
-                    let retry = tunnel
-                        .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
-                        .ok()?
-                        .to_vec();
-                    socket.send(&retry).await.ok()?;
-                }
-                Ok(Received::Reply(reply)) => {
-                    socket.send(reply).await.ok()?;
-                }
-                Ok(Received::Keepalive) | Ok(Received::Data(_)) => {}
-                Err(_) => {}
-            }
-        }
-    }
-
-    None
+    .ok()
+    .flatten()
 }
 
-async fn transport_latency(config: &str) -> Option<u64> {
+async fn transport_latency(
+    config: &str,
+) -> Option<u64> {
     match config_scheme(config).as_str() {
-        "hysteria" | "hysteria2" | "hy2" | "tuic" => quic_latency(config).await,
-        "wg" => wireguard_latency(config).await,
+        "hysteria"
+        | "hysteria2"
+        | "hy2"
+        | "tuic" => {
+            quic_latency(config).await
+        }
+
+        "wg" => {
+            wireguard_latency(config)
+                .await
+        }
+
         _ => {
-            let (host, port) = endpoint(config)?;
-            tcp_latency_endpoint(&host, port).await
+            let (host, port) =
+                endpoint(config)?;
+
+            tcp_latency_endpoint(
+                &host,
+                port,
+            )
+            .await
         }
     }
 }
 
-fn wireguard_now(start: std::time::Instant) -> WireGuardNow {
-    let elapsed = start.elapsed();
+fn wireguard_now(
+    start: std::time::Instant,
+) -> WireGuardNow {
+    let elapsed =
+        start.elapsed();
+
     let ticks = elapsed
         .as_secs()
-        .saturating_mul(1_000_000_000)
-        .saturating_add(u64::from(elapsed.subsec_nanos()));
-    let wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+        .saturating_mul(
+            1_000_000_000
+        )
+        .saturating_add(
+            u64::from(
+                elapsed.subsec_nanos()
+            )
+        );
 
-    WireGuardNow::new(ticks, wall.as_secs(), wall.subsec_nanos())
+    let wall =
+        SystemTime::now()
+            .duration_since(
+                UNIX_EPOCH
+            )
+            .unwrap_or_default();
+
+    WireGuardNow::new(
+        ticks,
+        wall.as_secs(),
+        wall.subsec_nanos(),
+    )
 }
 
-async fn diagnose_configs(configs: &[String]) {
+async fn diagnose_configs(
+    configs: &[String],
+) {
     let mut samples = Vec::new();
     let mut seen = HashSet::new();
 
     for config in configs {
-        let scheme = config_scheme(config);
+        let scheme =
+            config_scheme(config);
+
         if seen.insert(scheme) {
             samples.push(config.clone());
         }
+
         if samples.len() >= 12 {
             break;
         }
@@ -1776,16 +2764,21 @@ async fn diagnose_configs(configs: &[String]) {
         samples.len()
     );
 
-    for (index, config) in samples.iter().enumerate() {
+    for (index, config) in
+        samples.iter().enumerate()
+    {
         println!(
             "[DIAG] Sample {} [{}]: {}",
             index + 1,
             config_scheme(config),
             config_label(config)
         );
+
         println!(
             "[DIAG] Transport result: {}",
-            if transport_reachable(config).await {
+            if transport_reachable(config)
+                .await
+            {
                 "PASS"
             } else {
                 "FAIL"
