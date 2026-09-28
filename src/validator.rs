@@ -2087,7 +2087,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn wireguard_ipv6_endpoint_is_bracketed() {
         let private_key = STANDARD.encode([7_u8; 32]);
         let public_key = STANDARD.encode([9_u8; 32]);
@@ -2101,6 +2100,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn vmess_endpoint_comes_from_decoded_payload() {
         let payload = json!({
             "add": "proxy.example",
