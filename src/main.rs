@@ -1364,19 +1364,23 @@ fn strips_hysteria2_fragment_for_parsing() {
     );
 }
 
-    #[test]
-    fn all_candidates_include_hysteria_v1_after_transport_screening() {
-        let working = Vec::<(String, u64)>::new();
+#[test]
+fn all_candidates_include_hysteria_v1_after_transport_screening() {
+    let working = Vec::<(String, u64)>::new();
 
-        let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
+    let hysteria = vec![
+        r#"hysteria://example.com:443?upmbps=100&downmbps=100"#.to_string()
+    ];
 
-        let selected = super::select_all_candidates(&working, &hysteria);
+    let selected = super::select_all_candidates(&working, &hysteria);
 
-        assert_eq!(
-            selected,
-            vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()]
-        );
-    }
+    assert_eq!(
+        selected,
+        vec![
+            r#"hysteria://example.com:443?upmbps=100&downmbps=100"#.to_string()
+        ]
+    );
+}
 
     #[test]
     fn all_candidates_include_hysteria2_after_transport_screening() {
