@@ -2446,9 +2446,10 @@ mod tests {
             config["streamSettings"]["finalmask"]["quicParams"]["udpHop"]["ports"],
             "1234,5000-6000"
         );
-        assert!(config["streamSettings"]["tlsSettings"]
-            .get("allowInsecure")
-            .is_none());
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
     }
 
     #[test]
@@ -2464,8 +2465,9 @@ mod tests {
 
     #[test]
     fn ignores_removed_allow_insecure_hysteria2_option() {
-        let config = parse_hy2("hysteria2://password@example.com:443?insecure=1&sni=example.com")
-            .expect("Hysteria2 TLS should parse");
+        let config =
+            parse_hy2("hysteria2://password@example.com:443?allowInsecure=1&sni=example.com")
+                .expect("Hysteria2 TLS should parse");
 
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
