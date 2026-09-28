@@ -513,6 +513,7 @@ fn split_concatenated_configs(config: &str) -> Vec<&str> {
 
         for scheme in SCHEMES {
             if config[index..].len() >= scheme.len()
+                && config.is_char_boundary(index + scheme.len())
                 && config[index..index + scheme.len()].eq_ignore_ascii_case(scheme)
             {
                 matches.push((index, scheme.len()));
