@@ -1,6 +1,10 @@
+use proxyrift::singbox::validate_candidates_with_settings as validate_singbox_candidates;
 use proxyrift::validator::{
     read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, PRIMARY_TARGET,
+    MAX_LATENCY_MS,
 };
+use std::collections::HashMap;
+use std::time::Duration;
 use std::env;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
@@ -39,7 +43,7 @@ async fn main() -> Result<(), String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "Usage: check_proxies --input FILE --output FILE [--metadata FILE] [--workers N] \
-             [--batch-size N] [--timeout SECONDS] [--target URL] [--xray PATH]"
+             [--batch-size N] [--timeout SECONDS] [--target URL] [--xray PATH] [--singbox PATH]"
         );
         return Ok(());
     }
@@ -58,10 +62,47 @@ async fn main() -> Result<(), String> {
         .map_err(|_| "invalid --timeout".to_string())?;
     let target = value(&args, "--target", PRIMARY_TARGET);
     let xray = value(&args, "--xray", "xray");
+    let singbox = value(&args, "--singbox", "sing-box");
 
     let candidates = read_lines(&input)?;
-    let metadata =
-        validate_candidates(&xray, &candidates, &target, workers, batch_size, timeout).await?;
+
+    let mut xray_candidates = Vec::new();
+    let mut hysteria_candidates = Vec::new();
+
+    for config in candidates {
+        let is_hysteria = config
+            .split_once("://")
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("hysteria"));
+
+        if is_hysteria {
+            hysteria_candidates.push(config);
+        } else {
+            xray_candidates.push(config);
+        }
+    }
+
+    let mut metadata = HashMap::<String, ProxyMetrics>::new();
+
+    if !xray_candidates.is_empty() {
+        metadata.extend(
+            validate_candidates(&xray, &xray_candidates, &target, workers, batch_size, timeout)
+                .await?,
+        );
+    }
+
+    if !hysteria_candidates.is_empty() {
+        metadata.extend(
+            validate_singbox_candidates(
+                &singbox,
+                &hysteria_candidates,
+                workers,
+                Duration::from_secs_f64(timeout),
+                MAX_LATENCY_MS,
+            )
+            .await?,
+        );
+    }
+
     write_lines(&output, &ranked(&metadata))?;
 
     if !metadata_path.is_empty() {
