@@ -131,7 +131,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    if ranked_working_configs.is_empty() {
+    let hysteria2_candidates = configs
+        .iter()
+        .filter(|config| matches!(config_scheme(config).as_str(), "hysteria2" | "hy2"))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if ranked_working_configs.is_empty() && hysteria2_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
@@ -189,10 +195,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let sampled_transport_count = light_candidates.len();
+
+    for config in hysteria2_candidates {
+        if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
+            break;
+        }
+
+        if let Some(ep) = endpoint(&config) {
+            if light_candidate_endpoints.insert(ep) {
+                light_candidates.push(config);
+            }
+        }
+    }
+
     println!(
-        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs across the ranked pool.",
+        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs, including {} Hysteria2 candidates.",
         light_candidates.len(),
-        ranked_working_configs.len()
+        ranked_working_configs.len(),
+        light_candidates.len().saturating_sub(sampled_transport_count)
     );
     let light_candidates_path = output_dir.join(".light-candidates.txt");
     let light_candidates_subscription = if light_candidates.is_empty() {

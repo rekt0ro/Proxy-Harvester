@@ -154,6 +154,15 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
 
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
     let url = Url::parse(clean(config)).ok()?;
+
+    if url
+        .scheme()
+        .eq_ignore_ascii_case("hysteria2")
+        || url.scheme().eq_ignore_ascii_case("hy2")
+    {
+        return hysteria2_probe_endpoint(clean(config));
+    }
+
     if url.scheme().eq_ignore_ascii_case("vmess") {
         let payload = clean(config).split_once("://")?.1;
         let decoded = b64decode(payload)?;
@@ -190,6 +199,44 @@ pub fn config_label(config: &str) -> String {
         Some((host, port)) => format!("{scheme}://{host}:{port}"),
         None => format!("{scheme}://<invalid>"),
     }
+}
+
+fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
+    let rest = config.split_once("://")?.1;
+    let authority = rest.split(['?', '/']).next()?.split('#').next()?;
+    let host_port = authority.rsplit_once('@').map(|(_, value)| value).unwrap_or(authority);
+
+    let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
+        let (host, remainder) = stripped.split_once(']')?;
+        if host.is_empty() || host.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host.to_string(), remainder.strip_prefix(':').unwrap_or(""))
+    } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
+        if host.is_empty() || host.contains(':') || host.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host.to_string(), port_spec)
+    } else {
+        if host_port.is_empty() || host_port.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host_port.to_string(), "")
+    };
+
+    let port = port_spec
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .split('-')
+        .next()
+        .unwrap_or("")
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or(443);
+
+    Some((host, port))
 }
 
 fn normalize_xhttp_extra(value: Value) -> Value {
@@ -1895,6 +1942,22 @@ mod tests {
         assert_eq!(
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
             ("127.0.0.1".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn hysteria2_endpoint_defaults_to_443() {
+        assert_eq!(
+            endpoint("hysteria2://password@example.com"),
+            Some(("example.com".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn hysteria2_endpoint_uses_first_multi_port() {
+        assert_eq!(
+            endpoint("hy2://password@example.com:1234,5000-6000"),
+            Some(("example.com".to_string(), 1234))
         );
     }
 
