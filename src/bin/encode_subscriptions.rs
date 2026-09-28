@@ -23,7 +23,7 @@ fn output_path(path: &str) -> PathBuf {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .map(|stem| path.with_file_name(format!("{stem}-base64.txt")))
-        .unwrap_or_else(|| PathBuf::from(format!("{path}-base64.txt")))
+        .unwrap_or_else(|| PathBuf::from(format!("{}-base64.txt", path.display())))
 }
 
 #[cfg(test)]

@@ -1103,8 +1103,8 @@ async fn functional_attempt(
     target: &Url,
     compatibility_target: Option<&Url>,
 ) -> Result<f64, ProbeError> {
-    if let Some(compatibility_target) =
-        compatibility_target.filter(|compatibility_target| *compatibility_target != target)
+    if let Some(compatibility_target) = compatibility_target
+        .filter(|compatibility_target| *compatibility_target != target)
     {
         probe_request(client, compatibility_target.clone()).await?;
     }
@@ -1564,10 +1564,7 @@ async fn check_batch_targets(
                 });
             }
 
-            if !active.is_empty()
-                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
-                && attempt + 1 < stability_attempts
-            {
+            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
                 sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
@@ -1599,7 +1596,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= MAX_LATENCY_MS) {
+                    if result.is_ok() {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -1614,7 +1611,12 @@ async fn check_batch_targets(
                 && target_count >= min_successful_targets
                 && (stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+                && latencies[index].len() >= min_successful_attempts
+                && latencies[index]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    <= MAX_LATENCY_MS
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
@@ -1805,6 +1807,7 @@ mod tests {
         );
     }
 
+    #[test]
     #[test]
     fn vless_ws_path_early_data_is_normalized() {
         let config = parse_config(

@@ -846,10 +846,7 @@ async fn check_batch_targets(
                 });
             }
 
-            if !active.is_empty()
-                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
-                && attempt + 1 < stability_attempts
-            {
+            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
@@ -881,7 +878,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= max_latency_ms) {
+                    if result.is_ok() {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -896,7 +893,12 @@ async fn check_batch_targets(
                 && target_count >= min_successful_targets
                 && (stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].iter().copied().fold(0.0, f64::max) <= max_latency_ms
+                && latencies[index].len() >= min_successful_attempts
+                && latencies[index]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    <= max_latency_ms
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
@@ -952,6 +954,20 @@ async fn check_batch(
             serde_json::to_vec(&config).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
+
+        if let Err(error) = check_singbox_config(binary, &config_path) {
+            let _ = fs::remove_dir_all(&work);
+
+            if batch_entries.len() > 1 {
+                let mid = batch_entries.len() / 2;
+                pending.push(batch_entries[..mid].to_vec());
+                pending.push(batch_entries[mid..].to_vec());
+                continue;
+            }
+
+            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
+            continue;
+        }
 
         let mut child = start_singbox(binary, &config_path, &log_path)?;
 
