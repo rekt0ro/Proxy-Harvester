@@ -420,7 +420,8 @@ fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
     let protocol = url
         .query_pairs()
         .find_map(|(key, value)| {
-            (key.eq_ignore_ascii_case("protocol")).then_some(value.into_owned())
+            (key.eq_ignore_ascii_case("protocol") && !value.trim().is_empty())
+                .then_some(value.into_owned())
         })
         .unwrap_or_else(|| "udp".to_string());
 
@@ -1901,6 +1902,13 @@ mod tests {
         assert_eq!(outbound["tls"]["insecure"], true);
         assert_eq!(outbound["tls"]["alpn"], json!(["hysteria"]));
         assert_eq!(outbound["obfs"], "obfs-secret");
+    }
+
+    #[test]
+    fn blank_hysteria_protocol_defaults_to_udp() {
+        let config = "hysteria://example.com:443?protocol=&upmbps=100&downmbps=100";
+        let outbound = singbox_outbound(config).expect("blank protocol should use UDP default");
+        assert_eq!(outbound["type"], "hysteria");
     }
 
     #[test]
