@@ -2373,15 +2373,16 @@ mod tests {
     }
 
     #[test]
-    fn ignores_removed_allow_insecure_tls_option() {
+    fn preserves_allow_insecure_tls_option() {
         let config = parse_config(
             "vless://user@example.com:443?security=tls&sni=example.com&allowInsecure=1",
         )
         .expect("VLESS TLS should parse");
 
-        assert!(config["streamSettings"]["tlsSettings"]
-            .get("allowInsecure")
-            .is_none());
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
     }
 
     #[test]
