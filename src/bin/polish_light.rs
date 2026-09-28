@@ -264,6 +264,14 @@ fn select_verified_configs(
     result
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ValidationSettings {
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    strict: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LightBackend {
     SingBox,
@@ -337,25 +345,22 @@ async fn merge_dual(
     singbox: &str,
     candidates: &[String],
     targets: &[&str],
-    workers: usize,
-    batch_size: usize,
-    timeout_seconds: f64,
-    strict: bool,
+    settings: ValidationSettings,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if candidates.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
+    let request_timeout = std::time::Duration::from_secs_f64(settings.timeout_seconds);
     let xray_future = async {
-        if strict {
+        if settings.strict {
             validate_candidates_with_targets_strict(
                 xray,
                 candidates,
                 targets,
-                workers,
-                batch_size,
-                timeout_seconds,
+                settings.workers,
+                settings.batch_size,
+                settings.timeout_seconds,
             )
             .await
         } else {
@@ -376,9 +381,9 @@ async fn merge_dual(
                 singbox,
                 candidates,
                 targets,
-                workers.min(32).max(1),
+                settings.workers.clamp(1, 32),
                 request_timeout,
-                timeout_seconds * 1000.0,
+                settings.timeout_seconds * 1000.0,
             )
             .await
         } else {
@@ -425,10 +430,7 @@ async fn validate_light_batch(
     singbox: &str,
     candidates: &[String],
     targets: &[&str],
-    workers: usize,
-    batch_size: usize,
-    timeout_seconds: f64,
-    strict: bool,
+    settings: ValidationSettings,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut singbox_candidates = Vec::new();
     let mut xray_candidates = Vec::new();
@@ -449,19 +451,19 @@ async fn validate_light_batch(
         dual_candidates.len()
     );
 
-    let request_timeout = std::time::Duration::from_secs_f64(timeout_seconds);
+    let request_timeout = std::time::Duration::from_secs_f64(settings.timeout_seconds);
 
     let singbox_future = async {
         if singbox_candidates.is_empty() {
             Ok(HashMap::new())
-        } else if strict {
+        } else if settings.strict {
             validate_singbox_targets_strict(
                 singbox,
                 &singbox_candidates,
                 targets,
-                workers.clamp(1, 32),
+                settings.workers.clamp(1, 32),
                 request_timeout,
-                timeout_seconds * 1000.0,
+                settings.timeout_seconds * 1000.0,
             )
             .await
         } else {
@@ -485,9 +487,9 @@ async fn validate_light_batch(
                 xray,
                 &xray_candidates,
                 targets,
-                workers.max(1),
-                batch_size,
-                timeout_seconds,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
             )
             .await
         } else {
@@ -518,10 +520,7 @@ async fn validate_light_batch(
                 singbox,
                 &dual_candidates,
                 targets,
-                workers,
-                batch_size,
-                timeout_seconds,
-                strict,
+                settings,
             )
             .await?,
         );
@@ -640,7 +639,16 @@ async fn main() -> Result<(), String> {
         );
 
         let chunk_metadata = validate_light_batch(
-            &xray, &singbox, chunk, &targets, workers, batch_size, timeout, false,
+            &xray,
+            &singbox,
+            chunk,
+            &targets,
+            ValidationSettings {
+                workers,
+                batch_size,
+                timeout_seconds: timeout,
+                strict: false,
+            },
         )
         .await?;
 
@@ -721,10 +729,12 @@ async fn main() -> Result<(), String> {
             &singbox,
             &final_candidates,
             &targets,
-            final_workers,
-            final_batch_size,
-            timeout,
-            true,
+            ValidationSettings {
+                workers: final_workers,
+                batch_size: final_batch_size,
+                timeout_seconds: timeout,
+                strict: true,
+            },
         )
         .await?;
 

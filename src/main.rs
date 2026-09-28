@@ -199,7 +199,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let index = if last_slot == 0 {
                 0
             } else {
-                slot.saturating_mul(last_index) / last_slot
+                slot.saturating_mul(last_index)
+                    .checked_div(last_slot)
+                    .unwrap_or_default()
             };
 
             let (config, _) = &ranked_working_configs[index];
@@ -475,7 +477,7 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
             .split('@')
             .next()?;
         let mut padded = payload.to_string();
-        while padded.len() % 4 != 0 {
+        while !padded.len().is_multiple_of(4) {
             padded.push('=');
         }
 
@@ -688,15 +690,16 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
     };
 
     for candidate in candidates {
-        for decoded in [
+        for bytes in [
             STANDARD.decode(candidate),
             URL_SAFE.decode(candidate),
             URL_SAFE_NO_PAD.decode(candidate),
-        ] {
-            if let Ok(bytes) = decoded {
-                if let Ok(text) = String::from_utf8(bytes) {
-                    return Some(text);
-                }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return Some(text);
             }
         }
     }
@@ -836,25 +839,26 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
         };
 
         for candidate in candidates {
-            for decoded in [
+            for bytes in [
                 STANDARD.decode(candidate),
                 URL_SAFE.decode(candidate),
                 URL_SAFE_NO_PAD.decode(candidate),
-            ] {
-                if let Ok(bytes) = decoded {
-                    if bytes
-                        .iter()
-                        .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t'))
-                        .count()
-                        > 8
-                    {
-                        continue;
-                    }
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if bytes
+                    .iter()
+                    .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t'))
+                    .count()
+                    > 8
+                {
+                    continue;
+                }
 
-                    let decoded = String::from_utf8_lossy(&bytes);
-                    if decoded.contains("://") {
-                        results.push(decoded.into_owned());
-                    }
+                let decoded = String::from_utf8_lossy(&bytes);
+                if decoded.contains("://") {
+                    results.push(decoded.into_owned());
                 }
             }
         }
