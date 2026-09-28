@@ -73,12 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build()?;
 
     let mut unique = HashSet::new();
-    let mut source_results = stream::iter(sources.iter().cloned())
-        .map(|url| {
+    let mut source_results = stream::iter(sources.iter().cloned().enumerate())
+        .map(|(source_index, url)| {
             let client = client.clone();
-            let source_label = source_label(&url);
             async move {
-                println!("[INFO] Downloading source {source_label}");
+                let source_number = source_index + 1;
+                println!("[INFO] Downloading source #{source_number}");
                 match client.get(&url).send().await {
                     Ok(response) => match response.error_for_status() {
                         Ok(response) => {
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
                                 println!(
-                                    "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                    "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
                                     MAX_SOURCE_BYTES
                                 );
                                 return Vec::new();
@@ -98,38 +98,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     Ok(text) => {
                                         let configs = extract_configs(&text);
                                         println!(
-                                            "[INFO] Found {} configs from source {source_label}.",
+                                            "[INFO] Found {} configs from source #{source_number}.",
                                             configs.len()
                                         );
                                         configs
                                     }
                                     Err(error) => {
                                         println!(
-                                            "[WARN] Failed to decode source {source_label} as UTF-8: {error}"
+                                            "[WARN] Failed to decode source #{source_number} as UTF-8: {error}"
                                         );
                                         Vec::new()
                                     }
                                 },
                                 Err(SourceBodyError::TooLarge) => {
                                     println!(
-                                        "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                        "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
                                         MAX_SOURCE_BYTES
                                     );
                                     Vec::new()
                                 }
                                 Err(SourceBodyError::Read(error)) => {
-                                    println!("[WARN] Failed to read source {source_label}: {error}");
+                                    println!("[WARN] Failed to read source #{source_number}: {error}");
                                     Vec::new()
                                 }
                             }
                         },
                         Err(error) => {
-                            println!("[WARN] Failed to download source {source_label}: {error}");
+                            println!("[WARN] Failed to download source #{source_number}: {error}");
                             Vec::new()
                         }
                     },
                     Err(error) => {
-                        println!("[WARN] Failed to download source {source_label}: {error}");
+                        println!("[WARN] Failed to download source #{source_number}: {error}");
                         Vec::new()
                     }
                 }
@@ -982,12 +982,6 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn source_label(url: &str) -> String {
-    Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
-        .unwrap_or_else(|| "<invalid source>".to_string())
-}
 async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
 
