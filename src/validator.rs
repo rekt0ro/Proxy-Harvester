@@ -838,6 +838,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
+    let mut insecure = false;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -858,6 +859,14 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true;
+            }
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -872,6 +881,9 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
+    }
+    if insecure {
+        tls["allowInsecure"] = json!(true);
     }
 
     let mut stream_settings = json!({
@@ -2396,6 +2408,17 @@ mod tests {
             "vless://user@example.com:443?security=tls&sni=example.com&allowInsecure=1",
         )
         .expect("VLESS TLS should parse");
+
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_insecure_tls_setting() {
+        let config = parse_hy2("hysteria2://password@example.com:443?insecure=1")
+            .expect("Hysteria2 insecure setting should parse");
 
         assert_eq!(
             config["streamSettings"]["tlsSettings"]["allowInsecure"],
