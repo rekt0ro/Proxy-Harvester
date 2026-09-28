@@ -1666,8 +1666,8 @@ async fn check_batch_targets(
                 && STRICT_RECONNECT_AFTER_ATTEMPTS.contains(&(attempt + 1))
             {
                 for &entry_index in &active {
-                    clients[entry_index] = client_for_port(local_ports[entry_index], timeout_seconds)
-                        .map_err(|error| {
+                    clients[entry_index] =
+                        client_for_port(local_ports[entry_index], timeout_seconds).map_err(|error| {
                             let _ = child.start_kill();
                             let _ = child.wait();
                             let _ = fs::remove_dir_all(&work);
