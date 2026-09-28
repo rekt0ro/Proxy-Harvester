@@ -928,15 +928,12 @@ mod tests {
     fn accepts_shadowsocks_plain_and_base64_userinfo() {
         assert!(normalize_config("ss://aes-256-gcm:secret@example.com:8388").is_some());
 
-        assert!(
-            normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some()
-        );
+        assert!(normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some());
     }
 
     #[test]
     fn accepts_legacy_base64_shadowsocks_urls() {
-        let legacy =
-            "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
+        let legacy = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
         assert!(normalize_config(legacy).is_some());
     }
 
