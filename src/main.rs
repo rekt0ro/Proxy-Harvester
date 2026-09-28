@@ -378,6 +378,21 @@ fn append_limited_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
     true
 }
 
+async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
+    let mut body = Vec::new();
+    let mut chunks = response.bytes_stream();
+
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|_| SourceBodyError::Read)?;
+
+        if !append_limited_chunk(&mut body, &chunk) {
+            return Err(SourceBodyError::TooLarge);
+        }
+    }
+
+    Ok(body)
+}
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let cwd = env::current_dir()?;
 
@@ -1945,6 +1960,8 @@ async fn quic_latency_for_targets(
         .filter_map(|result| async move { result })
         .next();
 
+    futures::pin_mut!(probe);
+
     timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
         .await
         .ok()
@@ -2189,6 +2206,8 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
         .buffer_unordered(MAX_WIREGUARD_ADDRESS_CONCURRENCY)
         .filter_map(|result| async move { result })
         .next();
+
+    futures::pin_mut!(probe);
 
     timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
         .await
