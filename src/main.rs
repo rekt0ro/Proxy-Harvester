@@ -57,17 +57,26 @@ enum SourceBodyError {
     Read,
 }
 
-async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
-    let mut body = Vec::new();
-    let mut response = response;
+async fn test_chunk(
+    index: usize,
+    configs: &[String],
+) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
+    println!(
+        "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
+        index,
+        configs.len()
+    );
 
-    while let Some(chunk) = response.chunk().await.map_err(|_| SourceBodyError::Read)? {
-        if !append_limited_chunk(&mut body, &chunk) {
-            return Err(SourceBodyError::TooLarge);
-        }
-    }
+    let working = test_transport_configs(configs).await;
 
-    Ok(body)
+    println!(
+        "[INFO] Chunk {} complete: {}/{} transport-reachable.",
+        index,
+        working.len(),
+        configs.len()
+    );
+
+    Ok((index, working))
 }
 
 #[tokio::main]
@@ -1858,10 +1867,7 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
-    ) -> Result<
-        ServerCertVerified,
-        rustls::Error,
-    > {
+    ) -> Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
 
@@ -1870,10 +1876,7 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _message: &[u8],
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
-    ) -> Result<
-        HandshakeSignatureValid,
-        rustls::Error,
-    > {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
 
@@ -1882,12 +1885,10 @@ impl ServerCertVerifier for ProbeCertVerifier {
         _message: &[u8],
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
-    ) -> Result<
-        HandshakeSignatureValid,
-        rustls::Error,
-    > {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
+}
 
     fn supported_verify_schemes(
         &self,
@@ -2777,14 +2778,12 @@ async fn diagnose_configs(
         );
 
         println!(
-            "[DIAG] Transport result: {}",
-            if transport_reachable(config)
-                .await
-            {
-                "PASS"
-            } else {
-                "FAIL"
-            }
-        );
+    "[DIAG] Transport result: {}",
+    if transport_reachable(config).await {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+);
     }
 }
