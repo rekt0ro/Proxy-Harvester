@@ -15,10 +15,10 @@ permissions:
 env:
   XRAY_VERSION: "26.3.27"
   # SHA-256 of Xray-linux-64.zip for the version above (64 lowercase hex chars).
-  XRAY_SHA256: "REPLACE_WITH_XRAY_ZIP_SHA256"
+  XRAY_SHA256: "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
   SINGBOX_VERSION: "1.14.1"
   # SHA-256 of sing-box-<version>-linux-amd64.tar.gz for the version above.
-  SINGBOX_SHA256: "REPLACE_WITH_SINGBOX_TARBALL_SHA256"
+  SINGBOX_SHA256: "12cb2816b52febb356f6a885b740cc8758c3f30b8ae0ca8edba80f0d2d35343f"
 
 jobs:
   # Job 1: does all the untrusted work (downloads, config testing) with a READ-ONLY token.
