@@ -545,7 +545,7 @@ async fn validate_light_batch(
     }
 
     println!(
-        "[INFO] Consumer-style Light validation: {}/{} candidates verified.",
+        "[INFO] Multi-target Light validation: {}/{} candidates verified.",
         verified.len(),
         candidates.len()
     );
