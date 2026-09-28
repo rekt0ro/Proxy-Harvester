@@ -85,13 +85,13 @@ fn b64decode(value: &str) -> Option<Vec<u8>> {
     }
 
     for candidate in [value, padded.as_str()] {
-        for bytes in [
+        if let Some(bytes) = [
             STANDARD.decode(candidate),
             URL_SAFE.decode(candidate),
             URL_SAFE_NO_PAD.decode(candidate),
         ]
         .into_iter()
-        .flatten()
+        .find_map(Result::ok)
         {
             return Some(bytes);
         }
@@ -1786,7 +1786,7 @@ async fn validate_candidates_inner(
         .transpose()
         .map_err(|error| error.to_string())?;
     let batch_size = batch_size.max(1);
-    let total_batches = (parsed.len() + batch_size - 1) / batch_size;
+    let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
