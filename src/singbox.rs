@@ -1679,8 +1679,8 @@ mod tests {
         assert_eq!(socks4["username"], "user");
         assert_eq!(socks4["password"], "pass");
 
-        let socks4a = singbox_outbound("socks4a://example.com:1081")
-            .expect("SOCKS4a should map natively");
+        let socks4a =
+            singbox_outbound("socks4a://example.com:1081").expect("SOCKS4a should map natively");
         assert_eq!(socks4a["version"], "4a");
         assert_eq!(socks4a["server_port"], 1081);
     }
