@@ -2,7 +2,7 @@
 
 ### Light (Recommended)
 
-Up to 200 verified proxy configurations selected from a capped 10,000-candidate screened pool. Light uses multi-target connectivity, adaptive strict rechecks, endpoint diversity, reliability/jitter scoring, a small transfer-throughput signal, and bounded history of prior strict checks. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
+Up to 200 verified proxy configurations selected from a capped 10,000-candidate screened pool. Light uses multi-target connectivity, adaptive strict rechecks, endpoint diversity, reliability/jitter scoring, a small transfer-throughput signal, and bounded history of prior strict checks. The transfer signal helps ranking but does not add a separate validation pass. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
 
 Plain text:
 
