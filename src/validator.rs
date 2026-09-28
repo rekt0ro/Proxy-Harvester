@@ -153,13 +153,20 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
 }
 
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
-    let url = Url::parse(clean(config)).ok()?;
+    let config = clean(config);
+    let scheme = config
+        .split_once("://")
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("")
+        .to_ascii_lowercase();
 
-    if url.scheme().eq_ignore_ascii_case("hysteria2") || url.scheme().eq_ignore_ascii_case("hy2") {
-        return hysteria2_probe_endpoint(clean(config));
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+        return hysteria2_probe_endpoint(config);
     }
 
-    if url.scheme().eq_ignore_ascii_case("vmess") {
+    let url = Url::parse(config).ok()?;
+
+    if scheme == "vmess" {
         let payload = clean(config).split_once("://")?.1;
         let decoded = b64decode(payload)?;
         let value: Value = serde_json::from_slice(&decoded).ok()?;
@@ -1941,6 +1948,14 @@ mod tests {
         assert_eq!(
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
             ("127.0.0.1".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn config_label_never_exposes_userinfo() {
+        assert_eq!(
+            config_label("trojan://secret-password@example.com:443"),
+            "trojan://example.com:443"
         );
     }
 
