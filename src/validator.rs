@@ -613,15 +613,27 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
 }
 
 fn urlencoding(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~' => encoded.push(byte as char),
+            _ => {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0F) as usize] as char);
             }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
+        }
+    }
+
+    encoded
 }
 
 fn parse_trojan(config: &str) -> Result<Value, String> {
@@ -2051,6 +2063,11 @@ mod tests {
             .expect("user/password Trojan URI should parse");
 
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
+    }
+
+    #[test]
+    fn urlencoding_escapes_reserved_and_non_ascii_bytes() {
+        assert_eq!(urlencoding("a b/c?é"), "a%20b%2Fc%3F%C3%A9");
     }
 
     #[test]
