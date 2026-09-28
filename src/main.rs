@@ -2,6 +2,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
+use proxyrift::validator::{config_label, endpoint};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::Endpoint;
 use regex::Regex;
@@ -31,6 +32,7 @@ const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
@@ -55,28 +57,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut source_results = stream::iter(sources.iter().cloned())
         .map(|url| {
             let client = client.clone();
+            let source_label = source_label(&url);
             async move {
-                println!("[INFO] Downloading {url}");
+                println!("[INFO] Downloading source {source_label}");
                 match client.get(&url).send().await {
                     Ok(response) => match response.error_for_status() {
-                        Ok(response) => match response.text().await {
-                            Ok(text) => {
-                                let configs = extract_configs(&text);
-                                println!("[INFO] Found {} configs from {url}.", configs.len());
-                                configs
+                        Ok(response) => {
+                            if response
+                                .content_length()
+                                .is_some_and(|length| length as usize > MAX_SOURCE_BYTES)
+                            {
+                                println!(
+                                    "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                    MAX_SOURCE_BYTES
+                                );
+                                return Vec::new();
                             }
-                            Err(error) => {
-                                println!("[WARN] Failed to read {url}: {error}");
-                                Vec::new()
+
+                            match response.bytes().await {
+                                Ok(bytes) if bytes.len() <= MAX_SOURCE_BYTES => {
+                                    match String::from_utf8(bytes.to_vec()) {
+                                        Ok(text) => {
+                                            let configs = extract_configs(&text);
+                                            println!(
+                                                "[INFO] Found {} configs from source {source_label}.",
+                                                configs.len()
+                                            );
+                                            configs
+                                        }
+                                        Err(error) => {
+                                            println!(
+                                                "[WARN] Failed to decode source {source_label} as UTF-8: {error}"
+                                            );
+                                            Vec::new()
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    println!(
+                                        "[WARN] Skipping source {source_label}: response exceeds {} bytes",
+                                        MAX_SOURCE_BYTES
+                                    );
+                                    Vec::new()
+                                }
+                                Err(error) => {
+                                    println!("[WARN] Failed to read source {source_label}: {error}");
+                                    Vec::new()
+                                }
                             }
                         },
                         Err(error) => {
-                            println!("[WARN] Failed to download {url}: {error}");
+                            println!("[WARN] Failed to download source {source_label}: {error}");
                             Vec::new()
                         }
                     },
                     Err(error) => {
-                        println!("[WARN] Failed to download {url}: {error}");
+                        println!("[WARN] Failed to download source {source_label}: {error}");
                         Vec::new()
                     }
                 }
@@ -125,7 +161,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    if ranked_working_configs.is_empty() {
+    let hysteria2_candidates = configs
+        .iter()
+        .filter(|config| matches!(config_scheme(config).as_str(), "hysteria2" | "hy2"))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if ranked_working_configs.is_empty() && hysteria2_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
@@ -183,10 +225,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let sampled_transport_count = light_candidates.len();
+
+    for config in hysteria2_candidates {
+        if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
+            break;
+        }
+
+        if let Some(ep) = endpoint(&config) {
+            if light_candidate_endpoints.insert(ep) {
+                light_candidates.push(config);
+            }
+        }
+    }
+
     println!(
-        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs across the ranked pool.",
+        "[INFO] Light candidate sampling: selected {} of {} transport-reachable configs, including {} Hysteria2 candidates.",
         light_candidates.len(),
-        ranked_working_configs.len()
+        ranked_working_configs.len(),
+        light_candidates.len().saturating_sub(sampled_transport_count)
     );
     let light_candidates_path = output_dir.join(".light-candidates.txt");
     let light_candidates_subscription = if light_candidates.is_empty() {
@@ -296,6 +353,23 @@ fn normalize_config(config: &str) -> Option<String> {
     }
 
     let scheme = config_scheme(&config);
+
+    if !matches!(
+        scheme.as_str(),
+        "vless"
+            | "vmess"
+            | "trojan"
+            | "ss"
+            | "hysteria2"
+            | "hy2"
+            | "wg"
+            | "socks"
+            | "socks5"
+            | "socks5h"
+            | "http"
+    ) {
+        return None;
+    }
 
     if scheme == "vmess" {
         return normalize_vmess(&config);
@@ -791,6 +865,33 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
     results
 }
 
+#[cfg(test)]
+mod tests {
+    use super::normalize_config;
+
+    #[test]
+    fn rejects_protocols_without_a_proxy_validator() {
+        for config in [
+            "https://127.0.0.1:443",
+            "ssr://encoded",
+            "ssh://user@127.0.0.1:22",
+            "tuic://token@127.0.0.1:443",
+            "naive+https://user:pass@example.com:443",
+        ] {
+            assert!(normalize_config(config).is_none(), "{config}");
+        }
+    }
+
+    #[test]
+    fn retains_supported_proxy_schemes() {
+        assert!(normalize_config("http://127.0.0.1:8080").is_some(), "http");
+        assert!(
+            normalize_config("socks5://127.0.0.1:1080").is_some(),
+            "socks5"
+        );
+    }
+}
+
 fn config_scheme(config: &str) -> String {
     config
         .split_once("://")
@@ -798,38 +899,11 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn endpoint(config: &str) -> Option<(String, u16)> {
-    let url = Url::parse(config).ok()?;
-    let scheme = url.scheme().to_ascii_lowercase();
-
-    if scheme == "vmess" {
-        let encoded = config.split_once("://")?.1.split('#').next()?.trim();
-        let decoded = decode_vmess_payload(encoded)?;
-        let value: Value = serde_json::from_str(&decoded).ok()?;
-
-        let add = value.get("add")?.as_str()?.trim().to_string();
-        let port = match value.get("port") {
-            Some(Value::String(port)) => port.parse::<u16>().ok()?,
-            Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
-            _ => return None,
-        };
-
-        if add.is_empty() || port == 0 {
-            return None;
-        }
-
-        return Some((add, port));
-    }
-
-    let host = url.host_str()?.to_string();
-    let port = url.port().or_else(|| match scheme.as_str() {
-        "http" => Some(80),
-        "https" => Some(443),
-        "socks" | "socks4" | "socks5" | "socks5h" => Some(1080),
-        _ => None,
-    })?;
-
-    Some((host, port))
+fn source_label(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "<invalid source>".to_string())
 }
 async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
@@ -1305,7 +1379,7 @@ async fn diagnose_configs(configs: &[String]) {
             "[DIAG] Sample {} [{}]: {}",
             index + 1,
             config_scheme(config),
-            config
+            config_label(config)
         );
         println!(
             "[DIAG] Transport result: {}",

@@ -46,22 +46,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Resolve Xray version
+      - name: Set Xray version
         id: xray-version
+        env:
+          XRAY_VERSION: "26.3.27"
         shell: bash
         run: |
           set -euo pipefail
 
-          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -er '.tag_name | ltrimstr("v")')"
-
-          if [[ ! "$xray_version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-            echo "Invalid Xray release version: $xray_version" >&2
+          if [[ ! "$XRAY_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "Invalid pinned Xray release version: $XRAY_VERSION" >&2
             exit 1
           fi
 
-          echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
-          echo "Xray version: ${xray_version}"
-
+          echo "version=${XRAY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Pinned Xray version: ${XRAY_VERSION}"
       - name: Verify Rust dependency lock
         run: test -s Cargo.lock
 
@@ -157,6 +156,7 @@ jobs:
         run: |
           cargo build --release --bins
           test -x ./target/release/ProxyRift
+          test -x ./target/release/check_proxies
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
 
@@ -180,6 +180,30 @@ jobs:
 
       - name: Collect and transport-test configs
         run: ./target/release/ProxyRift
+
+      - name: Validate All subscription
+        env:
+          ALL_MIN_PUBLISH: "50"
+        run: |
+          set +e
+          ./target/release/check_proxies             --input subscriptions/.all.txt             --output /tmp/proxyrift/all.next.txt             --workers 32             --batch-size 250             --timeout 3             --target https://www.google.com/generate_204             --xray "$HOME/.local/bin/xray"
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/all.next.txt ]; then
+            all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
+            echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
+            if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
+              cp /tmp/proxyrift/all.next.txt subscriptions/all.txt
+              echo "Published refreshed All subscription."
+            else
+              echo "All verified pool is too small to replace the current subscription; preserving the previous All subscription."
+            fi
+          elif [ "${status}" -ne 0 ]; then
+            echo "All validation failed; preserving the previous All subscription."
+          else
+            echo "All validation produced no configs; preserving the previous All subscription."
+          fi
 
       - name: Build Light subscription
         env:

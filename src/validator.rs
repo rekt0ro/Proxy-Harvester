@@ -23,6 +23,7 @@ pub const LIGHT_TARGETS: &[&str] = &[
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
+pub const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
 pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
@@ -153,8 +154,20 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
 }
 
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
-    let url = Url::parse(clean(config)).ok()?;
-    if url.scheme().eq_ignore_ascii_case("vmess") {
+    let config = clean(config);
+    let scheme = config
+        .split_once("://")
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+        return hysteria2_probe_endpoint(config);
+    }
+
+    let url = Url::parse(config).ok()?;
+
+    if scheme == "vmess" {
         let payload = clean(config).split_once("://")?.1;
         let decoded = b64decode(payload)?;
         let value: Value = serde_json::from_slice(&decoded).ok()?;
@@ -177,6 +190,60 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         _ => None,
     };
     endpoint_from_url(&url, default).ok()
+}
+
+pub fn config_label(config: &str) -> String {
+    let scheme = config
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match endpoint(config) {
+        Some((host, port)) if host.contains(':') => format!("{scheme}://[{host}]:{port}"),
+        Some((host, port)) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://<invalid>"),
+    }
+}
+
+fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
+    let rest = config.split_once("://")?.1;
+    let authority = rest.split(['?', '/']).next()?.split('#').next()?;
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, value)| value)
+        .unwrap_or(authority);
+
+    let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
+        let (host, remainder) = stripped.split_once(']')?;
+        if host.is_empty() || host.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host.to_string(), remainder.strip_prefix(':').unwrap_or(""))
+    } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
+        if host.is_empty() || host.contains(':') || host.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host.to_string(), port_spec)
+    } else {
+        if host_port.is_empty() || host_port.chars().any(char::is_whitespace) {
+            return None;
+        }
+        (host_port.to_string(), "")
+    };
+
+    let port = port_spec
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .split('-')
+        .next()
+        .unwrap_or("")
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or(443);
+
+    Some((host, port))
 }
 
 fn normalize_xhttp_extra(value: Value) -> Value {
@@ -547,15 +614,23 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
 }
 
 fn urlencoding(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
+                encoded.push(byte as char)
             }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
+            _ => {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0F) as usize] as char);
+            }
+        }
+    }
+
+    encoded
 }
 
 fn parse_trojan(config: &str) -> Result<Value, String> {
@@ -924,7 +999,18 @@ fn make_temp_dir() -> Result<std::path::PathBuf, String> {
         .map_err(|error| error.to_string())?
         .as_nanos();
     let path = std::env::temp_dir().join(format!("proxyrift-xray-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&path).map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(unix))]
+    std::fs::create_dir(&path).map_err(|error| error.to_string())?;
+
     Ok(path)
 }
 
@@ -1034,22 +1120,30 @@ async fn wait_for_rate_limit() {
     }
 }
 
-fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
+fn client_for_port(
+    port: u16,
+    timeout_seconds: f64,
+    fresh_connections: bool,
+) -> Result<Client, String> {
     let request_timeout = if timeout_seconds.is_finite() && timeout_seconds > 0.0 {
         Duration::from_secs_f64(timeout_seconds)
     } else {
         Duration::from_secs(1)
     };
 
-    Client::builder()
+    let mut builder = Client::builder()
         .proxy(
             reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        .user_agent("ProxyRift/3.0")
-        .build()
-        .map_err(|error| error.to_string())
+        .user_agent("ProxyRift/3.0");
+
+    if fresh_connections {
+        builder = builder.pool_max_idle_per_host(0);
+    }
+
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
@@ -1103,8 +1197,8 @@ async fn functional_attempt(
     target: &Url,
     compatibility_target: Option<&Url>,
 ) -> Result<f64, ProbeError> {
-    if let Some(compatibility_target) = compatibility_target
-        .filter(|compatibility_target| *compatibility_target != target)
+    if let Some(compatibility_target) =
+        compatibility_target.filter(|compatibility_target| *compatibility_target != target)
     {
         probe_request(client, compatibility_target.clone()).await?;
     }
@@ -1178,7 +1272,7 @@ async fn check_batch(
 
         let mut active = Vec::with_capacity(batch_entries.len());
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            let client = match client_for_port(local_ports[index], timeout_seconds) {
+            let client = match client_for_port(local_ports[index], timeout_seconds, false) {
                 Ok(client) => client,
                 Err(error) => {
                     let _ = child.kill();
@@ -1229,7 +1323,7 @@ async fn check_batch(
             let values = latencies.get(config).cloned().unwrap_or_default();
             let wins = successes.get(config).copied().unwrap_or(0);
 
-            if wins >= MIN_SUCCESSFUL_TARGETS
+            if wins >= MIN_SUCCESSFUL_ATTEMPTS
                 && !values.is_empty()
                 && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
             {
@@ -1278,8 +1372,8 @@ pub async fn validate_candidates_with_targets(
         batch_size,
         timeout_seconds,
         STABILITY_ATTEMPTS,
+        MIN_SUCCESSFUL_ATTEMPTS,
         MIN_SUCCESSFUL_TARGETS,
-        1,
     )
     .await
 }
@@ -1379,7 +1473,7 @@ async fn validate_candidates_targets_inner(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {config} :: {reason}");
+        println!("rejected: {} :: {reason}", config_label(config));
     }
 
     if !rejected.is_empty() {
@@ -1508,7 +1602,7 @@ async fn check_batch_targets(
 
         let mut clients = Vec::with_capacity(batch_entries.len());
         for (index, _) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], timeout_seconds) {
+            match client_for_port(local_ports[index], timeout_seconds, true) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
                     let _ = child.kill();
@@ -1564,7 +1658,10 @@ async fn check_batch_targets(
                 });
             }
 
-            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
+            if !active.is_empty()
+                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
                 sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
@@ -1596,7 +1693,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if result.is_ok() {
+                    if matches!(result, Ok(latency) if latency <= MAX_LATENCY_MS) {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -1611,12 +1708,7 @@ async fn check_batch_targets(
                 && target_count >= min_successful_targets
                 && (stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].len() >= min_successful_attempts
-                && latencies[index]
-                    .iter()
-                    .copied()
-                    .fold(0.0, f64::max)
-                    <= MAX_LATENCY_MS
+                && latencies[index].iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
@@ -1666,7 +1758,7 @@ async fn validate_candidates_inner(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {config} :: {reason}");
+        println!("rejected: {} :: {reason}", config_label(config));
     }
 
     if !rejected.is_empty() {
@@ -1700,7 +1792,7 @@ async fn validate_candidates_inner(
                 index + 1,
                 total_batches,
                 batch.len(),
-                MIN_SUCCESSFUL_TARGETS,
+                MIN_SUCCESSFUL_ATTEMPTS,
                 STABILITY_ATTEMPTS
             );
         } else {
@@ -1709,7 +1801,7 @@ async fn validate_candidates_inner(
                 index + 1,
                 total_batches,
                 batch.len(),
-                MIN_SUCCESSFUL_TARGETS,
+                MIN_SUCCESSFUL_ATTEMPTS,
                 STABILITY_ATTEMPTS
             );
         }
@@ -1808,7 +1900,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn vless_ws_path_early_data_is_normalized() {
         let config = parse_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=/?ed=2560",
@@ -1881,6 +1972,38 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_defaults_match_proxy_parser() {
+        assert_eq!(
+            endpoint("http://127.0.0.1").expect("HTTP endpoint"),
+            ("127.0.0.1".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn config_label_never_exposes_userinfo() {
+        assert_eq!(
+            config_label("trojan://secret-password@example.com:443"),
+            "trojan://example.com:443"
+        );
+    }
+
+    #[test]
+    fn hysteria2_endpoint_defaults_to_443() {
+        assert_eq!(
+            endpoint("hysteria2://password@example.com"),
+            Some(("example.com".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn hysteria2_endpoint_uses_first_multi_port() {
+        assert_eq!(
+            endpoint("hy2://password@example.com:1234,5000-6000"),
+            Some(("example.com".to_string(), 1234))
+        );
+    }
+
+    #[test]
     fn vmess_endpoint_comes_from_decoded_payload() {
         let payload = json!({
             "add": "proxy.example",
@@ -1937,6 +2060,11 @@ mod tests {
             .expect("user/password Trojan URI should parse");
 
         assert_eq!(config["settings"]["servers"][0]["password"], "secret");
+    }
+
+    #[test]
+    fn urlencoding_escapes_reserved_and_non_ascii_bytes() {
+        assert_eq!(urlencoding("a b/c?é"), "a%20b%2Fc%3F%C3%A9");
     }
 
     #[test]

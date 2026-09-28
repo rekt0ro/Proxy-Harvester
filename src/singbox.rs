@@ -1,7 +1,8 @@
-use crate::validator::ProxyMetrics;
+use crate::validator::{config_label, ProxyMetrics};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
+use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -378,11 +379,206 @@ fn parse_vmess_raw(config: &str) -> Result<Value, String> {
     serde_json::from_slice(&decoded).map_err(|error| error.to_string())
 }
 
-fn singbox_outbound(config: &str) -> Result<Value, String> {
-    let scheme = Url::parse(clean(config))
+fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
+    let cleaned = clean(config);
+    let rest = cleaned
+        .split_once("://")
+        .ok_or_else(|| "invalid Hysteria2 URL".to_string())?
+        .1;
+    let (authority, query) = rest
+        .split_once('?')
+        .map(|(authority, query)| {
+            (
+                authority.split('#').next().unwrap_or(authority),
+                query.split('#').next().unwrap_or(query),
+            )
+        })
+        .unwrap_or_else(|| (rest.split('#').next().unwrap_or(rest), ""));
+
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, value)| value)
+        .unwrap_or(authority);
+    let auth_raw = authority
+        .rsplit_once('@')
+        .map(|(value, _)| value)
+        .unwrap_or("");
+
+    let auth = percent_decode_str(auth_raw)
+        .decode_utf8()
         .map_err(|error| error.to_string())?
-        .scheme()
-        .to_ascii_lowercase();
+        .into_owned();
+    if auth.is_empty() {
+        return Err("Hysteria2 password missing".to_string());
+    }
+
+    let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
+        let (host, remainder) = stripped
+            .split_once(']')
+            .ok_or_else(|| "invalid Hysteria2 host".to_string())?;
+        if host.is_empty() {
+            return Err("Hysteria2 host missing".to_string());
+        }
+        (
+            host.to_string(),
+            remainder.strip_prefix(':').unwrap_or("").to_string(),
+        )
+    } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
+        if host.contains(':') || host.is_empty() {
+            return Err("invalid Hysteria2 host".to_string());
+        }
+        (host.to_string(), port_spec.to_string())
+    } else {
+        if host_port.is_empty() {
+            return Err("Hysteria2 host missing".to_string());
+        }
+        (host_port.to_string(), String::new())
+    };
+
+    let port_spec = if port_spec.is_empty() {
+        None
+    } else {
+        let entries = port_spec
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Err("invalid Hysteria2 port".to_string());
+        }
+
+        for entry in &entries {
+            if let Some((start, end)) = entry.split_once('-') {
+                let start = start
+                    .parse::<u16>()
+                    .map_err(|_| "invalid Hysteria2 port range".to_string())?;
+                let end = end
+                    .parse::<u16>()
+                    .map_err(|_| "invalid Hysteria2 port range".to_string())?;
+                if start == 0 || end == 0 || start > end {
+                    return Err("invalid Hysteria2 port range".to_string());
+                }
+            } else if entry
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .is_none()
+            {
+                return Err("invalid Hysteria2 port".to_string());
+            }
+        }
+
+        Some(entries)
+    };
+
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    let mut sni = None;
+    let mut insecure = false;
+    let mut alpns = Vec::new();
+    let mut obfs = None;
+    let mut obfs_password = None;
+    let mut has_pin = false;
+    let mut has_ech = false;
+
+    for (key, value) in pairs.by_ref() {
+        match key.to_ascii_lowercase().as_str() {
+            "sni" => sni = Some(value.into_owned()),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true
+            }
+            "alpn" => alpns.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            ),
+            "obfs" => obfs = Some(value.into_owned()),
+            "obfs-password" => obfs_password = Some(value.into_owned()),
+            "pinsha256" => has_pin = true,
+            "ech" => has_ech = true,
+            _ => {}
+        }
+    }
+
+    if has_pin {
+        return Err("Hysteria2 pinSHA256 is unsupported by pinned sing-box 1.14.1".to_string());
+    }
+    if has_ech {
+        return Err("Hysteria2 ECH links are unsupported by the Light URI mapper".to_string());
+    }
+    if obfs_password.is_some() && obfs.is_none() {
+        return Err("Hysteria2 obfs-password requires obfs".to_string());
+    }
+
+    let mut outbound = json!({
+        "type": "hysteria2",
+        "server": host,
+        "password": auth,
+        "tls": {
+            "enabled": true,
+        },
+    });
+
+    if let Some(ports) = port_spec {
+        if ports.len() == 1 && !ports[0].contains('-') {
+            outbound["server_port"] = json!(ports[0]
+                .parse::<u16>()
+                .map_err(|_| "invalid Hysteria2 port".to_string())?);
+        } else {
+            outbound["server_ports"] = json!(ports);
+        }
+    } else {
+        outbound["server_port"] = json!(443);
+    }
+
+    if let Some(sni) = sni.filter(|value| !value.is_empty()) {
+        outbound["tls"]["server_name"] = json!(sni);
+    } else {
+        outbound["tls"]["server_name"] = json!(host);
+    }
+
+    if insecure {
+        outbound["tls"]["insecure"] = json!(true);
+    }
+    if !alpns.is_empty() {
+        outbound["tls"]["alpn"] = json!(alpns);
+    }
+
+    if let Some(obfs_type) = obfs.filter(|value| !value.is_empty()) {
+        let obfs_type = obfs_type.to_ascii_lowercase();
+        if !matches!(obfs_type.as_str(), "salamander" | "gecko") {
+            return Err(format!("unsupported Hysteria2 obfs type {obfs_type}"));
+        }
+        let password = obfs_password
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Hysteria2 obfs password missing".to_string())?;
+
+        outbound["obfs"] = json!({
+            "type": obfs_type,
+            "password": password,
+        });
+    }
+
+    Ok(outbound)
+}
+
+fn singbox_outbound(config: &str) -> Result<Value, String> {
+    let cleaned = clean(config);
+    let scheme = cleaned
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if scheme == "hysteria2" || scheme == "hy2" {
+        return singbox_hysteria2_outbound(config);
+    }
+
     let xray = crate::validator::parse_config(config)?;
     let stream = xray
         .get("streamSettings")
@@ -611,7 +807,18 @@ fn make_temp_dir() -> Result<std::path::PathBuf, String> {
         .as_nanos();
     let path =
         std::env::temp_dir().join(format!("proxyrift-singbox-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&path).map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(unix))]
+    std::fs::create_dir(&path).map_err(|error| error.to_string())?;
+
     Ok(path)
 }
 
@@ -668,16 +875,24 @@ async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
     pending.is_empty()
 }
 
-fn client_for_port(port: u16, request_timeout: Duration) -> Result<Client, String> {
-    Client::builder()
+fn client_for_port(
+    port: u16,
+    request_timeout: Duration,
+    fresh_connections: bool,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
         .proxy(
             reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        .user_agent("ProxyRift-SingBox/1.0")
-        .build()
-        .map_err(|error| error.to_string())
+        .user_agent("ProxyRift-SingBox/1.0");
+
+    if fresh_connections {
+        builder = builder.pool_max_idle_per_host(0);
+    }
+
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
@@ -790,7 +1005,11 @@ async fn check_batch_targets(
 
         let mut clients = Vec::with_capacity(batch_entries.len());
         for (index, _) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], request_timeout) {
+            match client_for_port(
+                local_ports[index],
+                request_timeout,
+                stability_attempts >= STRICT_STABILITY_ATTEMPTS,
+            ) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
                     let _ = child.kill();
@@ -846,7 +1065,10 @@ async fn check_batch_targets(
                 });
             }
 
-            if stability_attempts >= STRICT_STABILITY_ATTEMPTS && attempt + 1 < stability_attempts {
+            if !active.is_empty()
+                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
@@ -878,7 +1100,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if result.is_ok() {
+                    if matches!(result, Ok(latency) if latency <= max_latency_ms) {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -893,12 +1115,7 @@ async fn check_batch_targets(
                 && target_count >= min_successful_targets
                 && (stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].len() >= min_successful_attempts
-                && latencies[index]
-                    .iter()
-                    .copied()
-                    .fold(0.0, f64::max)
-                    <= max_latency_ms
+                && latencies[index].iter().copied().fold(0.0, f64::max) <= max_latency_ms
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
@@ -955,20 +1172,6 @@ async fn check_batch(
         )
         .map_err(|error| error.to_string())?;
 
-        if let Err(error) = check_singbox_config(binary, &config_path) {
-            let _ = fs::remove_dir_all(&work);
-
-            if batch_entries.len() > 1 {
-                let mid = batch_entries.len() / 2;
-                pending.push(batch_entries[..mid].to_vec());
-                pending.push(batch_entries[mid..].to_vec());
-                continue;
-            }
-
-            println!("[WARN] sing-box rejected {}: {}", batch_entries[0].0, error);
-            continue;
-        }
-
         let mut child = start_singbox(binary, &config_path, &log_path)?;
 
         if !ports_ready(&mut child, &local_ports).await {
@@ -1004,7 +1207,7 @@ async fn check_batch(
         let mut client_error = None;
 
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], request_timeout) {
+            match client_for_port(local_ports[index], request_timeout, false) {
                 Ok(client) => active.push((config.clone(), client)),
                 Err(error) => {
                     client_error = Some(error);
@@ -1165,7 +1368,7 @@ async fn validate_candidates_with_targets_policy(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {config} :: {reason}");
+        println!("sing-box rejected: {} :: {reason}", config_label(config));
     }
 
     if parsed.is_empty() {
@@ -1252,7 +1455,7 @@ pub async fn validate_candidates_with_settings(
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {config} :: {reason}");
+        println!("sing-box rejected: {} :: {reason}", config_label(config));
     }
 
     if parsed.is_empty() {
@@ -1424,6 +1627,24 @@ mod tests {
         assert_eq!(outbound["server_port"], 443);
         assert_eq!(outbound["password"], "password");
         assert_eq!(outbound["tls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["server_name"], "example.com");
+    }
+
+    #[test]
+    fn maps_hysteria2_obfs_natively() {
+        let config = "hy2://password@example.com:8443?sni=edge.example.com&insecure=1&obfs=salamander&obfs-password=secret";
+        let outbound = singbox_outbound(config).expect("Hysteria2 obfs should map");
+        assert_eq!(outbound["obfs"]["type"], "salamander");
+        assert_eq!(outbound["obfs"]["password"], "secret");
+        assert_eq!(outbound["tls"]["insecure"], true);
+        assert_eq!(outbound["tls"]["server_name"], "edge.example.com");
+    }
+
+    #[test]
+    fn maps_hysteria2_multi_port_natively() {
+        let config = "hy2://password@example.com:1234,5000-6000";
+        let outbound = singbox_outbound(config).expect("Hysteria2 multi-port should map");
+        assert_eq!(outbound["server_ports"], json!(["1234", "5000-6000"]));
         assert_eq!(outbound["tls"]["server_name"], "example.com");
     }
 

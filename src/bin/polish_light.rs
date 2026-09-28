@@ -639,9 +639,10 @@ async fn main() -> Result<(), String> {
             global_verified.len()
         );
 
-        let chunk_metadata =
-            validate_light_batch(&xray, &singbox, chunk, &targets, workers, batch_size, timeout, false)
-                .await?;
+        let chunk_metadata = validate_light_batch(
+            &xray, &singbox, chunk, &targets, workers, batch_size, timeout, false,
+        )
+        .await?;
 
         for config in chunk_metadata.keys() {
             if !global_positions.contains_key(config) {
