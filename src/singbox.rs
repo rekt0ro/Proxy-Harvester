@@ -1203,7 +1203,11 @@ async fn check_batch(
         let mut client_error = None;
 
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], request_timeout, stability_attempts >= STRICT_STABILITY_ATTEMPTS) {
+            match client_for_port(
+                local_ports[index],
+                request_timeout,
+                stability_attempts >= STRICT_STABILITY_ATTEMPTS,
+            ) {
                 Ok(client) => active.push((config.clone(), client)),
                 Err(error) => {
                     client_error = Some(error);
