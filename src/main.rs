@@ -1168,10 +1168,7 @@ const MAX_HYSTERIA2_PROBE_PORTS: usize = 8;
 
 fn hysteria2_port_spec(config: &str) -> Option<String> {
     let rest = config.split_once("://")?.1;
-    let authority = rest
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(rest);
+    let authority = rest.split(['?', '#']).next().unwrap_or(rest);
     let host_port = authority
         .rsplit_once('@')
         .map(|(_, value)| value)
@@ -1195,7 +1192,11 @@ fn hysteria2_probe_ports(config: &str) -> Option<Vec<u16>> {
     }
 
     let mut candidates = Vec::new();
-    for entry in spec.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
+    for entry in spec
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
         if let Some((start, end)) = entry.split_once('-') {
             let start = start.parse::<u16>().ok()?;
             let end = end.parse::<u16>().ok()?;
@@ -1284,14 +1285,13 @@ async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
             let connecting = endpoint.connect_with(client_config, address, &sni).ok()?;
             let start = Instant::now();
 
-            let connected =
-                match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
-                    Ok(Ok(connection)) => connection,
-                    _ => {
-                        endpoint.close(0u32.into(), b"probe timeout");
-                        continue;
-                    }
-                };
+            let connected = match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
+                Ok(Ok(connection)) => connection,
+                _ => {
+                    endpoint.close(0u32.into(), b"probe timeout");
+                    continue;
+                }
+            };
 
             let latency = start.elapsed().as_millis() as u64;
             connected.close(0u32.into(), b"probe complete");
