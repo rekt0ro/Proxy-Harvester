@@ -28,6 +28,8 @@ use wireguard_sans_io::{
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 
+// Validation pipeline constants are kept explicit for CI readability.
+
 // Keep total endpoint probes bounded. The previous 8 x 64 nesting could create
 // roughly 512 simultaneous probes before address fan-out was even considered.
 const TEST_CONCURRENCY: usize = 2;
