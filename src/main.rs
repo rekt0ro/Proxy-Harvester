@@ -584,6 +584,7 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
 
     if url.query_pairs().any(|(key, value)| {
         (key.eq_ignore_ascii_case("packetencoding") || key.eq_ignore_ascii_case("packet-encoding"))
+            && !value.trim().is_empty()
             && !matches!(
                 value.to_ascii_lowercase().as_str(),
                 "xudp" | "packetaddr" | "none"
@@ -1057,6 +1058,13 @@ mod tests {
                     .to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn retains_vless_with_empty_packet_encoding_value() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&packetEncoding=";
+        assert_eq!(normalize_config(config), Some(config.to_string()));
     }
 
     #[test]
