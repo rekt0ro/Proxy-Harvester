@@ -85,10 +85,7 @@ jobs:
               continue
             fi
 
-            echo "All reported checks passed for PR #${pr}; approving and merging."
-            gh pr review "${pr}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --approve
+            echo "All reported checks passed for PR #${pr}; merging."
             gh pr merge "${pr}" \
               --repo "${GITHUB_REPOSITORY}" \
               --squash \
