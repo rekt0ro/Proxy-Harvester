@@ -865,7 +865,9 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": password,
             });
 
-            if let Some(tls) = tls_settings(&stream, query_bool(&url, &["insecure", "allowInsecure"]))? {
+            if let Some(tls) =
+                tls_settings(&stream, query_bool(&url, &["insecure", "allowInsecure"]))?
+            {
                 outbound["tls"] = tls;
             }
             if let Some(transport) = transport {
