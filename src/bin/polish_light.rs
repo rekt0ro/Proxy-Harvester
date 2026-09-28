@@ -302,6 +302,11 @@ fn light_backend(config: &str) -> LightBackend {
     let transport = query_value(&url, &["type", "network"]).to_ascii_lowercase();
     let security = query_value(&url, &["security"]).to_ascii_lowercase();
 
+    let scheme = url.scheme().to_ascii_lowercase();
+    if matches!(scheme.as_str(), "http" | "socks" | "socks5" | "socks5h") {
+        return LightBackend::Xray;
+    }
+
     // XHTTP is an Xray-only path in our Light validator, regardless of the
     // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
     // deterministic parser rejection.
@@ -820,6 +825,18 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{light_backend, normalize_light_config, select_verified_configs, LightBackend};
+
+    #[test]
+    fn routes_basic_proxy_schemes_to_xray() {
+        for config in [
+            "http://proxy.example:8080",
+            "socks://proxy.example:1080",
+            "socks5://proxy.example:1080",
+            "socks5h://proxy.example:1080",
+        ] {
+            assert_eq!(light_backend(config), LightBackend::Xray);
+        }
+    }
 
     #[test]
     fn routes_reality_to_both_cores() {
