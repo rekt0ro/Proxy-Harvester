@@ -884,10 +884,7 @@ mod tests {
 
     #[test]
     fn retains_supported_proxy_schemes() {
-        assert!(
-            normalize_config("http://127.0.0.1:8080").is_some(),
-            "http"
-        );
+        assert!(normalize_config("http://127.0.0.1:8080").is_some(), "http");
         assert!(
             normalize_config("socks5://127.0.0.1:1080").is_some(),
             "socks5"
