@@ -1557,6 +1557,8 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
         .filter_map(|result| async move { result })
         .next();
 
+    futures::pin_mut!(probe);
+
     timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
         .await
         .ok()
@@ -1648,27 +1650,7 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
     working
 }
 
-async fn test_chunk(
-    index: usize,
-    configs: &[String],
-) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
-    println!(
-        "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
-        index,
-        configs.len()
-    );
 
-    let working = test_transport_configs(configs).await;
-
-    println!(
-        "[INFO] Chunk {} complete: {}/{} transport-reachable.",
-        index,
-        working.len(),
-        configs.len()
-    );
-
-    Ok((index, working))
-}
 
 // This verifier is only for transport reachability. The actual proxy validation
 // later in the pipeline performs normal certificate handling.
