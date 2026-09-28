@@ -536,16 +536,23 @@ fn valid_vless_encryption(value: &str) -> bool {
         return false;
     }
 
-    blocks[3..].iter().all(|block| {
+    let mut has_key = false;
+    if !blocks[3..].iter().all(|block| {
         if block.len() < 20 {
             return true;
         }
 
-        matches!(
+        let valid = matches!(
             URL_SAFE_NO_PAD.decode(block),
             Ok(bytes) if bytes.len() == 32 || bytes.len() == 1184
-        )
-    })
+        );
+        has_key |= valid;
+        valid
+    }) {
+        return false;
+    }
+
+    has_key
 }
 
 fn normalize_vless(config: &str, url: &Url) -> Option<String> {
@@ -1072,6 +1079,12 @@ mod tests {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=";
         assert_eq!(normalize_config(config), Some(config.to_string()));
+    }
+
+    #[test]
+    fn rejects_vless_encryption_without_public_key() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=mlkem768x25519plus.native.1rtt.padding";
+        assert!(super::normalize_config(config).is_none());
     }
 
     #[test]
