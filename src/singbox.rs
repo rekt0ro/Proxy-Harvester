@@ -1244,7 +1244,7 @@ async fn check_batch(
 
             if wins >= MIN_SUCCESSFUL_ATTEMPTS
                 && !values.is_empty()
-                && values.iter().copied().fold(0.0, f64::max) <= policy.max_latency_ms
+                && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
             {
                 let mut values = values;
                 values.sort_by(f64::total_cmp);
@@ -1471,7 +1471,7 @@ pub async fn validate_candidates_with_settings(
                 batch,
                 workers.max(1),
                 request_timeout,
-                policy.max_latency_ms,
+                max_latency_ms,
             )
             .await?,
         );
@@ -1482,7 +1482,7 @@ pub async fn validate_candidates_with_settings(
         metadata.len(),
         candidates.len(),
         STABILITY_ATTEMPTS,
-        policy.max_latency_ms
+        max_latency_ms
     );
 
     Ok(metadata)

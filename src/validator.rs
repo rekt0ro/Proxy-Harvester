@@ -1402,9 +1402,12 @@ pub async fn validate_candidates_with_targets(
         workers,
         batch_size,
         timeout_seconds,
-        STABILITY_ATTEMPTS,
-        MIN_SUCCESSFUL_ATTEMPTS,
-        MIN_SUCCESSFUL_TARGETS,
+        ValidationPolicy::new(
+            MAX_LATENCY_MS,
+            STABILITY_ATTEMPTS,
+            MIN_SUCCESSFUL_ATTEMPTS,
+            MIN_SUCCESSFUL_TARGETS,
+        ),
     )
     .await
 }
@@ -1722,7 +1725,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= MAX_LATENCY_MS) {
+                    if matches!(result, Ok(latency) if latency <= policy.max_latency_ms) {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -1737,7 +1740,11 @@ async fn check_batch_targets(
                 && target_count >= policy.min_successful_targets
                 && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
+                && latencies[index]
+                    .iter()
+                    .copied()
+                    .fold(0.0, f64::max)
+                    <= policy.max_latency_ms
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
