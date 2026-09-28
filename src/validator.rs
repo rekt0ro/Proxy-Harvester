@@ -14,6 +14,7 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
+pub const THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=16384";
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
@@ -45,6 +46,8 @@ pub struct ProxyMetrics {
     pub attempts: usize,
     pub median_ms: f64,
     pub min_ms: f64,
+    pub jitter_ms: f64,
+    pub throughput_kbps: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +76,46 @@ impl ValidationPolicy {
 
 type ParsedConfig = (String, Value);
 type RejectedConfig = (String, String);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProbeSample {
+    pub(crate) latency_ms: f64,
+    pub(crate) bytes: usize,
+}
+
+pub(crate) fn latency_jitter(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = *value - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+
+    variance.sqrt()
+}
+
+pub(crate) fn throughput_kbps(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+
+    let middle = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[middle]
+    } else {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    }
+}
 
 #[derive(Debug)]
 enum ProbeError {
@@ -1429,7 +1472,7 @@ pub(crate) async fn read_response_body_limited(
     Ok(body)
 }
 
-async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
+async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
     let response = client
@@ -1465,14 +1508,17 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         return Err(ProbeError::Failed);
     }
 
-    Ok(started.elapsed().as_secs_f64() * 1000.0)
+    Ok(ProbeSample {
+        latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+        bytes: body.len(),
+    })
 }
 
 async fn functional_attempt(
     client: &Client,
     target: &Url,
     compatibility_target: Option<&Url>,
-) -> Result<f64, ProbeError> {
+) -> Result<ProbeSample, ProbeError> {
     if let Some(compatibility_target) =
         compatibility_target.filter(|compatibility_target| *compatibility_target != target)
     {
@@ -1577,6 +1623,7 @@ async fn check_batch(
         let mut successes = HashMap::<String, usize>::new();
         let mut attempts = HashMap::<String, usize>::new();
         let mut latencies = HashMap::<String, Vec<f64>>::new();
+        let mut throughputs = HashMap::<String, Vec<f64>>::new();
 
         for _ in 0..STABILITY_ATTEMPTS {
             if active.is_empty() {
@@ -1599,9 +1646,18 @@ async fn check_batch(
             for (config, _, result) in results {
                 *attempts.entry(config.clone()).or_insert(0) += 1;
                 match result {
-                    Ok(latency) => {
+                    Ok(sample) => {
                         *successes.entry(config.clone()).or_insert(0) += 1;
-                        latencies.entry(config).or_default().push(latency);
+                        latencies
+                            .entry(config.clone())
+                            .or_default()
+                            .push(sample.latency_ms);
+                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                            throughputs
+                                .entry(config)
+                                .or_default()
+                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                        }
                     }
                     Err(ProbeError::Failed) => {}
                 }
@@ -1632,6 +1688,10 @@ async fn check_batch(
                         attempts: attempts.get(config).copied().unwrap_or(0),
                         median_ms: median,
                         min_ms: values[0],
+                        jitter_ms: latency_jitter(&values),
+                        throughput_kbps: throughput_kbps(
+                            throughputs.get(config).map(Vec::as_slice).unwrap_or(&[]),
+                        ),
                     },
                 );
             }
@@ -1920,6 +1980,7 @@ async fn check_batch_targets(
         let mut attempts = vec![0usize; count];
         let mut late_streak = vec![0usize; count];
         let mut latencies = vec![Vec::<f64>::new(); count];
+        let mut throughputs = vec![Vec::<f64>::new(); count];
         let mut active = (0..count).collect::<Vec<_>>();
 
         for attempt in 0..policy.stability_attempts {
@@ -1958,10 +2019,14 @@ async fn check_batch_targets(
             for (entry_index, result) in results {
                 attempts[entry_index] += 1;
                 match result {
-                    Ok(latency) => {
+                    Ok(sample) => {
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
-                        latencies[entry_index].push(latency);
+                        latencies[entry_index].push(sample.latency_ms);
+                        if targets[0].as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                            throughputs[entry_index]
+                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                        }
                     }
                     Err(ProbeError::Failed) => late_streak[entry_index] = 0,
                 }
@@ -2013,8 +2078,14 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= policy.max_latency_ms) {
-                        secondary_success[entry_index] = true;
+                    if let Ok(sample) = result {
+                        if sample.latency_ms <= policy.max_latency_ms {
+                            secondary_success[entry_index] = true;
+                        }
+                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                            throughputs[entry_index]
+                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                        }
                     }
                 }
             }
@@ -2046,6 +2117,8 @@ async fn check_batch_targets(
                         attempts: attempts[index],
                         median_ms: median,
                         min_ms: values[0],
+                        jitter_ms: latency_jitter(&values),
+                        throughput_kbps: throughput_kbps(&throughputs[index]),
                     },
                 );
             }
@@ -2172,6 +2245,8 @@ pub fn write_metadata(path: &str, metadata: &HashMap<String, ProxyMetrics>) -> R
                 "attempts": metrics.attempts,
                 "median_ms": metrics.median_ms,
                 "min_ms": metrics.min_ms,
+                "jitter_ms": metrics.jitter_ms,
+                "throughput_kbps": metrics.throughput_kbps,
             }),
         );
     }
