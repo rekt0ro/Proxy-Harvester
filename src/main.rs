@@ -44,10 +44,6 @@ const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
-// Bound total discovery work before transport probing. The final published pool
-// is capped separately by MAX_ALL_CONFIGS.
-const MAX_DISCOVERED_CONFIGS: usize = 20_000;
-
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
@@ -199,16 +195,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Deduplicate on the identity of the config, not on its label.
     let mut seen_keys = HashSet::new();
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
-
-    if configs.len() > MAX_DISCOVERED_CONFIGS {
-        println!(
-            "[WARN] Discovery produced {} configs; sampling down to {} before transport testing.",
-            configs.len(),
-            MAX_DISCOVERED_CONFIGS
-        );
-
-        configs = sample_evenly(&configs, MAX_DISCOVERED_CONFIGS);
-    }
 
     configs = assign_config_names(configs);
 
@@ -443,36 +429,6 @@ async fn load_sources(
         .filter(|line| seen.insert(*line))
         .map(ToOwned::to_owned)
         .collect())
-}
-
-fn sample_evenly(configs: &[String], target: usize) -> Vec<String> {
-    if target == 0 || configs.is_empty() {
-        return Vec::new();
-    }
-
-    if target >= configs.len() {
-        return configs.to_vec();
-    }
-
-    if target == 1 {
-        return vec![configs[0].clone()];
-    }
-
-    let last = configs.len() - 1;
-    let last_slot = target - 1;
-
-    let mut sampled = Vec::with_capacity(target);
-
-    for slot in 0..target {
-        let index = slot
-            .saturating_mul(last)
-            .checked_div(last_slot)
-            .unwrap_or_default();
-
-        sampled.push(configs[index].clone());
-    }
-
-    sampled
 }
 
 fn config_pattern() -> &'static Regex {
