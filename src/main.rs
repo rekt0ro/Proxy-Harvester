@@ -47,11 +47,7 @@ async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, Source
     let mut body = Vec::new();
     let mut response = response;
 
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(SourceBodyError::Read)?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(SourceBodyError::Read)? {
         if chunk.len() > MAX_SOURCE_BYTES.saturating_sub(body.len()) {
             return Err(SourceBodyError::TooLarge);
         }
