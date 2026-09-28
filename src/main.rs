@@ -491,45 +491,33 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
         "none",
     ];
 
-    let method = if !url.username().is_empty() {
-        percent_decode_str(url.username())
-            .decode_utf8()
-            .ok()?
-            .into_owned()
-    } else {
-        let payload = config
-            .split_once("://")?
-            .1
-            .split('#')
-            .next()?
-            .split('@')
-            .next()?;
-        let mut padded = payload.to_string();
-        while !padded.len().is_multiple_of(4) {
-            padded.push('=');
-        }
-
-        let decoded = [
-            STANDARD.decode(payload),
-            STANDARD.decode(&padded),
-            URL_SAFE.decode(payload),
-            URL_SAFE_NO_PAD.decode(payload),
-        ]
-        .into_iter()
-        .find_map(Result::ok)?;
-
-        let decoded = String::from_utf8(decoded).ok()?;
-        decoded.split_once(':')?.0.to_string()
-    };
-
-    if METHODS
-        .iter()
-        .any(|supported| method.eq_ignore_ascii_case(supported))
-    {
-        Some(config.to_string())
-    } else {
-        None
+    fn supported(method: &str, methods: &[&str]) -> bool {
+        methods
+            .iter()
+            .any(|candidate| method.eq_ignore_ascii_case(candidate))
     }
+
+    if !url.username().is_empty() {
+        let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
+        let method = userinfo.split_once(':').map(|(method, _)| method).unwrap_or(&userinfo);
+        return supported(method, METHODS).then(|| config.to_string());
+    }
+
+    let payload = config.split_once("://")?.1.split('#').next()?;
+
+    if let Some((credentials, _remote)) = payload.rsplit_once('@') {
+        let decoded = b64decode(credentials)?;
+        let decoded = String::from_utf8(decoded).ok()?;
+        let method = decoded.split_once(':')?.0;
+        return supported(method, METHODS).then(|| config.to_string());
+    }
+
+    let decoded = b64decode(payload)?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (credentials, _remote) = decoded.rsplit_once('@')?;
+    let method = credentials.split_once(':')?.0;
+
+    supported(method, METHODS).then(|| config.to_string())
 }
 
 fn normalize_vless(config: &str, url: &Url) -> Option<String> {
@@ -931,6 +919,26 @@ mod tests {
         ] {
             assert!(normalize_config(config).is_none(), "{config}");
         }
+    }
+
+    #[test]
+    fn accepts_shadowsocks_plain_and_base64_userinfo() {
+        assert!(normalize_config(
+            "ss://aes-256-gcm:secret@example.com:8388"
+        )
+        .is_some());
+
+        assert!(normalize_config(
+            "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn accepts_legacy_base64_shadowsocks_urls() {
+        let legacy =
+            "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
+        assert!(normalize_config(legacy).is_some());
     }
 
     #[test]
