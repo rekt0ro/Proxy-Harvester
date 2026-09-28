@@ -64,6 +64,9 @@ jobs:
       - name: Run Rust tests
         run: cargo test --release --all-targets
 
+      - name: Run Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
       - name: Check whitespace
         run: git diff --check
 
