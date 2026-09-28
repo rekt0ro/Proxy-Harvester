@@ -80,19 +80,20 @@ pub fn write_lines(path: &str, values: &[String]) -> Result<(), String> {
 fn b64decode(value: &str) -> Option<Vec<u8>> {
     let value = value.trim();
     let mut padded = value.to_string();
-    while padded.len() % 4 != 0 {
+    while !padded.len().is_multiple_of(4) {
         padded.push('=');
     }
 
     for candidate in [value, padded.as_str()] {
-        for decoded in [
+        for bytes in [
             STANDARD.decode(candidate),
             URL_SAFE.decode(candidate),
             URL_SAFE_NO_PAD.decode(candidate),
-        ] {
-            if let Ok(bytes) = decoded {
-                return Some(bytes);
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            return Some(bytes);
         }
     }
     None
@@ -1495,7 +1496,7 @@ async fn validate_candidates_targets_inner(
     }
 
     let batch_size = batch_size.max(1);
-    let total_batches = (parsed.len() + batch_size - 1) / batch_size;
+    let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
