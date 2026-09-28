@@ -37,9 +37,12 @@ fn ranked(metadata: &std::collections::HashMap<String, ProxyMetrics>) -> Vec<Str
     configs.sort_unstable_by(|a, b| {
         let ma = &metadata[a];
         let mb = &metadata[b];
-        mb.successes
-            .cmp(&ma.successes)
+        (mb.successes as f64 / mb.attempts.max(1) as f64)
+            .total_cmp(&(ma.successes as f64 / ma.attempts.max(1) as f64))
+            .then_with(|| mb.successes.cmp(&ma.successes))
             .then_with(|| ma.median_ms.total_cmp(&mb.median_ms))
+            .then_with(|| ma.jitter_ms.total_cmp(&mb.jitter_ms))
+            .then_with(|| mb.throughput_kbps.total_cmp(&ma.throughput_kbps))
             .then_with(|| ma.min_ms.total_cmp(&mb.min_ms))
             .then_with(|| a.cmp(b))
     });
