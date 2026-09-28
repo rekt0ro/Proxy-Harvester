@@ -461,7 +461,12 @@ fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
     for (key, value) in url.query_pairs() {
         match key.to_ascii_lowercase().as_str() {
             "auth" => auth = Some(value.into_owned()),
-            "peer" => peer = Some(value.into_owned()),
+            "peer" => {
+                let value = value.into_owned();
+                if !value.trim().is_empty() {
+                    peer = Some(value);
+                }
+            },
             "insecure"
                 if matches!(
                     value.trim().to_ascii_lowercase().as_str(),
@@ -1902,6 +1907,14 @@ mod tests {
         assert_eq!(outbound["tls"]["insecure"], true);
         assert_eq!(outbound["tls"]["alpn"], json!(["hysteria"]));
         assert_eq!(outbound["obfs"], "obfs-secret");
+    }
+
+    #[test]
+    fn blank_hysteria_peer_defaults_to_server_name() {
+        let config =
+            "hysteria://example.com:443?peer=&upmbps=100&downmbps=100";
+        let outbound = singbox_outbound(config).expect("blank peer should use host");
+        assert_eq!(outbound["tls"]["server_name"], "example.com");
     }
 
     #[test]
