@@ -36,7 +36,6 @@ const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
-#[tokio::main]
 #[derive(Debug)]
 enum SourceBodyError {
     TooLarge,
@@ -57,6 +56,7 @@ async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, Source
     Ok(body)
 }
 
+#[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] ProxyRift starting...");
 
