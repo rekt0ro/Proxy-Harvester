@@ -746,21 +746,10 @@ fn decode_html_entities(text: &str) -> String {
 }
 
 fn trim_config(config: &str) -> String {
-    let config = config
-        .trim_end_matches(|c| {
-            c == ')'
-                || c == ']'
-                || c == '}'
-                || c == ','
-                || c == ';'
-                || c == '.'
-                || c == '\r'
-                || c == '\n'
-        })
-        .to_string();
+    let config = config.trim();
 
-    let Ok(mut url) = Url::parse(&config) else {
-        return config;
+    let Ok(mut url) = Url::parse(config) else {
+        return config.to_string();
     };
 
     url.set_fragment(None);
@@ -978,6 +967,14 @@ mod tests {
                 "socks5://127.0.0.1:1082".to_string(),
                 "socks5h://127.0.0.1:1083".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn preserves_punctuation_in_uri_credentials_and_queries() {
+        assert_eq!(
+            normalize_config("trojan://secret.@example.com:443?security=tls&path=/foo,;#label."),
+            Some("trojan://secret.@example.com:443?security=tls&path=/foo,;".to_string())
         );
     }
 
