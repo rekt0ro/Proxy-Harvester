@@ -890,6 +890,34 @@ mod tests {
             "socks5"
         );
     }
+
+    #[test]
+    fn hysteria2_probe_ports_supports_port_hopping() {
+        assert_eq!(
+            super::hysteria2_probe_ports("hy2://password@example.com"),
+            Some(vec![443])
+        );
+        assert_eq!(
+            super::hysteria2_probe_ports("hy2://password@example.com:1234,5000-5002"),
+            Some(vec![1234, 5000, 5001, 5002])
+        );
+    }
+
+    #[test]
+    fn hysteria2_probe_ports_rejects_invalid_explicit_ports() {
+        assert!(super::hysteria2_probe_ports("hy2://password@example.com:not-a-port").is_none());
+        assert!(super::hysteria2_probe_ports("hy2://password@example.com:0").is_none());
+        assert!(super::hysteria2_probe_ports("hy2://password@example.com:5000-4000").is_none());
+    }
+
+    #[test]
+    fn hysteria2_probe_ports_bounds_large_ranges() {
+        let ports = super::hysteria2_probe_ports("hy2://password@example.com:1000-65000")
+            .expect("large range should produce bounded probe ports");
+        assert!(ports.len() <= super::MAX_HYSTERIA2_PROBE_PORTS);
+        assert!(ports.contains(&1000));
+        assert!(ports.contains(&65000));
+    }
 }
 
 fn config_scheme(config: &str) -> String {
@@ -1136,7 +1164,150 @@ fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
     Some((host, port, sni, alpn))
 }
 
+const MAX_HYSTERIA2_PROBE_PORTS: usize = 8;
+
+fn hysteria2_port_spec(config: &str) -> Option<String> {
+    let rest = config.split_once("://")?.1;
+    let authority = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(rest);
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, value)| value)
+        .unwrap_or(authority);
+
+    if let Some(stripped) = host_port.strip_prefix('[') {
+        let (_, remainder) = stripped.split_once(']')?;
+        return Some(remainder.strip_prefix(':').unwrap_or("").to_string());
+    }
+
+    host_port
+        .rsplit_once(':')
+        .map(|(_, port_spec)| port_spec.to_string())
+        .or_else(|| Some(String::new()))
+}
+
+fn hysteria2_probe_ports(config: &str) -> Option<Vec<u16>> {
+    let spec = hysteria2_port_spec(config)?;
+    if spec.is_empty() {
+        return Some(vec![443]);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in spec.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
+        if let Some((start, end)) = entry.split_once('-') {
+            let start = start.parse::<u16>().ok()?;
+            let end = end.parse::<u16>().ok()?;
+            if start == 0 || end == 0 || start > end {
+                return None;
+            }
+
+            candidates.push(start);
+            if end != start {
+                candidates.push(start + (end - start) / 2);
+                candidates.push(end);
+            }
+        } else {
+            let port = entry.parse::<u16>().ok().filter(|port| *port != 0)?;
+            candidates.push(port);
+        }
+    }
+
+    candidates.sort_unstable();
+    candidates.dedup();
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() <= MAX_HYSTERIA2_PROBE_PORTS {
+        return Some(candidates);
+    }
+
+    let mut sampled = Vec::with_capacity(MAX_HYSTERIA2_PROBE_PORTS);
+    let last = candidates.len() - 1;
+    for slot in 0..MAX_HYSTERIA2_PROBE_PORTS {
+        let index = slot * last / (MAX_HYSTERIA2_PROBE_PORTS - 1);
+        sampled.push(candidates[index]);
+    }
+    sampled.dedup();
+    Some(sampled)
+}
+
+fn hysteria2_query_values(config: &str, key: &str) -> Vec<String> {
+    let Some((_, query)) = config.split_once('?') else {
+        return Vec::new();
+    };
+    let query = query.split('#').next().unwrap_or(query);
+    url::form_urlencoded::parse(query.as_bytes())
+        .filter(|(name, value)| name.eq_ignore_ascii_case(key) && !value.is_empty())
+        .map(|(_, value)| value.into_owned())
+        .collect()
+}
+
+async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
+    let (host, _) = proxyrift::validator::endpoint(config)?;
+    let ports = hysteria2_probe_ports(config)?;
+    let sni = hysteria2_query_values(config, "sni")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| host.clone());
+    let alpn = {
+        let values = hysteria2_query_values(config, "alpn");
+        if values.is_empty() {
+            vec!["h3".to_string()]
+        } else {
+            values
+        }
+    };
+
+    for port in ports {
+        let mut addresses = timeout(
+            Duration::from_secs(TCP_TIMEOUT_SECS),
+            tokio::net::lookup_host((host.as_str(), port)),
+        )
+        .await
+        .ok()?
+        .ok()?
+        .collect::<Vec<_>>();
+
+        addresses.sort_by_key(|address| !address.is_ipv4());
+
+        for address in addresses {
+            let local = if address.ip().is_ipv4() {
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+            } else {
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+            };
+
+            let endpoint = Endpoint::client(local).ok()?;
+            let client_config = quic_client_config(&alpn)?;
+            let connecting = endpoint.connect_with(client_config, address, &sni).ok()?;
+            let start = Instant::now();
+
+            let connected =
+                match timeout(Duration::from_secs(TCP_TIMEOUT_SECS), connecting).await {
+                    Ok(Ok(connection)) => connection,
+                    _ => {
+                        endpoint.close(0u32.into(), b"probe timeout");
+                        continue;
+                    }
+                };
+
+            let latency = start.elapsed().as_millis() as u64;
+            connected.close(0u32.into(), b"probe complete");
+            endpoint.close(0u32.into(), b"probe complete");
+            return Some(latency);
+        }
+    }
+
+    None
+}
+
 async fn quic_latency(config: &str) -> Option<u64> {
+    if matches!(config_scheme(config).as_str(), "hysteria2" | "hy2") {
+        return hysteria2_quic_latency(config).await;
+    }
+
     let (host, port, sni, alpn) = quic_params(config)?;
 
     let mut addresses = timeout(

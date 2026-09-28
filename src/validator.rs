@@ -231,17 +231,20 @@ fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
         (host_port.to_string(), "")
     };
 
-    let port = port_spec
-        .split(',')
-        .next()
-        .unwrap_or("")
-        .split('-')
-        .next()
-        .unwrap_or("")
-        .parse::<u16>()
-        .ok()
-        .filter(|port| *port != 0)
-        .unwrap_or(443);
+    let port = if port_spec.is_empty() {
+        443
+    } else {
+        port_spec
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .split('-')
+            .next()
+            .unwrap_or("")
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)?
+    };
 
     Some((host, port))
 }
@@ -1969,6 +1972,16 @@ mod tests {
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
             ("127.0.0.1".to_string(), 8080)
         );
+    }
+
+    #[test]
+    fn hysteria2_endpoint_defaults_only_when_port_is_omitted() {
+        assert_eq!(
+            endpoint("hy2://password@proxy.example.com"),
+            Some(("proxy.example.com".to_string(), 443))
+        );
+        assert!(endpoint("hy2://password@proxy.example.com:not-a-port").is_none());
+        assert!(endpoint("hy2://password@proxy.example.com:0").is_none());
     }
 
     #[test]
