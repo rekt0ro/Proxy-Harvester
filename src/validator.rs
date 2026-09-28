@@ -128,6 +128,16 @@ fn b64decode(value: &str) -> Option<Vec<u8>> {
     None
 }
 
+fn query_bool(url: &Url, names: &[&str]) -> bool {
+    url.query_pairs().any(|(key, value)| {
+        names.iter().any(|name| key.eq_ignore_ascii_case(name))
+            && matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+    })
+}
+
 fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
     for (key, value) in url.query_pairs() {
         if names.iter().any(|name| key.eq_ignore_ascii_case(name)) && !value.is_empty() {
@@ -343,6 +353,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
     if security == "tls" {
         let mut tls = json!({ "serverName": sni });
+        if query_bool(url, &["insecure", "allowInsecure"]) {
+            tls["allowInsecure"] = json!(true);
+        }
         if !alpn.is_empty() {
             tls["alpn"] = json!(alpn);
         }
@@ -2108,6 +2121,23 @@ mod tests {
         let example = Url::parse("https://example.com/").expect("example.com");
         assert!(valid_probe_body(&example, b"<html>"));
         assert!(!valid_probe_body(&example, b""));
+    }
+
+    #[test]
+    fn vless_tls_preserves_insecure_setting() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&insecure=1",
+        )
+        .expect("VLESS TLS should parse");
+
+        assert_eq!(config["streamSettings"]["tlsSettings"]["allowInsecure"], true);
+
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&allowInsecure=1",
+        )
+        .expect("VLESS TLS should accept allowInsecure");
+
+        assert_eq!(config["streamSettings"]["tlsSettings"]["allowInsecure"], true);
     }
 
     #[test]
