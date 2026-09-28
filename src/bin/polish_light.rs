@@ -514,16 +514,7 @@ async fn validate_light_batch(
     verified.extend(xray_metadata);
 
     if !dual_candidates.is_empty() {
-        verified.extend(
-            merge_dual(
-                xray,
-                singbox,
-                &dual_candidates,
-                targets,
-                settings,
-            )
-            .await?,
-        );
+        verified.extend(merge_dual(xray, singbox, &dual_candidates, targets, settings).await?);
     }
 
     println!(
