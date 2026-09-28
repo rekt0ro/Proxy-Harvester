@@ -1,4 +1,4 @@
-use proxyrift::singbox::validate_candidates_with_settings as validate_singbox_candidates;
+use proxyrift::singbox::validate_candidates_with_target as validate_singbox_candidates;
 use proxyrift::validator::{
     read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, MAX_LATENCY_MS,
     PRIMARY_TARGET,
@@ -105,6 +105,7 @@ async fn main() -> Result<(), String> {
             validate_singbox_candidates(
                 &singbox,
                 &hysteria_candidates,
+                &target,
                 workers,
                 Duration::from_secs_f64(timeout),
                 MAX_LATENCY_MS,
