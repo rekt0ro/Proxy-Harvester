@@ -1995,3 +1995,271 @@ async fn quic_latency_for_targets(
         .ok()
         .flatten()
 }
+
+struct OsEntropy;
+
+impl EntropySource for OsEntropy {
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), EntropyError> {
+        getrandom::fill(buf).map_err(|_| EntropyError)
+    }
+}
+
+fn decode_key_32(encoded: &str) -> Option<[u8; 32]> {
+    let encoded = encoded.trim();
+
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let mut padded = encoded.to_string();
+
+    while !padded.len().is_multiple_of(4) {
+        padded.push('=');
+    }
+
+    for candidate in [encoded, padded.as_str()] {
+        for decoded in [
+            STANDARD.decode(candidate),
+            URL_SAFE.decode(candidate),
+            URL_SAFE_NO_PAD.decode(candidate),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if decoded.len() == 32 {
+                return decoded.try_into().ok();
+            }
+        }
+    }
+
+    None
+}
+
+fn wireguard_key(config: &str, keys: &[&str]) -> Option<[u8; 32]> {
+    let encoded = query_value(config, keys)?;
+
+    decode_key_32(&encoded)
+}
+
+fn wireguard_private_key(config: &str) -> Option<[u8; 32]> {
+    if let Some(key) = wireguard_key(
+        config,
+        &[
+            "privatekey",
+            "private-key",
+            "private_key",
+            "private_key_base64",
+        ],
+    ) {
+        return Some(key);
+    }
+
+    let url = Url::parse(config).ok()?;
+
+    let username = percent_decode_str(url.username()).decode_utf8().ok()?;
+
+    if username.is_empty() {
+        return None;
+    }
+
+    decode_key_32(username.as_ref())
+}
+
+async fn wireguard_latency_on_address(
+    address: SocketAddr,
+    private_key: [u8; 32],
+    public_key: [u8; 32],
+    psk: Option<[u8; 32]>,
+) -> Option<u64> {
+    let mut wg_config = WireGuardConfig::new(
+        StaticSecret::from_bytes(private_key),
+        PublicKey::from_bytes(public_key),
+    );
+
+    if let Some(psk) = psk {
+        wg_config.psk = PresharedKey::from_bytes(psk);
+    }
+
+    let mut tunnel = Tunnel::new(wg_config).ok()?;
+
+    let local = if address.ip().is_ipv4() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+    } else {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+    };
+
+    let socket = UdpSocket::bind(local).await.ok()?;
+
+    socket.connect(address).await.ok()?;
+
+    let start = std::time::Instant::now();
+
+    let mut rng = OsEntropy;
+    let mut send_buf = [0u8; 2048];
+
+    let init = tunnel
+        .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
+        .ok()?
+        .to_vec();
+
+    socket.send(&init).await.ok()?;
+
+    let deadline = start + std::time::Duration::from_secs(TCP_TIMEOUT_SECS);
+
+    let remote = address.to_string().into_bytes();
+
+    let mut recv_buf = [0u8; 2048];
+
+    loop {
+        let now = std::time::Instant::now();
+
+        if now >= deadline {
+            return None;
+        }
+
+        let remaining = deadline.duration_since(now);
+
+        let received = match timeout(remaining, socket.recv(&mut recv_buf)).await {
+            Ok(Ok(size)) => size,
+            _ => return None,
+        };
+
+        match tunnel.decapsulate(
+            wireguard_now(start),
+            &remote,
+            false,
+            &recv_buf[..received],
+            &mut send_buf,
+            &mut rng,
+        ) {
+            Ok(Received::HandshakeComplete) => {
+                return Some(start.elapsed().as_millis() as u64);
+            }
+
+            Ok(Received::CookieStored) => {
+                let retry = tunnel
+                    .initiate_handshake(wireguard_now(start), &mut send_buf, &mut rng)
+                    .ok()?
+                    .to_vec();
+
+                socket.send(&retry).await.ok()?;
+            }
+
+            Ok(Received::Reply(reply)) => {
+                socket.send(reply).await.ok()?;
+            }
+
+            Ok(Received::Keepalive) | Ok(Received::Data(_)) => {}
+
+            Err(_) => {}
+        }
+    }
+}
+
+async fn wireguard_latency(config: &str) -> Option<u64> {
+    let (host, port) = endpoint(config)?;
+
+    let private_key = wireguard_private_key(config)?;
+
+    let public_key = wireguard_key(
+        config,
+        &[
+            "publickey",
+            "public-key",
+            "public_key",
+            "peer-public-key",
+            "peer_public_key",
+            "pubkey",
+        ],
+    )?;
+
+    let psk = wireguard_key(
+        config,
+        &["presharedkey", "preshared-key", "preshared_key", "psk"],
+    );
+
+    let addresses = resolve_host_addresses(&host, port).await?;
+
+    let probe = stream::iter(addresses)
+        .map(|address| async move {
+            wireguard_latency_on_address(address, private_key, public_key, psk).await
+        })
+        .buffer_unordered(MAX_WIREGUARD_ADDRESS_CONCURRENCY)
+        .filter_map(|result| async move { result });
+
+    futures::pin_mut!(probe);
+
+    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe.next())
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn transport_latency(config: &str) -> Option<u64> {
+    match config_scheme(config).as_str() {
+        "hysteria" | "hysteria2" | "hy2" | "tuic" => quic_latency(config).await,
+
+        "wg" => wireguard_latency(config).await,
+
+        _ => {
+            let (host, port) = endpoint(config)?;
+
+            tcp_latency_endpoint(&host, port).await
+        }
+    }
+}
+
+fn wireguard_now(start: std::time::Instant) -> WireGuardNow {
+    let elapsed = start.elapsed();
+
+    let ticks = elapsed
+        .as_secs()
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::from(elapsed.subsec_nanos()));
+
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+
+    WireGuardNow::new(ticks, wall.as_secs(), wall.subsec_nanos())
+}
+
+async fn diagnose_configs(configs: &[String]) {
+    let mut samples = Vec::new();
+    let mut seen = HashSet::new();
+
+    for config in configs {
+        let scheme = config_scheme(config);
+
+        if seen.insert(scheme) {
+            samples.push(config.clone());
+        }
+
+        if samples.len() >= 12 {
+            break;
+        }
+    }
+
+    println!(
+        "[DIAG] Transport testing {} protocol samples.",
+        samples.len()
+    );
+
+    for (index, config) in samples.iter().enumerate() {
+        println!(
+            "[DIAG] Sample {} [{}]: {}",
+            index + 1,
+            config_scheme(config),
+            config_label(config)
+        );
+
+        println!(
+            "[DIAG] Transport result: {}",
+            if transport_reachable(config).await {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
+    }
+}
