@@ -1054,7 +1054,12 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
-        sort_ranked(&mut final_verified, &final_metadata, &global_positions);
+        sort_ranked(
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
         let selected = select_verified_configs(
             &final_verified,
             selection_limit,
@@ -1101,7 +1106,12 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    sort_ranked(&mut final_verified, &final_metadata, &global_positions);
+    sort_ranked(
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
     let selected = select_verified_configs(
         &final_verified,
         selection_limit,
