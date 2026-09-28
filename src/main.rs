@@ -1375,30 +1375,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn all_candidates_include_hysteria2_after_transport_screening() {
-        // PUT THE ORIGINAL HYSTERIA2 TEST BODY HERE
-    }
+#[test]
+fn all_candidates_include_hysteria2_after_transport_screening() {
+    let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
 
-    #[test]
-    fn all_candidates_include_hysteria2_after_transport_screening() {
-        let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
+    let hysteria2 = vec![
+        "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret".to_string(),
+    ];
 
-        let hysteria2 = vec![
-            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret".to_string(),
-        ];
+    let selected = super::select_all_candidates(&working, &hysteria2);
 
-        let selected = super::select_all_candidates(&working, &hysteria2);
-
-        assert_eq!(
-            selected,
-            vec![
-                "vless://uuid@example.com:443".to_string(),
-                "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret"
-                    .to_string(),
-            ]
-        );
-    }
+    assert_eq!(
+        selected,
+        vec![
+            "vless://uuid@example.com:443".to_string(),
+            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret"
+                .to_string(),
+        ]
+    );
+}
 
     #[test]
     fn retains_vless_with_empty_packet_encoding_value() {
