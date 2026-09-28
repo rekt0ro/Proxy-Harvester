@@ -520,11 +520,12 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             }
             let extra = first_query(url, &["extra"], Some(""));
             if !extra.is_empty() {
-                if let Ok(value) = serde_json::from_str::<Value>(&extra) {
-                    if value.is_object() {
-                        settings["extra"] = normalize_xhttp_extra(value);
-                    }
+                let value = serde_json::from_str::<Value>(&extra)
+                    .map_err(|_| "invalid XHTTP extra JSON".to_string())?;
+                if !value.is_object() {
+                    return Err("XHTTP extra must be a JSON object".to_string());
                 }
+                settings["extra"] = normalize_xhttp_extra(value);
             }
             out["xhttpSettings"] = settings;
         }
@@ -2193,6 +2194,17 @@ mod tests {
             config["streamSettings"]["wsSettings"]["earlyDataHeaderName"],
             "Sec-WebSocket-Protocol"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_xhttp_extra() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=not-json";
+        let error = parse_config(config).expect_err("invalid XHTTP extra should be rejected");
+        assert!(error.contains("invalid XHTTP extra JSON"));
+
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=%5B1%2C2%5D";
+        let error = parse_config(config).expect_err("non-object XHTTP extra should be rejected");
+        assert!(error.contains("XHTTP extra must be a JSON object"));
     }
 
     #[test]
