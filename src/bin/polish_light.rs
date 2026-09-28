@@ -553,9 +553,13 @@ fn light_backend(config: &str) -> LightBackend {
             }
 
             for candidate in [payload, padded.as_str()] {
-                for bytes in [STANDARD.decode(candidate), URL_SAFE.decode(candidate), URL_SAFE_NO_PAD.decode(candidate)]
-                    .into_iter()
-                    .flatten()
+                for bytes in [
+                    STANDARD.decode(candidate),
+                    URL_SAFE.decode(candidate),
+                    URL_SAFE_NO_PAD.decode(candidate),
+                ]
+                .into_iter()
+                .flatten()
                 {
                     if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
                         let network = value
@@ -958,11 +962,11 @@ async fn main() -> Result<(), String> {
             &history,
         );
         sort_ranked(
-            &mut final_verified,
-            &final_metadata,
-            &global_positions,
-            &history,
-        );
+        &mut final_verified,
+        &final_metadata,
+        &global_positions,
+        &history,
+    );
 
         let remaining = selection_limit.saturating_sub(
             select_verified_configs(
@@ -1226,16 +1230,14 @@ mod tests {
 
     #[test]
     fn routes_vmess_xhttp_to_xray_only() {
-        let payload =
-            r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"xhttp"}"#;
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"xhttp"}"#;
         let config = format!("vmess://{}", STANDARD.encode(payload));
         assert_eq!(light_backend(&config), LightBackend::Xray);
     }
 
     #[test]
     fn routes_vmess_grpc_host_to_xray() {
-        let payload =
-            r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"grpc","type":"gun","host":"grpc.example.com"}"#;
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"grpc","type":"gun","host":"grpc.example.com"}"#;
         let config = format!("vmess://{}", STANDARD.encode(payload));
         assert_eq!(light_backend(&config), LightBackend::Xray);
     }
