@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut unique = HashSet::new();
 
-    let source_results = stream::iter(sources.iter().cloned().enumerate())
+    let mut source_results = stream::iter(sources.iter().cloned().enumerate())
         .map(|(source_index, url)| {
             let client = client.clone();
 
@@ -378,13 +378,10 @@ fn append_limited_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
     true
 }
 
-async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
+async fn read_source_body(mut response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
     let mut body = Vec::new();
-    let mut chunks = response.bytes_stream();
 
-    while let Some(chunk) = chunks.next().await {
-        let chunk = chunk.map_err(|_| SourceBodyError::Read)?;
-
+    while let Some(chunk) = response.chunk().await.map_err(|_| SourceBodyError::Read)? {
         if !append_limited_chunk(&mut body, &chunk) {
             return Err(SourceBodyError::TooLarge);
         }
@@ -1569,12 +1566,11 @@ async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
             }
         })
         .buffer_unordered(MAX_TCP_ADDRESS_CONCURRENCY)
-        .filter_map(|result| async move { result })
-        .next();
+        .filter_map(|result| async move { result });
 
     futures::pin_mut!(probe);
 
-    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
+    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe.next())
         .await
         .ok()
         .flatten()
@@ -1957,12 +1953,11 @@ async fn quic_latency_for_targets(
             async move { quic_probe_target(address, &sni, client_config).await }
         })
         .buffer_unordered(MAX_QUIC_TARGET_CONCURRENCY)
-        .filter_map(|result| async move { result })
-        .next();
+        .filter_map(|result| async move { result });
 
     futures::pin_mut!(probe);
 
-    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
+    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe.next())
         .await
         .ok()
         .flatten()
@@ -2204,12 +2199,11 @@ async fn wireguard_latency(config: &str) -> Option<u64> {
             wireguard_latency_on_address(address, private_key, public_key, psk).await
         })
         .buffer_unordered(MAX_WIREGUARD_ADDRESS_CONCURRENCY)
-        .filter_map(|result| async move { result })
-        .next();
+        .filter_map(|result| async move { result });
 
     futures::pin_mut!(probe);
 
-    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe)
+    timeout(Duration::from_secs(TCP_TIMEOUT_SECS), probe.next())
         .await
         .ok()
         .flatten()
