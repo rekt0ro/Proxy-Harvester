@@ -2140,7 +2140,10 @@ mod tests {
         )
         .expect("VLESS TLS should accept allowInsecure");
 
-        assert_eq!(config["streamSettings"]["tlsSettings"]["allowInsecure"], true);
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
     }
 
     #[test]
