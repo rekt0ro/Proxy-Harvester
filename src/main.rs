@@ -484,6 +484,10 @@ fn extract_configs(text: &str) -> Vec<String> {
 fn normalize_config(config: &str) -> Option<String> {
     let config = trim_config(config);
 
+    if config.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return None;
+    }
+
     if has_invalid_percent_escapes(&config) || has_bracketed_ipv4_host(&config) {
         return None;
     }
@@ -1259,7 +1263,7 @@ mod tests {
 
     #[test]
     fn accepts_vless_mlkem_encryption() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHOevTauCQwa_71U";
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHO[...";
 
         assert!(normalize_config(config).is_some());
     }
@@ -2085,9 +2089,7 @@ fn hysteria2_probe_ports(
         return None;
     }
 
-    if candidates.len()
-        <= MAX_HYSTERIA2_PROBE_PORTS
-    {
+    if candidates.len() <= MAX_HYSTERIA2_PROBE_PORTS {
         return Some(candidates);
     }
 
