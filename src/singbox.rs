@@ -360,6 +360,7 @@ fn vmess_security(value: &str) -> Result<&'static str, String> {
         "auto" => Ok("auto"),
         "none" => Ok("none"),
         "zero" => Ok("zero"),
+        "aes-128-cfb" => Ok("aes-128-cfb"),
         "aes-128-gcm" => Ok("aes-128-gcm"),
         "chacha20-poly1305" => Ok("chacha20-poly1305"),
         other => Err(format!("unsupported sing-box VMess security {other}")),
@@ -1750,6 +1751,14 @@ mod tests {
         ));
         assert!(valid_probe_body("https://example.com/", b"<html>"));
         assert!(!valid_probe_body("https://example.com/", b""));
+    }
+
+    #[test]
+    fn accepts_vmess_aes_128_cfb_security() {
+        assert_eq!(
+            vmess_security("aes-128-cfb").expect("VMess CFB should map"),
+            "aes-128-cfb"
+        );
     }
 
     #[test]
