@@ -962,11 +962,11 @@ async fn main() -> Result<(), String> {
             &history,
         );
         sort_ranked(
-        &mut final_verified,
-        &final_metadata,
-        &global_positions,
-        &history,
-    );
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
 
         let remaining = selection_limit.saturating_sub(
             select_verified_configs(
@@ -1059,10 +1059,15 @@ async fn main() -> Result<(), String> {
         }
 
         sort_ranked(
+
             &mut final_verified,
+
             &final_metadata,
+
             &global_positions,
+
             &history,
+
         );
         let selected = select_verified_configs(
             &final_verified,
@@ -1111,11 +1116,16 @@ async fn main() -> Result<(), String> {
     }
 
     sort_ranked(
-            &mut final_verified,
-            &final_metadata,
-            &global_positions,
-            &history,
-        );
+
+        &mut final_verified,
+
+        &final_metadata,
+
+        &global_positions,
+
+        &history,
+
+    );
     let selected = select_verified_configs(
         &final_verified,
         selection_limit,
