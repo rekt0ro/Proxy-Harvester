@@ -1304,16 +1304,21 @@ pub(crate) async fn wait_for_rate_limit() {
     }
 }
 
+pub(crate) fn timeout_duration(seconds: f64) -> Result<Duration, String> {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err("timeout must be a positive finite number".to_string());
+    }
+
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| "timeout exceeds the maximum supported duration".to_string())
+}
+
 fn client_for_port(
     port: u16,
     timeout_seconds: f64,
     fresh_connections: bool,
 ) -> Result<Client, String> {
-    let request_timeout = if timeout_seconds.is_finite() && timeout_seconds > 0.0 {
-        Duration::from_secs_f64(timeout_seconds)
-    } else {
-        Duration::from_secs(1)
-    };
+    let request_timeout = timeout_duration(timeout_seconds).unwrap_or(Duration::from_secs(1));
 
     let mut builder = Client::builder()
         .proxy(
