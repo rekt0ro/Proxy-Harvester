@@ -195,7 +195,8 @@ jobs:
             all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
             echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
             if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
-              cp /tmp/proxyrift/all.next.txt subscriptions/all.txt
+              cp /tmp/proxyrift/all.next.txt subscriptions/.all.txt.next
+              mv -f subscriptions/.all.txt.next subscriptions/all.txt
               echo "Published refreshed All subscription."
             else
               echo "All verified pool is too small to replace the current subscription; preserving the previous All subscription."
@@ -236,7 +237,8 @@ jobs:
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
             echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
             if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
-              cp /tmp/proxyrift/light.next.txt subscriptions/light.txt
+              cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
+              mv -f subscriptions/.light.txt.next subscriptions/light.txt
               echo "Published refreshed Light subscription."
             else
               echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
@@ -301,7 +303,7 @@ jobs:
         if: always()
         run: |
           rm -rf /tmp/proxyrift /tmp/xray-build /tmp/xray-download /tmp/singbox-download
-          rm -f subscriptions/.light-candidates.txt subscriptions/.all.txt
+          rm -f subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next
 
       - name: Commit changes
         run: |
