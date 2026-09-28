@@ -1082,12 +1082,14 @@ async fn check_batch_targets(
             {
                 for &entry_index in &active {
                     clients[entry_index] =
-                        client_for_port(local_ports[entry_index], request_timeout).map_err(|error| {
-                            let _ = child.start_kill();
-                            let _ = child.wait();
-                            let _ = fs::remove_dir_all(&work);
-                            error
-                        })?;
+                        client_for_port(local_ports[entry_index], request_timeout).map_err(
+                            |error| {
+                                let _ = child.start_kill();
+                                let _ = child.wait();
+                                let _ = fs::remove_dir_all(&work);
+                                error
+                            },
+                        )?;
                 }
             }
 
