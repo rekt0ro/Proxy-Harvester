@@ -1349,12 +1349,20 @@ mod tests {
         assert_eq!(normalize_config(config), Some(config.to_string()));
     }
 
-    #[test]
-    fn strips_hysteria2_fragment_for_parsing() {
-        let config = "hy2://password@example.com:443#Hysteria2%20001";
-        assert_eq!(normalize_config(config), Some("hy2://password@example.com:443".to_string()));
-        assert_eq!(trim_config(config), "hy2://password@example.com:443");
-    }
+#[test]
+fn strips_hysteria2_fragment_for_parsing() {
+    let config = "hy2://password@example.com:443#Hysteria2%20001";
+
+    assert_eq!(
+        normalize_config(config),
+        Some("hy2://password@example.com:443".to_string())
+    );
+
+    assert_eq!(
+        trim_config(config),
+        "hy2://password@example.com:443"
+    );
+}
 
     #[test]
     fn all_candidates_include_hysteria_v1_after_transport_screening() {
