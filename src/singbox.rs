@@ -1,4 +1,9 @@
-use crate::validator::{config_label, ProxyMetrics};
+use crate::validator::{
+    config_label, ProxyMetrics, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
+    MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY,
+    STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS,
+    STRICT_STABILITY_ATTEMPTS,
+};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
@@ -13,18 +18,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use url::Url;
 
-const TARGET: &str = "https://www.google.com/generate_204";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const STABILITY_ATTEMPTS: usize = 3;
-const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
-const MIN_SUCCESSFUL_TARGETS: usize = 2;
-const STRICT_STABILITY_ATTEMPTS: usize = 8;
-const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
-const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
-const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
-const STRICT_LATE_SUCCESS_STREAK: usize = 3;
-const MIN_RESPONSE_BYTES: usize = 1;
-const MAX_RESPONSE_BYTES: usize = 65536;
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const BATCH_SIZE: usize = 250;
@@ -897,7 +891,7 @@ fn client_for_port(
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
-        TARGET => body.is_empty(),
+        PRIMARY_TARGET => body.is_empty(),
         "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
         "https://example.com/" => !body.is_empty(),
         _ => true,
@@ -1230,7 +1224,7 @@ async fn check_batch(
         for _ in 0..STABILITY_ATTEMPTS {
             let results = stream::iter(active.clone())
                 .map(|(config, client)| async move {
-                    let result = request_url(&client, TARGET).await;
+                    let result = request_url(&client, PRIMARY_TARGET).await;
                     (config, result)
                 })
                 .buffer_unordered(workers.max(1))
@@ -1468,7 +1462,7 @@ pub async fn validate_candidates_with_settings(
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
-            "target {TARGET}: batch {}/{} testing {} configs with sing-box; requiring {MIN_SUCCESSFUL_ATTEMPTS}/{} attempts",
+            "target {PRIMARY_TARGET}: batch {}/{} testing {} configs with sing-box; requiring {MIN_SUCCESSFUL_ATTEMPTS}/{} attempts",
             index + 1,
             total_batches,
             batch.len(),
@@ -1487,7 +1481,7 @@ pub async fn validate_candidates_with_settings(
     }
 
     println!(
-        "{}/{} verified by sing-box against {TARGET} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
+        "{}/{} verified by sing-box against {PRIMARY_TARGET} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
         metadata.len(),
         candidates.len(),
         STABILITY_ATTEMPTS,
