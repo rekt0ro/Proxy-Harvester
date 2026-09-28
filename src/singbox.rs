@@ -564,6 +564,10 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
                 .parse::<u16>()
                 .map_err(|_| "invalid Hysteria2 port".to_string())?);
         } else {
+            let ports = ports
+                .into_iter()
+                .map(|port| port.replace('-', ":"))
+                .collect::<Vec<_>>();
             outbound["server_ports"] = json!(ports);
         }
     } else {
@@ -1739,7 +1743,7 @@ mod tests {
     fn maps_hysteria2_multi_port_natively() {
         let config = "hy2://password@example.com:1234,5000-6000";
         let outbound = singbox_outbound(config).expect("Hysteria2 multi-port should map");
-        assert_eq!(outbound["server_ports"], json!(["1234", "5000-6000"]));
+        assert_eq!(outbound["server_ports"], json!(["1234", "5000:6000"]));
         assert_eq!(outbound["tls"]["server_name"], "example.com");
     }
 
