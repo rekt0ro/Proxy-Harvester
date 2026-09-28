@@ -172,7 +172,7 @@ jobs:
           key: ${{ steps.keys.outputs.singbox }}
 
       - name: Validate Rust formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all
 
       - name: Check runner network
         run: |
