@@ -856,8 +856,14 @@ fn parse_wg(config: &str) -> Result<Value, String> {
         Some("0.0.0.0/0,::/0"),
     ));
 
+    let peer_endpoint = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+
     let mut peer = json!({
-        "endpoint": format!("{host}:{port}"),
+        "endpoint": peer_endpoint,
         "publicKey": public,
         "allowedIPs": allowed,
     });
@@ -2079,6 +2085,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn wireguard_ipv6_endpoint_is_bracketed() {
+        let private_key = STANDARD.encode([7_u8; 32]);
+        let public_key = STANDARD.encode([9_u8; 32]);
+        let config = format!(
+            "wg://unused@[2001:db8::1]:51820?privatekey={private_key}&publickey={public_key}"
+        );
+
+        let parsed = parse_config(&config).expect("WireGuard IPv6 endpoint should parse");
+        assert_eq!(
+            parsed["settings"]["peers"][0]["endpoint"],
+            "[2001:db8::1]:51820"
+        );
+    }
+
     fn vmess_endpoint_comes_from_decoded_payload() {
         let payload = json!({
             "add": "proxy.example",
