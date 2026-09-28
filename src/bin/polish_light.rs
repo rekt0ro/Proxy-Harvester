@@ -303,9 +303,13 @@ fn light_backend(config: &str) -> LightBackend {
     let security = query_value(&url, &["security"]).to_ascii_lowercase();
 
     let scheme = url.scheme().to_ascii_lowercase();
+    if matches!(scheme.as_str(), "socks4" | "socks4a") {
+        return LightBackend::SingBox;
+    }
+
     if matches!(
         scheme.as_str(),
-        "http" | "socks" | "socks4" | "socks5" | "socks5h"
+        "http" | "socks" | "socks5" | "socks5h"
     ) {
         return LightBackend::Xray;
     }
@@ -881,9 +885,15 @@ mod tests {
     }
 
     #[test]
-    fn routes_socks4_to_xray() {
-        let config = "socks4://127.0.0.1:1080";
-        assert_eq!(light_backend(config), LightBackend::Xray);
+    fn routes_socks4_to_singbox() {
+        assert_eq!(
+            light_backend("socks4://127.0.0.1:1080"),
+            LightBackend::SingBox
+        );
+        assert_eq!(
+            light_backend("socks4a://127.0.0.1:1080"),
+            LightBackend::SingBox
+        );
     }
 
     #[test]

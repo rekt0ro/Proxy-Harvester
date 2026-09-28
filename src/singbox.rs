@@ -367,6 +367,42 @@ fn vmess_security(value: &str) -> Result<&'static str, String> {
     }
 }
 
+fn singbox_socks_outbound(config: &str) -> Result<Value, String> {
+    let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    let scheme = url.scheme().to_ascii_lowercase();
+    let (server, server_port) =
+        crate::validator::endpoint(config).ok_or_else(|| "invalid SOCKS endpoint".to_string())?;
+
+    let version = match scheme.as_str() {
+        "socks4" => "4",
+        "socks4a" => "4a",
+        "socks" | "socks5" | "socks5h" => "5",
+        _ => return Err(format!("unsupported SOCKS scheme {scheme}")),
+    };
+
+    let mut outbound = json!({
+        "type": "socks",
+        "server": server,
+        "server_port": server_port,
+        "version": version,
+    });
+
+    if !url.username().is_empty() {
+        outbound["username"] = json!(percent_decode_str(url.username())
+            .decode_utf8()
+            .map_err(|error| error.to_string())?
+            .into_owned());
+        if let Some(password) = url.password() {
+            outbound["password"] = json!(percent_decode_str(password)
+                .decode_utf8()
+                .map_err(|error| error.to_string())?
+                .into_owned());
+        }
+    }
+
+    Ok(outbound)
+}
+
 fn parse_vmess_raw(config: &str) -> Result<Value, String> {
     let payload = clean(config)
         .split_once("://")
@@ -574,6 +610,10 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
 
     if scheme == "hysteria2" || scheme == "hy2" {
         return singbox_hysteria2_outbound(config);
+    }
+
+    if matches!(scheme.as_str(), "socks4" | "socks4a") {
+        return singbox_socks_outbound(config);
     }
 
     let xray = crate::validator::parse_config(config)?;
@@ -1626,6 +1666,23 @@ mod tests {
         let outbound = singbox_outbound(config).expect("VLESS Reality without fp should map");
         assert_eq!(outbound["tls"]["utls"]["enabled"], true);
         assert_eq!(outbound["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn maps_socks4_variants_natively() {
+        let socks4 = singbox_outbound("socks4://user:pass@example.com:1080")
+            .expect("SOCKS4 should map natively");
+        assert_eq!(socks4["type"], "socks");
+        assert_eq!(socks4["version"], "4");
+        assert_eq!(socks4["server"], "example.com");
+        assert_eq!(socks4["server_port"], 1080);
+        assert_eq!(socks4["username"], "user");
+        assert_eq!(socks4["password"], "pass");
+
+        let socks4a = singbox_outbound("socks4a://example.com:1081")
+            .expect("SOCKS4a should map natively");
+        assert_eq!(socks4a["version"], "4a");
+        assert_eq!(socks4a["server_port"], 1081);
     }
 
     #[test]

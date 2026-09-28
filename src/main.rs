@@ -341,7 +341,7 @@ fn config_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
         Regex::new(
-            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4|5h?)?|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
+            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
         )
         .expect("config regex must compile")
     })
@@ -392,6 +392,7 @@ fn normalize_config(config: &str) -> Option<String> {
             | "wg"
             | "socks"
             | "socks4"
+            | "socks4a"
             | "socks5"
             | "socks5h"
             | "http"
@@ -813,7 +814,7 @@ fn display_protocol(scheme: &str) -> &str {
         "hysteria" => "Hysteria",
         "hysteria2" | "hy2" => "Hysteria2",
         "tuic" => "TUIC",
-        "socks" | "socks4" | "socks5" | "socks5h" => "SOCKS",
+        "socks" | "socks4" | "socks4a" | "socks5" | "socks5h" => "SOCKS",
         "wg" => "WireGuard",
         "ssh" => "SSH",
         "naive+https" => "NaiveProxy",
@@ -956,19 +957,24 @@ mod tests {
             normalize_config("socks5h://127.0.0.1:1080").is_some(),
             "socks5h"
         );
+        assert!(
+            normalize_config("socks4a://127.0.0.1:1080").is_some(),
+            "socks4a"
+        );
     }
 
     #[test]
     fn extracts_socks_variants_from_sources() {
         let configs = extract_configs(
-            "socks4://127.0.0.1:1080 socks5://127.0.0.1:1081 socks5h://127.0.0.1:1082",
+            "socks4://127.0.0.1:1080 socks4a://127.0.0.1:1081 socks5://127.0.0.1:1082 socks5h://127.0.0.1:1083",
         );
         assert_eq!(
             configs,
             vec![
                 "socks4://127.0.0.1:1080".to_string(),
-                "socks5://127.0.0.1:1081".to_string(),
-                "socks5h://127.0.0.1:1082".to_string(),
+                "socks4a://127.0.0.1:1081".to_string(),
+                "socks5://127.0.0.1:1082".to_string(),
+                "socks5h://127.0.0.1:1083".to_string(),
             ]
         );
     }
