@@ -1010,13 +1010,33 @@ fn decode_html_entities(text: &str) -> String {
 fn trim_config(config: &str) -> String {
     let config = config.trim();
 
-    // Strip fragment before URL parsing so syntaxes that Url::parse rejects,
-    // especially Hysteria2 port hopping, still get normalized consistently.
-    let config = config.split('#').next().unwrap_or(config).trim();
+    // Preserve meaningful fragments for standard URL schemes.
+    // Hysteria2 port-hopping syntax cannot be parsed by Url::parse when the port
+    // list is present, so we strip the fragment only for that scheme before parse.
+    if let Ok(url) = Url::parse(config) {
+        let scheme = url.scheme().to_ascii_lowercase();
+        if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+            let mut sanitized = url;
+            sanitized.set_fragment(None);
+            return sanitized.to_string();
+        }
 
-    if let Ok(mut url) = Url::parse(config) {
-        url.set_fragment(None);
-        return url.to_string();
+        return config.to_string();
+    }
+
+    if let Some((base, _)) = config.split_once('#') {
+        let candidate = base.trim();
+        if !candidate.is_empty() {
+            let parsed = Url::parse(candidate);
+            if let Ok(url) = parsed {
+                let scheme = url.scheme().to_ascii_lowercase();
+                if matches!(scheme.as_str(), "hysteria2" | "hy2") {
+                    let mut sanitized = url;
+                    sanitized.set_fragment(None);
+                    return sanitized.to_string();
+                }
+            }
+        }
     }
 
     config.to_string()
@@ -1199,7 +1219,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, MAX_SOURCE_BYTES,
+        normalize_config, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -1247,7 +1267,7 @@ mod tests {
 
     #[test]
     fn accepts_vless_mlkem_encryption() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHOevTauCQwa_71U";
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
         assert!(normalize_config(config).is_some());
     }
@@ -1321,6 +1341,19 @@ mod tests {
             normalize_config("trojan://secret.@example.com:443?security=tls&path=/foo,;#label."),
             Some("trojan://secret.@example.com:443?security=tls&path=/foo,;".to_string())
         );
+    }
+
+    #[test]
+    fn preserves_non_hysteria_fragments() {
+        let config = "trojan://secret.@example.com:443?security=tls&path=/foo,;#label";
+        assert_eq!(normalize_config(config), Some(config.to_string()));
+    }
+
+    #[test]
+    fn strips_hysteria2_fragment_for_parsing() {
+        let config = "hy2://password@example.com:443#Hysteria2%20001";
+        assert_eq!(normalize_config(config), Some("hy2://password@example.com:443".to_string()));
+        assert_eq!(trim_config(config), "hy2://password@example.com:443");
     }
 
     #[test]
@@ -1801,7 +1834,6 @@ fn hysteria2_probe_ports(config: &str) -> Option<Vec<u16>> {
     {
         if let Some((start, end)) = entry.split_once('-') {
             let start = start.parse::<u16>().ok()?;
-
             let end = end.parse::<u16>().ok()?;
 
             if start == 0 || end == 0 || start > end {
@@ -1812,12 +1844,10 @@ fn hysteria2_probe_ports(config: &str) -> Option<Vec<u16>> {
 
             if end != start {
                 candidates.push(start + (end - start) / 2);
-
                 candidates.push(end);
             }
         } else {
             let port = entry.parse::<u16>().ok().filter(|port| *port != 0)?;
-
             candidates.push(port);
         }
     }
@@ -1967,7 +1997,8 @@ async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
     let (host, _) = endpoint(config)?;
 
     // Generic QUIC cannot emulate Hysteria2 Salamander obfuscation.
-    // Let the actual core validator handle these candidates.
+    // The candidate is still retained for the later core validation pass, but we
+    // skip the generic transport preflight here to avoid false negatives.
     if hysteria2_query_values(config, "obfs")
         .into_iter()
         .any(|value| !value.is_empty())
