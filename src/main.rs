@@ -499,7 +499,10 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
 
     if !url.username().is_empty() {
         let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
-        let method = userinfo.split_once(':').map(|(method, _)| method).unwrap_or(&userinfo);
+        let method = userinfo
+            .split_once(':')
+            .map(|(method, _)| method)
+            .unwrap_or(&userinfo);
         return supported(method, METHODS).then(|| config.to_string());
     }
 
@@ -923,15 +926,11 @@ mod tests {
 
     #[test]
     fn accepts_shadowsocks_plain_and_base64_userinfo() {
-        assert!(normalize_config(
-            "ss://aes-256-gcm:secret@example.com:8388"
-        )
-        .is_some());
+        assert!(normalize_config("ss://aes-256-gcm:secret@example.com:8388").is_some());
 
-        assert!(normalize_config(
-            "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388"
-        )
-        .is_some());
+        assert!(
+            normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some()
+        );
     }
 
     #[test]
