@@ -1907,8 +1907,7 @@ mod tests {
     #[test]
     fn blank_hysteria_protocol_defaults_to_udp() {
         let config = "hysteria://example.com:443?protocol=&upmbps=100&downmbps=100";
-        let outbound =
-            singbox_outbound(config).expect("blank protocol should use UDP default");
+        let outbound = singbox_outbound(config).expect("blank protocol should use UDP default");
         assert_eq!(outbound["type"], "hysteria");
     }
 
