@@ -48,7 +48,7 @@ const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 // is capped separately by MAX_ALL_CONFIGS.
 const MAX_DISCOVERED_CONFIGS: usize = 20_000;
 
-const MAX_ALL_CONFIGS: usize = 2000;
+const MAX_ALL_CONFIGS: usize = 1000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
 #[derive(Debug)]
