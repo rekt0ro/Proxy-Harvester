@@ -412,6 +412,124 @@ fn parse_vmess_raw(config: &str) -> Result<Value, String> {
     serde_json::from_slice(&decoded).map_err(|error| error.to_string())
 }
 
+fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
+    let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    let (server, server_port) = crate::validator::endpoint(config)
+        .ok_or_else(|| "invalid Hysteria endpoint".to_string())?;
+
+    let protocol = url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            (key.eq_ignore_ascii_case("protocol")).then_some(value.into_owned())
+        })
+        .unwrap_or_else(|| "udp".to_string());
+
+    if !protocol.eq_ignore_ascii_case("udp") {
+        return Err(format!(
+            "unsupported Hysteria protocol {protocol}; only udp maps to sing-box"
+        ));
+    }
+
+    let up_mbps = url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            (key.eq_ignore_ascii_case("upmbps")).then_some(value.into_owned())
+        })
+        .ok_or_else(|| "Hysteria upmbps missing".to_string())?
+        .parse::<u32>()
+        .map_err(|_| "invalid Hysteria upmbps".to_string())?;
+
+    let down_mbps = url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            (key.eq_ignore_ascii_case("downmbps")).then_some(value.into_owned())
+        })
+        .ok_or_else(|| "Hysteria downmbps missing".to_string())?
+        .parse::<u32>()
+        .map_err(|_| "invalid Hysteria downmbps".to_string())?;
+
+    if up_mbps == 0 || down_mbps == 0 {
+        return Err("Hysteria bandwidth must be greater than zero".to_string());
+    }
+
+    let mut auth = None;
+    let mut peer = None;
+    let mut insecure = false;
+    let mut alpn = Vec::new();
+    let mut obfs = None;
+    let mut obfs_param = None;
+
+    for (key, value) in url.query_pairs() {
+        match key.to_ascii_lowercase().as_str() {
+            "auth" => auth = Some(value.into_owned()),
+            "peer" => peer = Some(value.into_owned()),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true;
+            }
+            "alpn" => alpn.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            ),
+            "obfs" => obfs = Some(value.into_owned()),
+            "obfsparam" => obfs_param = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    let mut outbound = json!({
+        "type": "hysteria",
+        "server": server,
+        "server_port": server_port,
+        "up_mbps": up_mbps,
+        "down_mbps": down_mbps,
+        "network": "udp",
+    });
+
+    let mut tls = json!({
+        "enabled": true,
+        "server_name": peer.unwrap_or_else(|| {
+            url.host_str()
+                .unwrap_or_default()
+                .to_string()
+        }),
+    });
+    if insecure {
+        tls["insecure"] = json!(true);
+    }
+    if !alpn.is_empty() {
+        tls["alpn"] = json!(alpn);
+    }
+    outbound["tls"] = tls;
+
+    if let Some(auth) = auth.filter(|value| !value.is_empty()) {
+        outbound["auth_str"] = json!(auth);
+    }
+
+    let obfs = obfs.unwrap_or_default();
+    if !obfs.is_empty() {
+        if !obfs.eq_ignore_ascii_case("xplus") {
+            return Err(format!("unsupported Hysteria obfs mode {obfs}"));
+        }
+
+        let password = obfs_param
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Hysteria obfsParam missing".to_string())?;
+        outbound["obfs"] = json!(password);
+    } else if obfs_param.is_some_and(|value| !value.is_empty()) {
+        return Err("Hysteria obfsParam requires obfs=xplus".to_string());
+    }
+
+    Ok(outbound)
+}
+
 fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     let cleaned = clean(config);
     let rest = cleaned
@@ -611,6 +729,10 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
         .split_once("://")
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .unwrap_or_default();
+
+    if scheme == "hysteria" {
+        return singbox_hysteria_outbound(config);
+    }
 
     if scheme == "hysteria2" || scheme == "hy2" {
         return singbox_hysteria2_outbound(config);
@@ -1715,6 +1837,31 @@ mod tests {
             singbox_outbound("socks4a://example.com:1081").expect("SOCKS4a should map natively");
         assert_eq!(socks4a["version"], "4a");
         assert_eq!(socks4a["server_port"], 1081);
+    }
+
+    #[test]
+    fn maps_hysteria_v1_to_native_singbox_outbound() {
+        let config = "hysteria://password@example.com:443?protocol=udp&auth=123456&peer=edge.example.com&insecure=1&upmbps=100&downmbps=50&alpn=hysteria&obfs=xplus&obfsParam=obfs-secret";
+        let outbound = singbox_outbound(config).expect("Hysteria v1 should map");
+        assert_eq!(outbound["type"], "hysteria");
+        assert_eq!(outbound["server"], "example.com");
+        assert_eq!(outbound["server_port"], 443);
+        assert_eq!(outbound["up_mbps"], 100);
+        assert_eq!(outbound["down_mbps"], 50);
+        assert_eq!(outbound["network"], "udp");
+        assert_eq!(outbound["auth_str"], "123456");
+        assert_eq!(outbound["tls"]["server_name"], "edge.example.com");
+        assert_eq!(outbound["tls"]["insecure"], true);
+        assert_eq!(outbound["tls"]["alpn"], json!(["hysteria"]));
+        assert_eq!(outbound["obfs"], "obfs-secret");
+    }
+
+    #[test]
+    fn rejects_unsupported_hysteria_v1_protocol() {
+        let config =
+            "hysteria://example.com:443?protocol=faketcp&upmbps=100&downmbps=100";
+        let error = singbox_outbound(config).expect_err("faketcp cannot be mapped faithfully");
+        assert!(error.contains("unsupported Hysteria protocol"));
     }
 
     #[test]
