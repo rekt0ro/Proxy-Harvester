@@ -45,10 +45,13 @@ enum SourceBodyError {
 
 async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
     let mut body = Vec::new();
-    let mut stream = response.bytes_stream();
+    let mut response = response;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(SourceBodyError::Read)?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(SourceBodyError::Read)?
+    {
         if chunk.len() > MAX_SOURCE_BYTES.saturating_sub(body.len()) {
             return Err(SourceBodyError::TooLarge);
         }
@@ -898,9 +901,23 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_base64_variants, normalize_config};
+    use super::{append_limited_chunk, decode_base64_variants, normalize_config, MAX_SOURCE_BYTES};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+
+    #[test]
+    fn bounded_source_chunk_stops_at_limit() {
+        let mut body = Vec::new();
+        assert!(append_limited_chunk(&mut body, &[1, 2, 3]));
+        assert_eq!(body.len(), 3);
+
+        let remaining = MAX_SOURCE_BYTES - body.len();
+        assert!(append_limited_chunk(&mut body, &vec![0u8; remaining]));
+        assert_eq!(body.len(), MAX_SOURCE_BYTES);
+
+        assert!(!append_limited_chunk(&mut body, &[0]));
+        assert_eq!(body.len(), MAX_SOURCE_BYTES);
+    }
 
     #[test]
     fn decodes_large_single_line_base64_sources() {
@@ -976,25 +993,6 @@ fn source_label(url: &str) -> String {
         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "<invalid source>".to_string())
 }
-#[cfg(test)]
-mod tests {
-    use super::{append_limited_chunk, MAX_SOURCE_BYTES};
-
-    #[test]
-    fn bounded_source_chunk_stops_at_limit() {
-        let mut body = Vec::new();
-        assert!(append_limited_chunk(&mut body, &[1, 2, 3]));
-        assert_eq!(body.len(), 3);
-
-        let remaining = MAX_SOURCE_BYTES - body.len();
-        assert!(append_limited_chunk(&mut body, &vec![0u8; remaining]));
-        assert_eq!(body.len(), MAX_SOURCE_BYTES);
-
-        assert!(!append_limited_chunk(&mut body, &[0]));
-        assert_eq!(body.len(), MAX_SOURCE_BYTES);
-    }
-}
-
 async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
 
