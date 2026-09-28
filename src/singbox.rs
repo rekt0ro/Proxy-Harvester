@@ -432,9 +432,7 @@ fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
 
     let up_mbps = url
         .query_pairs()
-        .find_map(|(key, value)| {
-            (key.eq_ignore_ascii_case("upmbps")).then_some(value.into_owned())
-        })
+        .find_map(|(key, value)| (key.eq_ignore_ascii_case("upmbps")).then_some(value.into_owned()))
         .ok_or_else(|| "Hysteria upmbps missing".to_string())?
         .parse::<u32>()
         .map_err(|_| "invalid Hysteria upmbps".to_string())?;
@@ -1858,8 +1856,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_hysteria_v1_protocol() {
-        let config =
-            "hysteria://example.com:443?protocol=faketcp&upmbps=100&downmbps=100";
+        let config = "hysteria://example.com:443?protocol=faketcp&upmbps=100&downmbps=100";
         let error = singbox_outbound(config).expect_err("faketcp cannot be mapped faithfully");
         assert!(error.contains("unsupported Hysteria protocol"));
     }
