@@ -915,9 +915,7 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
         return Err("target returned HTTP 429".to_string());
     }
 
-    if !response.status().is_success()
-        || !valid_probe_status(url, response.status().as_u16())
-    {
+    if !response.status().is_success() || !valid_probe_status(url, response.status().as_u16()) {
         return Err(format!("target returned HTTP {}", response.status()));
     }
 

@@ -1204,9 +1204,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
         return Err(ProbeError::Failed);
     }
 
-    if !response.status().is_success()
-        || !valid_probe_status(&url, response.status().as_u16())
-    {
+    if !response.status().is_success() || !valid_probe_status(&url, response.status().as_u16()) {
         return Err(ProbeError::Failed);
     }
 
