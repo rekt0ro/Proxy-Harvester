@@ -497,9 +497,15 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !service.is_empty() {
                 settings["serviceName"] = json!(service);
             }
-            if first_query(url, &["mode"], Some("")).eq_ignore_ascii_case("multi") {
-                settings["multiMode"] = json!(true);
+
+            let mode = first_query(url, &["mode"], Some("gun")).to_ascii_lowercase();
+            match mode.as_str() {
+                "gun" => {}
+                "multi" => settings["multiMode"] = json!(true),
+                "guna" => return Err("unsupported gRPC mode guna".to_string()),
+                other => return Err(format!("unsupported gRPC mode {other}")),
             }
+
             out["grpcSettings"] = settings;
         }
         "xhttp" => {
@@ -2429,6 +2435,15 @@ mod tests {
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
             .is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_grpc_mode() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=grpc&serviceName=Tun&mode=guna";
+
+        let error = parse_config(config).expect_err("guna is unsupported by Xray");
+        assert!(error.contains("unsupported gRPC mode guna"));
     }
 
     #[test]
