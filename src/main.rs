@@ -281,7 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
-    let working_configs = select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
+    let working_configs =
+        select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
