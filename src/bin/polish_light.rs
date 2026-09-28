@@ -321,6 +321,53 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::Xray;
     }
 
+    if scheme == "vmess" {
+        if let Some(encoded) = config.split_once("://").map(|(_, rest)| rest) {
+            let payload = encoded.split('#').next().unwrap_or("").trim();
+            let mut padded = payload.to_string();
+            while !padded.len().is_multiple_of(4) {
+                padded.push('=');
+            }
+
+            for candidate in [payload, padded.as_str()] {
+                for bytes in [STANDARD.decode(candidate), URL_SAFE.decode(candidate), URL_SAFE_NO_PAD.decode(candidate)]
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                        let network = value
+                            .get("net")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+
+                        if network == "xhttp" {
+                            return LightBackend::Xray;
+                        }
+
+                        if network == "grpc" {
+                            let mode = value
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let has_authority = ["authority", "host"].iter().any(|key| {
+                                value
+                                    .get(*key)
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|item| !item.is_empty())
+                            });
+
+                            if mode == "multi" || has_authority {
+                                return LightBackend::Xray;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // XHTTP is an Xray-only path in our Light validator, regardless of the
     // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
     // deterministic parser rejection.
@@ -335,7 +382,7 @@ fn light_backend(config: &str) -> LightBackend {
     }
 
     if transport == "grpc"
-        && (has_query_key(&url, &["authority"])
+        && (has_query_key(&url, &["authority", "host"])
             || query_value(&url, &["mode"]).eq_ignore_ascii_case("multi"))
     {
         return LightBackend::Xray;
@@ -846,6 +893,8 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{light_backend, normalize_light_config, select_verified_configs, LightBackend};
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
 
     #[test]
     fn routes_basic_proxy_schemes_to_xray() {
@@ -871,6 +920,29 @@ mod tests {
         let config =
             "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&authority=grpc.example.com";
         assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_grpc_host_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&host=grpc.example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vmess_xhttp_to_xray_only() {
+        let payload =
+            r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"xhttp"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vmess_grpc_host_to_xray() {
+        let payload =
+            r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"grpc","type":"gun","host":"grpc.example.com"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
     }
 
     #[test]
