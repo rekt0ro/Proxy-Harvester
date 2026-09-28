@@ -12,6 +12,7 @@ use proxyrift::validator::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
@@ -22,6 +23,46 @@ const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
+const HISTORY_MAX_ENTRIES: usize = 10000;
+const HISTORY_RETENTION_SECS: u64 = 45 * 24 * 60 * 60;
+
+fn adaptive_recheck_limit(
+    remaining: usize,
+    configured_limit: usize,
+    strict_attempts: usize,
+    strict_verified: usize,
+) -> usize {
+    if remaining == 0 || configured_limit == 0 {
+        return 0;
+    }
+
+    let observed_rate = if strict_attempts < 20 {
+        0.20
+    } else {
+        ((strict_verified as f64 + 2.0) / (strict_attempts as f64 + 4.0)).clamp(0.05, 1.0)
+    };
+
+    let estimated = ((remaining as f64 / observed_rate) * 1.25).ceil() as usize;
+    let exploration_floor = if strict_attempts == 0 {
+        remaining.saturating_mul(4).saturating_add(50)
+    } else {
+        remaining.saturating_mul(2).saturating_add(20)
+    };
+
+    estimated.max(exploration_floor).min(configured_limit)
+}
+
+fn persist_light_result(
+    output: &str,
+    selected: &[String],
+    history_path: &str,
+    history: &HashMap<String, HistoryEntry>,
+    final_attempts: &HashMap<String, usize>,
+    final_metadata: &HashMap<String, ProxyMetrics>,
+) -> Result<(), String> {
+    write_light_lines(output, selected)?;
+    persist_history(history_path, history, final_attempts, final_metadata)
+}
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -39,10 +80,177 @@ fn required(args: &[String], name: &str) -> Result<String, String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct HistoryEntry {
+    checks: u64,
+    passes: u64,
+    last_seen: u64,
+}
+
+fn history_identity(config: &str) -> String {
+    let cleaned = config.split('#').next().unwrap_or(config);
+
+    if cleaned
+        .split_once("://")
+        .map(|(scheme, _)| scheme.eq_ignore_ascii_case("vmess"))
+        .unwrap_or(false)
+    {
+        if let Some(payload) = cleaned.split_once("://").map(|(_, rest)| rest) {
+            let payload = payload.split('#').next().unwrap_or("").trim();
+            let mut padded = payload.to_string();
+            while !padded.len().is_multiple_of(4) {
+                padded.push('=');
+            }
+
+            for candidate in [payload, padded.as_str()] {
+                for bytes in [
+                    STANDARD.decode(candidate),
+                    URL_SAFE.decode(candidate),
+                    URL_SAFE_NO_PAD.decode(candidate),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
+                        if let Value::Object(object) = &mut value {
+                            object.remove("ps");
+                        }
+                        if let Ok(canonical) = serde_json::to_string(&value) {
+                            return canonical;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    cleaned.to_string()
+}
+
+fn history_fingerprint(config: &str) -> String {
+    fn fnv64(input: &[u8], seed: u64) -> u64 {
+        let mut hash = seed;
+        for byte in input {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    let identity = history_identity(config);
+    let first = fnv64(identity.as_bytes(), 0xcbf29ce484222325);
+    let second = fnv64(identity.as_bytes(), 0x9e3779b97f4a7c15);
+    format!("{first:016x}{second:016x}")
+}
+
+fn load_history(path: &str) -> Result<HashMap<String, HistoryEntry>, String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Ok(HashMap::new());
+    };
+
+    let value = match serde_json::from_str::<Value>(&content) {
+        Ok(value) => value,
+        Err(error) => {
+            println!("[WARN] Ignoring invalid Light history: {error}");
+            return Ok(HashMap::new());
+        }
+    };
+
+    let Some(entries) = value.get("entries").and_then(Value::as_object) else {
+        return Ok(HashMap::new());
+    };
+
+    let mut history = HashMap::new();
+    for (fingerprint, entry) in entries {
+        let checks = entry.get("checks").and_then(Value::as_u64).unwrap_or(0);
+        let passes = entry.get("passes").and_then(Value::as_u64).unwrap_or(0);
+        let last_seen = entry.get("last_seen").and_then(Value::as_u64).unwrap_or(0);
+        if checks == 0 && last_seen == 0 {
+            continue;
+        }
+        history.insert(
+            fingerprint.clone(),
+            HistoryEntry {
+                checks,
+                passes: passes.min(checks),
+                last_seen,
+            },
+        );
+    }
+
+    Ok(history)
+}
+
+fn persist_history(
+    path: &str,
+    history: &HashMap<String, HistoryEntry>,
+    final_attempts: &HashMap<String, usize>,
+    final_metadata: &HashMap<String, ProxyMetrics>,
+) -> Result<(), String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+
+    let mut updated = history.clone();
+    for (config, attempts) in final_attempts {
+        let fingerprint = history_fingerprint(config);
+        let entry = updated.entry(fingerprint).or_default();
+        entry.checks = entry.checks.saturating_add(*attempts as u64);
+        entry.passes = entry
+            .passes
+            .saturating_add(u64::from(final_metadata.contains_key(config)));
+        entry.last_seen = now;
+    }
+
+    updated.retain(|_, entry| entry.last_seen.saturating_add(HISTORY_RETENTION_SECS) >= now);
+
+    if updated.len() > HISTORY_MAX_ENTRIES {
+        let mut entries = updated.into_iter().collect::<Vec<_>>();
+        entries.sort_unstable_by(|(_, a), (_, b)| b.last_seen.cmp(&a.last_seen));
+        entries.truncate(HISTORY_MAX_ENTRIES);
+        updated = entries.into_iter().collect();
+    }
+
+    let mut entries = BTreeMap::new();
+    for (fingerprint, entry) in updated {
+        entries.insert(
+            fingerprint,
+            serde_json::json!({
+                "checks": entry.checks,
+                "passes": entry.passes.min(entry.checks),
+                "last_seen": entry.last_seen,
+            }),
+        );
+    }
+
+    let document = serde_json::json!({
+        "version": 1,
+        "entries": entries,
+    });
+    let body = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+    let temporary = format!("{path}.tmp");
+    std::fs::write(&temporary, body).map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn historical_score(config: &str, history: &HashMap<String, HistoryEntry>) -> (f64, u64) {
+    history
+        .get(&history_fingerprint(config))
+        .map(|entry| {
+            (
+                (entry.passes as f64 + 2.0) / (entry.checks as f64 + 4.0),
+                entry.checks,
+            )
+        })
+        .unwrap_or((0.5, 0))
+}
+
 fn sort_ranked(
     configs: &mut [String],
     metadata: &HashMap<String, ProxyMetrics>,
     positions: &HashMap<String, usize>,
+    history: &HashMap<String, HistoryEntry>,
 ) {
     configs.sort_unstable_by(|a, b| {
         let ma = metadata.get(a);
@@ -50,14 +258,29 @@ fn sort_ranked(
 
         let a_successes = ma.map(|m| m.successes).unwrap_or(0);
         let b_successes = mb.map(|m| m.successes).unwrap_or(0);
+        let a_attempts = ma.map(|m| m.attempts.max(1)).unwrap_or(1);
+        let b_attempts = mb.map(|m| m.attempts.max(1)).unwrap_or(1);
+        let a_success_rate = a_successes as f64 / a_attempts as f64;
+        let b_success_rate = b_successes as f64 / b_attempts as f64;
         let a_median = ma.map(|m| m.median_ms).unwrap_or(f64::INFINITY);
         let b_median = mb.map(|m| m.median_ms).unwrap_or(f64::INFINITY);
+        let a_jitter = ma.map(|m| m.jitter_ms).unwrap_or(f64::INFINITY);
+        let b_jitter = mb.map(|m| m.jitter_ms).unwrap_or(f64::INFINITY);
+        let a_throughput = ma.map(|m| m.throughput_kbps).unwrap_or(0.0);
+        let b_throughput = mb.map(|m| m.throughput_kbps).unwrap_or(0.0);
         let a_min = ma.map(|m| m.min_ms).unwrap_or(f64::INFINITY);
         let b_min = mb.map(|m| m.min_ms).unwrap_or(f64::INFINITY);
+        let (a_history_rate, a_history_checks) = historical_score(a, history);
+        let (b_history_rate, b_history_checks) = historical_score(b, history);
 
-        b_successes
-            .cmp(&a_successes)
+        b_success_rate
+            .total_cmp(&a_success_rate)
+            .then_with(|| b_successes.cmp(&a_successes))
             .then_with(|| a_median.total_cmp(&b_median))
+            .then_with(|| a_jitter.total_cmp(&b_jitter))
+            .then_with(|| b_throughput.total_cmp(&a_throughput))
+            .then_with(|| a_history_rate.total_cmp(&b_history_rate))
+            .then_with(|| b_history_checks.cmp(&a_history_checks))
             .then_with(|| a_min.total_cmp(&b_min))
             .then_with(|| {
                 positions
@@ -680,6 +903,8 @@ async fn main() -> Result<(), String> {
         .into_iter()
         .take(max_candidates)
         .collect::<Vec<_>>();
+    let history_path = "subscriptions/light-history.json";
+    let history = load_history(history_path)?;
 
     if candidates.is_empty() {
         return Err("no Light candidates available".to_string());
@@ -726,8 +951,18 @@ async fn main() -> Result<(), String> {
         }
         global_metadata.extend(chunk_metadata);
 
-        sort_ranked(&mut global_verified, &global_metadata, &global_positions);
-        sort_ranked(&mut final_verified, &final_metadata, &global_positions);
+        sort_ranked(
+            &mut global_verified,
+            &global_metadata,
+            &global_positions,
+            &history,
+        );
+        sort_ranked(
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
 
         let remaining = selection_limit.saturating_sub(
             select_verified_configs(
@@ -746,20 +981,29 @@ async fn main() -> Result<(), String> {
                 max_per_endpoint,
                 max_per_family,
             );
-            write_light_lines(&output, &selected)?;
+            persist_light_result(
+                &output,
+                &selected,
+                history_path,
+                &history,
+                &final_attempts,
+                &final_metadata,
+            )?;
             println!(
-                "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified.",
+                "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified; strict checks {}.",
                 selected.len(),
-                global_verified.len()
+                global_verified.len(),
+                final_attempts.values().copied().sum::<usize>()
             );
             return Ok(());
         }
 
-        let dynamic_limit = final_recheck_limit.min(
-            remaining
-                .saturating_mul(2)
-                .saturating_add(20)
-                .max(remaining),
+        let strict_attempts = final_attempts.values().copied().sum::<usize>();
+        let dynamic_limit = adaptive_recheck_limit(
+            remaining,
+            final_recheck_limit,
+            strict_attempts,
+            final_metadata.len(),
         );
 
         let untested = global_verified
@@ -819,9 +1063,10 @@ async fn main() -> Result<(), String> {
         );
 
         println!(
-            "[INFO] Light fill progress: {}/{} configs ready.",
+            "[INFO] Light fill progress: {}/{} configs ready; strict checks {}.",
             selected.len(),
-            selection_limit
+            selection_limit,
+            final_attempts.values().copied().sum::<usize>()
         );
 
         if selected.len() >= selection_limit {
@@ -838,11 +1083,19 @@ async fn main() -> Result<(), String> {
                 "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
                 selected.len()
             );
-            write_light_lines(&output, &selected)?;
+            persist_light_result(
+                &output,
+                &selected,
+                history_path,
+                &history,
+                &final_attempts,
+                &final_metadata,
+            )?;
             println!(
-                "[INFO] Published {} Light configs from {} globally verified candidates.",
+                "[INFO] Published {} Light configs from {} globally verified candidates after {} strict checks.",
                 selected.len(),
-                global_verified.len()
+                global_verified.len(),
+                final_attempts.values().copied().sum::<usize>()
             );
             return Ok(());
         }
@@ -857,6 +1110,7 @@ async fn main() -> Result<(), String> {
     );
 
     if selected.is_empty() {
+        persist_history(history_path, &history, &final_attempts, &final_metadata)?;
         return Err("selected Light validation produced zero verified configs".to_string());
     }
 
@@ -881,20 +1135,51 @@ async fn main() -> Result<(), String> {
         selected.len()
     );
 
-    write_lines(&output, &selected)?;
+    persist_light_result(
+        &output,
+        &selected,
+        history_path,
+        &history,
+        &final_attempts,
+        &final_metadata,
+    )?;
     println!(
-        "[INFO] Published {} Light configs after exhausting {} discovery candidates.",
+        "[INFO] Published {} Light configs after exhausting {} discovery candidates; strict checks {}.",
         selected.len(),
-        candidates.len()
+        candidates.len(),
+        final_attempts.values().copied().sum::<usize>()
     );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{light_backend, normalize_light_config, select_verified_configs, LightBackend};
+    use super::{
+        adaptive_recheck_limit, history_fingerprint, light_backend, normalize_light_config,
+        select_verified_configs, LightBackend,
+    };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+
+    #[test]
+    fn adaptive_recheck_expands_when_yield_is_low() {
+        assert_eq!(adaptive_recheck_limit(100, 500, 0, 0), 500);
+        assert_eq!(adaptive_recheck_limit(100, 500, 100, 50), 250);
+        assert_eq!(adaptive_recheck_limit(100, 500, 100, 20), 500);
+    }
+
+    #[test]
+    fn history_fingerprint_ignores_vmess_ps_label() {
+        let a = format!(
+            "vmess://{}",
+            STANDARD.encode(br#"{"ps":"A 01","add":"example.com","port":443}"#)
+        );
+        let b = format!(
+            "vmess://{}",
+            STANDARD.encode(br#"{"ps":"B 01","add":"example.com","port":443}"#)
+        );
+        assert_eq!(history_fingerprint(&a), history_fingerprint(&b));
+    }
 
     #[test]
     fn routes_basic_proxy_schemes_to_xray() {
