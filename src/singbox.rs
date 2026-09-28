@@ -1071,6 +1071,16 @@ async fn check_batch_targets(
             {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
+
+            if stability_attempts == STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < stability_attempts
+            {
+                let mut refreshed = Vec::with_capacity(count);
+                for &port in &local_ports {
+                    refreshed.push(client_for_port(port, request_timeout)?);
+                }
+                clients = refreshed;
+            }
         }
 
         let mut secondary_success = vec![false; count];
