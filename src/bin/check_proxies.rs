@@ -60,6 +60,9 @@ async fn main() -> Result<(), String> {
     let timeout = value(&args, "--timeout", "1")
         .parse::<f64>()
         .map_err(|_| "invalid --timeout".to_string())?;
+    if !timeout.is_finite() || timeout <= 0.0 {
+        return Err("invalid --timeout: must be a positive finite number".to_string());
+    }
     let target = value(&args, "--target", PRIMARY_TARGET);
     let xray = value(&args, "--xray", "xray");
     let singbox = value(&args, "--singbox", "sing-box");
