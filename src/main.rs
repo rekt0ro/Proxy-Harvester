@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn accepts_vless_mlkem_encryption() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHO[...";
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHOevTauCQwa_71U";
 
         assert!(normalize_config(config).is_some());
     }
