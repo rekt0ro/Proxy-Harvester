@@ -1998,6 +1998,54 @@ async fn quic_latency_for_targets(
         .flatten()
 }
 
+async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
+    let (host, _) = endpoint(config)?;
+
+    // Generic QUIC cannot emulate Hysteria2 Salamander obfuscation.
+    // The candidate is still retained for the later core validation pass, but we
+    // skip the generic transport preflight here to avoid false negatives.
+    if hysteria2_query_values(config, "obfs")
+        .into_iter()
+        .any(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let ports = hysteria2_probe_ports(config)?;
+
+    let sni = hysteria2_query_values(config, "sni")
+        .into_iter()
+        .next()
+        .or_else(|| {
+            hysteria2_query_values(config, "server_name")
+                .into_iter()
+                .next()
+        })
+        .unwrap_or_else(|| host.clone());
+
+    let alpn = {
+        let values = hysteria2_query_csv_values(config, "alpn");
+
+        if values.is_empty() {
+            vec!["h3".to_string()]
+        } else {
+            values
+        }
+    };
+
+    quic_latency_for_targets(&host, &ports, &sni, &alpn).await
+}
+
+async fn quic_latency(config: &str) -> Option<u64> {
+    if matches!(config_scheme(config).as_str(), "hysteria2" | "hy2") {
+        return hysteria2_quic_latency(config).await;
+    }
+
+    let (host, port, sni, alpn) = quic_params(config)?;
+
+    quic_latency_for_targets(&host, &[port], &sni, &alpn).await
+}
+
 struct OsEntropy;
 
 impl EntropySource for OsEntropy {
