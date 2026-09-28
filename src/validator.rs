@@ -238,10 +238,7 @@ pub fn config_label(config: &str) -> String {
 fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
     let rest = config.split_once("://")?.1;
     let authority = rest.split(['?', '#', '/']).next()?;
-    let (auth_raw, host_port) = authority
-        .rsplit_once('@')
-        .map(|(auth, host)| (auth, host))
-        .unwrap_or(("", authority));
+    let (auth_raw, host_port) = authority.rsplit_once('@').unwrap_or(("", authority));
 
     let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
         let (host, remainder) = stripped.split_once(']')?;
@@ -821,7 +818,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
-    let mut insecure = false;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -842,14 +838,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
-            "insecure"
-                if matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                ) =>
-            {
-                insecure = true
-            }
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -859,9 +847,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut tls = json!({
         "serverName": sni,
     });
-    if insecure {
-        tls["allowInsecure"] = json!(true);
-    }
     if !alpn.is_empty() {
         tls["alpn"] = json!(alpn);
     }
@@ -2375,10 +2360,9 @@ mod tests {
             config["streamSettings"]["finalmask"]["quicParams"]["udpHop"]["ports"],
             "1234,5000-6000"
         );
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
+        assert!(config["streamSettings"]["tlsSettings"]
+            .get("allowInsecure")
+            .is_none());
     }
 
     #[test]
