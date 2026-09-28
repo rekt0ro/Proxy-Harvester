@@ -46,22 +46,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Resolve Xray version
+      - name: Set Xray version
         id: xray-version
+        env:
+          XRAY_VERSION: "26.3.27"
         shell: bash
         run: |
           set -euo pipefail
 
-          xray_version="$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -er '.tag_name | ltrimstr("v")')"
-
-          if [[ ! "$xray_version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-            echo "Invalid Xray release version: $xray_version" >&2
+          if [[ ! "$XRAY_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "Invalid pinned Xray release version: $XRAY_VERSION" >&2
             exit 1
           fi
 
-          echo "version=${xray_version}" >> "$GITHUB_OUTPUT"
-          echo "Xray version: ${xray_version}"
-
+          echo "version=${XRAY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Pinned Xray version: ${XRAY_VERSION}"
       - name: Verify Rust dependency lock
         run: test -s Cargo.lock
 
