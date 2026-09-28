@@ -1365,8 +1365,7 @@ mod tests {
     fn all_candidates_include_hysteria_v1_after_transport_screening() {
         let working = Vec::<(String, u64)>::new();
 
-        let hysteria =
-            vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
+        let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
 
         let selected = super::select_all_candidates(&working, &hysteria);
 
