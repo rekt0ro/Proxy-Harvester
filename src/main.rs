@@ -486,6 +486,46 @@ fn config_pattern() -> &'static Regex {
     })
 }
 
+fn split_concatenated_configs(config: &str) -> Vec<&str> {
+    const SCHEMES: &[&str] = &[
+        "vmess://",
+        "vless://",
+        "trojan://",
+        "ss://",
+        "socks://",
+        "socks4://",
+        "socks4a://",
+        "socks5://",
+        "socks5h://",
+        "hysteria://",
+        "hysteria2://",
+        "hy2://",
+        "wg://",
+        "http://",
+    ];
+
+    let mut starts = vec![0];
+
+    for index in 1..config.len() {
+        if !config.is_char_boundary(index) {
+            continue;
+        }
+
+        if SCHEMES.iter().any(|scheme| {
+            config[index..].len() >= scheme.len()
+                && config[index..index + scheme.len()].eq_ignore_ascii_case(scheme)
+        }) {
+            starts.push(index);
+        }
+    }
+
+    starts
+        .windows(2)
+        .map(|pair| &config[pair[0]..pair[1]])
+        .chain(starts.last().map(|&start| &config[start..]))
+        .collect()
+}
+
 fn extract_configs(text: &str) -> Vec<String> {
     let text = decode_html_entities(text);
     let pattern = config_pattern();
@@ -493,15 +533,19 @@ fn extract_configs(text: &str) -> Vec<String> {
     let mut found = Vec::new();
 
     for capture in pattern.find_iter(&text) {
-        if let Some(config) = normalize_config(capture.as_str()) {
-            found.push(config);
+        for candidate in split_concatenated_configs(capture.as_str()) {
+            if let Some(config) = normalize_config(candidate) {
+                found.push(config);
+            }
         }
     }
 
     for decoded in decode_base64_variants(&text) {
         for capture in pattern.find_iter(&decoded) {
-            if let Some(config) = normalize_config(capture.as_str()) {
-                found.push(config);
+            for candidate in split_concatenated_configs(capture.as_str()) {
+                if let Some(config) = normalize_config(candidate) {
+                    found.push(config);
+                }
             }
         }
     }
@@ -1335,6 +1379,21 @@ mod tests {
 
         assert!(encoded.len() > 8192);
         assert_eq!(decode_base64_variants(&encoded), vec![payload]);
+    }
+
+    #[test]
+    fn extracts_concatenated_urls_without_whitespace() {
+        let configs = extract_configs(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=nonevless://00000000-0000-0000-0000-000000000002@example.com:443?security=none",
+        );
+
+        assert_eq!(
+            configs,
+            vec![
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none",
+                "vless://00000000-0000-0000-0000-000000000002@example.com:443?security=none",
+            ]
+        );
     }
 
     #[test]
