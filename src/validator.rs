@@ -675,7 +675,7 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
     let mut url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     if !url
         .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case("security"))
+        .any(|(key, value)| key.eq_ignore_ascii_case("security") && !value.trim().is_empty())
     {
         url.query_pairs_mut().append_pair("security", "tls");
     }
@@ -2326,6 +2326,14 @@ mod tests {
             config["streamSettings"]["tlsSettings"]["serverName"],
             "example.com"
         );
+    }
+
+    #[test]
+    fn defaults_trojan_to_tls_when_security_is_empty() {
+        let config = parse_trojan("trojan://user:secret@example.com:443?security=")
+            .expect("Trojan with an empty security value should default to TLS");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
     }
 
     #[test]
