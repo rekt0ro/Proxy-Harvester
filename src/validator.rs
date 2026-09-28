@@ -247,7 +247,10 @@ fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
         if host.is_empty() || host.chars().any(char::is_whitespace) {
             return None;
         }
-        (host.to_string(), remainder.strip_prefix(':').unwrap_or("").to_string())
+        (
+            host.to_string(),
+            remainder.strip_prefix(':').unwrap_or("").to_string(),
+        )
     } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
         if host.is_empty() || host.contains(':') || host.chars().any(char::is_whitespace) {
             return None;
@@ -754,8 +757,8 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 }
 
 fn parse_hy2(config: &str) -> Result<Value, String> {
-    let (host, port_spec, auth_raw) =
-        hysteria2_parts(config).ok_or_else(|| "invalid Hysteria2 URL".to_string())?;
+    let (host, port_spec, auth_raw) = hysteria2_parts(config)
+        .ok_or_else(|| "invalid Hysteria2 URL".to_string())?;
 
     let password = percent_decode_str(&auth_raw)
         .decode_utf8()
