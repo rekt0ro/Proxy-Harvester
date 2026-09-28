@@ -1650,8 +1650,6 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
     working
 }
 
-
-
 // This verifier is only for transport reachability. The actual proxy validation
 // later in the pipeline performs normal certificate handling.
 #[derive(Debug)]
