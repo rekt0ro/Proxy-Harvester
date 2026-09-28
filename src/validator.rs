@@ -1740,11 +1740,7 @@ async fn check_batch_targets(
                 && target_count >= policy.min_successful_targets
                 && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index]
-                    .iter()
-                    .copied()
-                    .fold(0.0, f64::max)
-                    <= policy.max_latency_ms
+                && latencies[index].iter().copied().fold(0.0, f64::max) <= policy.max_latency_ms
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
