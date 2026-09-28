@@ -488,7 +488,6 @@ fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
         "server_port": server_port,
         "up_mbps": up_mbps,
         "down_mbps": down_mbps,
-        "network": "udp",
     });
 
     let mut tls = json!({
@@ -1896,7 +1895,7 @@ mod tests {
         assert_eq!(outbound["server_port"], 443);
         assert_eq!(outbound["up_mbps"], 100);
         assert_eq!(outbound["down_mbps"], 50);
-        assert_eq!(outbound["network"], "udp");
+        assert!(outbound.get("network").is_none());
         assert_eq!(outbound["auth_str"], "123456");
         assert_eq!(outbound["tls"]["server_name"], "edge.example.com");
         assert_eq!(outbound["tls"]["insecure"], true);
