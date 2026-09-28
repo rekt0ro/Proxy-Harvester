@@ -1281,7 +1281,7 @@ pub async fn validate_candidates_with_targets(
     targets: &[&str],
     workers: usize,
     request_timeout: Duration,
-    policy.max_latency_ms: f64,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     validate_candidates_with_targets_policy(
         binary,
@@ -1305,7 +1305,7 @@ pub async fn validate_candidates_with_targets_strict(
     targets: &[&str],
     workers: usize,
     request_timeout: Duration,
-    policy.max_latency_ms: f64,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     validate_candidates_with_targets_policy(
         binary,
@@ -1419,7 +1419,7 @@ pub async fn validate_candidates_with_settings(
     candidates: &[String],
     workers: usize,
     request_timeout: Duration,
-    policy.max_latency_ms: f64,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut parsed = Vec::new();
     let mut rejected = Vec::new();
