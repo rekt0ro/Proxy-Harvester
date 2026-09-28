@@ -1,10 +1,11 @@
 use proxyrift::singbox::validate_candidates_with_target as validate_singbox_candidates;
 use proxyrift::validator::{
-    read_lines, timeout_duration, validate_candidates, write_lines, write_metadata, ProxyMetrics,
-    MAX_LATENCY_MS, PRIMARY_TARGET,
+    read_lines, validate_candidates, write_lines, write_metadata, ProxyMetrics, MAX_LATENCY_MS,
+    PRIMARY_TARGET,
 };
 use std::collections::HashMap;
 use std::env;
+use std::time::Duration;
 
 fn value(args: &[String], name: &str, default: &str) -> String {
     args.windows(2)
@@ -111,7 +112,8 @@ async fn main() -> Result<(), String> {
                 &singbox_candidates,
                 &target,
                 workers,
-                timeout_duration(timeout)?,
+                Duration::try_from_secs_f64(timeout)
+                    .map_err(|_| "invalid --timeout: value overflows Duration".to_string())?,
                 MAX_LATENCY_MS,
             )
             .await?,
