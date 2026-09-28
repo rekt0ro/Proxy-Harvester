@@ -1,0 +1,323 @@
+name: Update Configs
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+concurrency:
+  group: update-configs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Load sources
+        env:
+          PROXY_SOURCES: ${{ secrets.PROXY_SOURCES }}
+        run: |
+          test -n "$PROXY_SOURCES"
+          printf '%s\n' "$PROXY_SOURCES" > sources.txt
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Record Rust version
+        id: rust-version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Rust registry cache
+        id: cargo-registry-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Set Xray version
+        id: xray-version
+        env:
+          XRAY_VERSION: "26.3.27"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$XRAY_VERSION" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "Invalid pinned Xray release version: $XRAY_VERSION" >&2
+            exit 1
+          fi
+
+          echo "version=${XRAY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Pinned Xray version: ${XRAY_VERSION}"
+      - name: Verify Rust dependency lock
+        run: test -s Cargo.lock
+
+      - name: Restore Rust build cache
+        id: cargo-build-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
+
+      - name: Restore Xray binary cache
+        id: xray-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}
+
+      - name: Install Xray
+        env:
+          XRAY_VERSION: ${{ steps.xray-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$XRAY_VERSION" ]; then
+            echo "Xray version output is empty." >&2
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.local/bin" /tmp/xray-download
+
+          if [ ! -x "$HOME/.local/bin/xray" ]; then
+            asset_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip"
+            curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
+            unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
+            install -m 0755 /tmp/xray-download/extracted/xray "$HOME/.local/bin/xray"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/xray" version
+
+      - name: Save Xray binary cache
+        if: steps.xray-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ runner.os }}-xray-${{ steps.xray-version.outputs.version }}
+
+      - name: Restore sing-box binary cache
+        id: singbox-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ runner.os }}-sing-box-1.14.1
+
+      - name: Install sing-box
+        env:
+          SINGBOX_VERSION: "1.14.1"
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/singbox-download
+
+          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
+            asset_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+            curl -fsSL "$asset_url" -o /tmp/singbox-download/sing-box.tar.gz
+            tar -xzf /tmp/singbox-download/sing-box.tar.gz -C /tmp/singbox-download
+            install -m 0755 "/tmp/singbox-download/sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" "$HOME/.local/bin/sing-box"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          singbox_version="$("$HOME/.local/bin/sing-box" version | head -n 1)"
+          echo "$singbox_version"
+          grep -F "1.14.1" <<< "$singbox_version" >/dev/null
+
+      - name: Save sing-box binary cache
+        if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ runner.os }}-sing-box-1.14.1
+
+      - name: Validate Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check runner network
+        run: |
+          curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
+          curl -fsS --max-time 10 https://api.ipify.org?format=json -o /dev/null
+
+      - name: Build Rust binaries
+        run: |
+          cargo build --release --bins
+          test -x ./target/release/ProxyRift
+          test -x ./target/release/check_proxies
+          test -x ./target/release/polish_light
+          test -x ./target/release/encode_subscriptions
+
+      - name: Save Rust registry cache
+        if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save Rust build cache
+        if: steps.cargo-build-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Collect and transport-test configs
+        run: ./target/release/ProxyRift
+
+      - name: Validate All subscription
+        env:
+          ALL_MIN_PUBLISH: "50"
+        run: |
+          mkdir -p /tmp/proxyrift
+          set +e
+          ./target/release/check_proxies             --input subscriptions/.all.txt             --output /tmp/proxyrift/all.next.txt             --workers 32             --batch-size 250             --timeout 3             --target https://www.google.com/generate_204             --xray "$HOME/.local/bin/xray"
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/all.next.txt ]; then
+            all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
+            echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
+            if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
+              cp /tmp/proxyrift/all.next.txt subscriptions/.all.txt.next
+              mv -f subscriptions/.all.txt.next subscriptions/all.txt
+              echo "Published refreshed All subscription."
+            else
+              echo "All verified pool is too small to replace the current subscription; preserving the previous All subscription."
+            fi
+          elif [ "${status}" -ne 0 ]; then
+            echo "All validation failed; preserving the previous All subscription."
+          else
+            echo "All validation produced no configs; preserving the previous All subscription."
+          fi
+
+      - name: Build Light subscription
+        env:
+          LIGHT_MAX_CANDIDATES: "10000"
+          LIGHT_MIN_PUBLISH: "50"
+        run: |
+          mkdir -p /tmp/proxyrift
+          echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
+          set +e
+          ./target/release/polish_light \
+            --candidates subscriptions/.light-candidates.txt \
+            --output /tmp/proxyrift/light.next.txt \
+            --workers 32 \
+            --batch-size 1000 \
+            --timeout 3 \
+            --selected-recheck-limit 500 \
+            --max-candidates "$LIGHT_MAX_CANDIDATES" \
+            --selected-workers 32 \
+            --selected-batch-size 500 \
+            --primary-target https://www.google.com/generate_204 \
+            --singbox "$HOME/.local/bin/sing-box" \
+            --selection-limit 200 \
+            --max-per-endpoint 1 \
+            --max-per-family 3
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/light.next.txt ]; then
+            light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
+            echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
+            if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
+              cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
+              mv -f subscriptions/.light.txt.next subscriptions/light.txt
+              echo "Published refreshed Light subscription."
+            else
+              echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
+            fi
+          elif [ "$status" -ne 0 ]; then
+            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
+          else
+            echo "Light validation produced no configs; preserving the previous Light subscription."
+          fi
+
+
+      - name: Generate Base64 subscriptions
+        run: ./target/release/encode_subscriptions
+
+      - name: Clean obsolete caches
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xray_version="${{ steps.xray-version.outputs.version }}"
+          if [ -z "$xray_version" ]; then
+            echo "Refusing cache cleanup because the Xray version is empty." >&2
+            exit 1
+          fi
+
+          current_registry_key="${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}"
+          current_build_key="${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}"
+          current_xray_key="${{ runner.os }}-xray-${xray_version}"
+
+          cleanup_prefix() {
+            local prefix="$1"
+            local current_key="$2"
+
+            gh cache list \
+              --repo "$GH_REPO" \
+              --key "$prefix" \
+              --ref refs/heads/main \
+              --limit 100 \
+              --json id,key \
+              --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r cache_id cache_key; do
+              [ -z "$cache_id" ] && continue
+              if [ "$cache_key" = "$current_key" ]; then
+                continue
+              fi
+              echo "Deleting obsolete cache $cache_id ($cache_key)"
+              gh api --method DELETE "/repos/$GH_REPO/actions/caches/$cache_id"
+            done
+          }
+
+          cleanup_prefix "${{ runner.os }}-cargo-registry-" "$current_registry_key"
+          cleanup_prefix "${{ runner.os }}-cargo-build-rust-" "$current_build_key"
+          cleanup_prefix "${{ runner.os }}-xray-" "$current_xray_key"
+          cleanup_prefix "${{ runner.os }}-sing-box-" "${{ runner.os }}-sing-box-1.14.1"
+
+      - name: Clean generated temporary files
+        if: always()
+        run: |
+          rm -rf /tmp/proxyrift /tmp/xray-build /tmp/xray-download /tmp/singbox-download
+          rm -f subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next
+
+      - name: Commit changes
+        run: |
+          git config user.name "rekt0ro"
+          git config user.email "vultazhh@gmail.com"
+
+          git add -u subscriptions
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "Update subscriptions"
+          git fetch origin main
+          git rebase --autostash origin/main
+          git push origin HEAD:main

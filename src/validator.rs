@@ -212,7 +212,7 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
     }
 
     let default = match url.scheme().to_ascii_lowercase().as_str() {
-        "http" => Some(80),
+        "http" => Some(8080),
         "https" => Some(443),
         "socks" | "socks4" | "socks4a" | "socks5" | "socks5h" => Some(1080),
         _ => None,
@@ -2013,7 +2013,7 @@ mod tests {
         );
         assert_eq!(
             endpoint("http://127.0.0.1").expect("HTTP endpoint"),
-            ("127.0.0.1".to_string(), 80)
+            ("127.0.0.1".to_string(), 8080)
         );
     }
 
