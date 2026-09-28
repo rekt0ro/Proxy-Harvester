@@ -1540,6 +1540,13 @@ async fn validate_candidates_with_targets_policy(
     let mut rejected = Vec::new();
     let mut seen = HashSet::new();
 
+    let mut seen_targets = HashSet::new();
+    let targets = targets
+        .iter()
+        .map(|target| target.to_string())
+        .filter(|target| seen_targets.insert(target.clone()))
+        .collect::<Vec<_>>();
+
     if targets.len() < policy.min_successful_targets {
         return Err(format!(
             "Light validation requires at least {} targets",
