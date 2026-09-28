@@ -208,6 +208,7 @@ jobs:
       - name: Collect and transport-test configs
         run: |
           set -euo pipefail
+          mkdir -p /tmp/proxyrift
           if [ -s subscriptions/all.txt ]; then
             cp subscriptions/all.txt /tmp/proxyrift/all.previous.txt
           else
@@ -221,7 +222,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! ./target/release/check_proxies \
+          if ./target/release/check_proxies \
             --input subscriptions/all.txt \
             --output /tmp/proxyrift/all.next.txt \
             --workers 32 \
