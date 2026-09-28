@@ -1,5 +1,5 @@
 use crate::validator::{
-    config_label, ProxyMetrics, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
+    config_label, ProxyMetrics, ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
     MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY,
     STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS,
     STRICT_STABILITY_ATTEMPTS,
@@ -943,10 +943,7 @@ async fn check_batch_targets(
     targets: &[String],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
-    stability_attempts: usize,
-    min_successful_attempts: usize,
-    min_successful_targets: usize,
+    policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -1003,7 +1000,7 @@ async fn check_batch_targets(
             match client_for_port(
                 local_ports[index],
                 request_timeout,
-                stability_attempts >= STRICT_STABILITY_ATTEMPTS,
+                policy.stability_attempts >= STRICT_STABILITY_ATTEMPTS,
             ) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
@@ -1022,7 +1019,7 @@ async fn check_batch_targets(
         let mut latencies = vec![Vec::<f64>::new(); count];
         let mut active = (0..count).collect::<Vec<_>>();
 
-        for attempt in 0..stability_attempts {
+        for attempt in 0..policy.stability_attempts {
             if active.is_empty() {
                 break;
             }
@@ -1049,33 +1046,33 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining = stability_attempts.saturating_sub(attempt + 1);
+            let remaining = policy.stability_attempts.saturating_sub(attempt + 1);
             if remaining == 0 {
                 active.clear();
             } else {
                 active.retain(|&entry_index| {
-                    successes[entry_index] + remaining >= min_successful_attempts
-                        && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                    successes[entry_index] + remaining >= policy.min_successful_attempts
+                        && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                             || late_streak[entry_index] + remaining >= STRICT_LATE_SUCCESS_STREAK)
                 });
             }
 
             if !active.is_empty()
-                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
-                && attempt + 1 < stability_attempts
+                && policy.stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < policy.stability_attempts
             {
                 tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
 
         let mut secondary_success = vec![false; count];
-        if min_successful_targets > 1 {
+        if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
                 let eligible = (0..count)
                     .filter(|&entry_index| {
                         !secondary_success[entry_index]
-                            && successes[entry_index] >= min_successful_attempts
-                            && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                            && successes[entry_index] >= policy.min_successful_attempts
+                            && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                                 || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
                     })
                     .collect::<Vec<_>>();
@@ -1095,7 +1092,7 @@ async fn check_batch_targets(
                     .await;
 
                 for (entry_index, result) in results {
-                    if matches!(result, Ok(latency) if latency <= max_latency_ms) {
+                    if matches!(result, Ok(latency) if latency <= policy.max_latency_ms) {
                         secondary_success[entry_index] = true;
                     }
                 }
@@ -1106,11 +1103,11 @@ async fn check_batch_targets(
             let target_count =
                 usize::from(successes[index] > 0) + usize::from(secondary_success[index]);
 
-            if successes[index] >= min_successful_attempts
-                && target_count >= min_successful_targets
-                && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+            if successes[index] >= policy.min_successful_attempts
+                && target_count >= policy.min_successful_targets
+                && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
-                && latencies[index].iter().copied().fold(0.0, f64::max) <= max_latency_ms
+                && latencies[index].iter().copied().fold(0.0, f64::max) <= policy.max_latency_ms
             {
                 let mut values = std::mem::take(&mut latencies[index]);
                 values.sort_by(f64::total_cmp);
@@ -1146,7 +1143,7 @@ async fn check_batch(
     entries: &[(String, Value)],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
+    policy.max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() {
         return Ok(HashMap::new());
@@ -1247,7 +1244,7 @@ async fn check_batch(
 
             if wins >= MIN_SUCCESSFUL_ATTEMPTS
                 && !values.is_empty()
-                && values.iter().copied().fold(0.0, f64::max) <= max_latency_ms
+                && values.iter().copied().fold(0.0, f64::max) <= policy.max_latency_ms
             {
                 let mut values = values;
                 values.sort_by(f64::total_cmp);
@@ -1284,7 +1281,7 @@ pub async fn validate_candidates_with_targets(
     targets: &[&str],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
+    policy.max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     validate_candidates_with_targets_policy(
         binary,
@@ -1292,10 +1289,12 @@ pub async fn validate_candidates_with_targets(
         targets,
         workers,
         request_timeout,
-        max_latency_ms,
-        STABILITY_ATTEMPTS,
-        MIN_SUCCESSFUL_ATTEMPTS,
-        MIN_SUCCESSFUL_TARGETS,
+        ValidationPolicy::new(
+            max_latency_ms,
+            STABILITY_ATTEMPTS,
+            MIN_SUCCESSFUL_ATTEMPTS,
+            MIN_SUCCESSFUL_TARGETS,
+        ),
     )
     .await
 }
@@ -1306,7 +1305,7 @@ pub async fn validate_candidates_with_targets_strict(
     targets: &[&str],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
+    policy.max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     validate_candidates_with_targets_policy(
         binary,
@@ -1314,10 +1313,12 @@ pub async fn validate_candidates_with_targets_strict(
         targets,
         workers,
         request_timeout,
-        max_latency_ms,
-        STRICT_STABILITY_ATTEMPTS,
-        STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        STRICT_MIN_SUCCESSFUL_TARGETS,
+        ValidationPolicy::new(
+            max_latency_ms,
+            STRICT_STABILITY_ATTEMPTS,
+            STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+            STRICT_MIN_SUCCESSFUL_TARGETS,
+        ),
     )
     .await
 }
@@ -1328,18 +1329,15 @@ async fn validate_candidates_with_targets_policy(
     targets: &[&str],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
-    stability_attempts: usize,
-    min_successful_attempts: usize,
-    min_successful_targets: usize,
+    policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut parsed = Vec::new();
     let mut rejected = Vec::new();
     let mut seen = HashSet::new();
 
-    if targets.len() < min_successful_targets {
+    if targets.len() < policy.min_successful_targets {
         return Err(format!(
-            "Light validation requires at least {min_successful_targets} targets"
+            "Light validation requires at least {policy.min_successful_targets} targets"
         ));
     }
 
@@ -1385,9 +1383,9 @@ async fn validate_candidates_with_targets_policy(
             index + 1,
             total_batches,
             batch.len(),
-            min_successful_attempts,
-            stability_attempts,
-            min_successful_targets
+            policy.min_successful_attempts,
+            policy.stability_attempts,
+            policy.min_successful_targets
         );
 
         metadata.extend(
@@ -1397,10 +1395,7 @@ async fn validate_candidates_with_targets_policy(
                 &target_values,
                 workers.max(1),
                 request_timeout,
-                max_latency_ms,
-                stability_attempts,
-                min_successful_attempts,
-                min_successful_targets,
+                policy,
             )
             .await?,
         );
@@ -1411,9 +1406,9 @@ async fn validate_candidates_with_targets_policy(
         metadata.len(),
         candidates.len(),
         targets.len(),
-        min_successful_attempts,
-        stability_attempts,
-        min_successful_targets
+        policy.min_successful_attempts,
+        policy.stability_attempts,
+        policy.min_successful_targets
     );
 
     Ok(metadata)
@@ -1424,7 +1419,7 @@ pub async fn validate_candidates_with_settings(
     candidates: &[String],
     workers: usize,
     request_timeout: Duration,
-    max_latency_ms: f64,
+    policy.max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut parsed = Vec::new();
     let mut rejected = Vec::new();
@@ -1475,7 +1470,7 @@ pub async fn validate_candidates_with_settings(
                 batch,
                 workers.max(1),
                 request_timeout,
-                max_latency_ms,
+                policy.max_latency_ms,
             )
             .await?,
         );
@@ -1486,7 +1481,7 @@ pub async fn validate_candidates_with_settings(
         metadata.len(),
         candidates.len(),
         STABILITY_ATTEMPTS,
-        max_latency_ms
+        policy.max_latency_ms
     );
 
     Ok(metadata)

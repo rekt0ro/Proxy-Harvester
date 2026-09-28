@@ -46,6 +46,33 @@ pub struct ProxyMetrics {
     pub min_ms: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ValidationPolicy {
+    pub(crate) max_latency_ms: f64,
+    pub(crate) stability_attempts: usize,
+    pub(crate) min_successful_attempts: usize,
+    pub(crate) min_successful_targets: usize,
+}
+
+impl ValidationPolicy {
+    pub(crate) const fn new(
+        max_latency_ms: f64,
+        policy.stability_attempts: usize,
+        policy.min_successful_attempts: usize,
+        policy.min_successful_targets: usize,
+    ) -> Self {
+        Self {
+            max_latency_ms,
+            policy.stability_attempts,
+            policy.min_successful_attempts,
+            policy.min_successful_targets,
+        }
+    }
+}
+
+type ParsedConfig = (String, Value);
+type RejectedConfig = (String, String);
+
 #[derive(Debug)]
 enum ProbeError {
     Failed,
@@ -907,7 +934,7 @@ pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
     }
 }
 
-fn unique_parsed(candidates: &[String]) -> (Vec<(String, Value)>, Vec<(String, String)>) {
+fn unique_parsed(candidates: &[String]) -> (Vec<ParsedConfig>, Vec<RejectedConfig>) {
     let mut originals = Vec::new();
     let mut seen_clean = HashSet::new();
 
@@ -1397,9 +1424,12 @@ pub async fn validate_candidates_with_targets_strict(
         workers,
         batch_size,
         timeout_seconds,
-        STRICT_STABILITY_ATTEMPTS,
-        STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-        STRICT_MIN_SUCCESSFUL_TARGETS,
+        ValidationPolicy::new(
+            MAX_LATENCY_MS,
+            STRICT_STABILITY_ATTEMPTS,
+            STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+            STRICT_MIN_SUCCESSFUL_TARGETS,
+        ),
     )
     .await
 }
@@ -1452,18 +1482,17 @@ async fn validate_candidates_targets_inner(
     workers: usize,
     batch_size: usize,
     timeout_seconds: f64,
-    stability_attempts: usize,
-    min_successful_attempts: usize,
-    min_successful_targets: usize,
+    policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let targets = targets
         .iter()
         .map(|target| Url::parse(target).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
 
-    if targets.len() < min_successful_targets {
+    if targets.len() < policy.min_successful_targets {
         return Err(format!(
-            "Light validation requires at least {min_successful_targets} targets"
+            "Light validation requires at least {} targets",
+            policy.min_successful_targets
         ));
     }
 
@@ -1506,9 +1535,9 @@ async fn validate_candidates_targets_inner(
             index + 1,
             total_batches,
             batch.len(),
-            min_successful_attempts,
-            stability_attempts,
-            min_successful_targets
+            policy.min_successful_attempts,
+            policy.stability_attempts,
+            policy.min_successful_targets
         );
 
         let batch_metadata = check_batch_targets(
@@ -1517,9 +1546,7 @@ async fn validate_candidates_targets_inner(
             &targets,
             workers.max(1),
             timeout_seconds,
-            stability_attempts,
-            min_successful_attempts,
-            min_successful_targets,
+            policy,
         )
         .await?;
         metadata.extend(batch_metadata);
@@ -1530,9 +1557,9 @@ async fn validate_candidates_targets_inner(
         metadata.len(),
         candidates.len(),
         targets.len(),
-        min_successful_attempts,
-        stability_attempts,
-        min_successful_targets
+        policy.min_successful_attempts,
+        policy.stability_attempts,
+        policy.min_successful_targets
     );
 
     Ok(metadata)
@@ -1544,9 +1571,7 @@ async fn check_batch_targets(
     targets: &[Url],
     workers: usize,
     timeout_seconds: f64,
-    stability_attempts: usize,
-    min_successful_attempts: usize,
-    min_successful_targets: usize,
+    policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -1624,7 +1649,7 @@ async fn check_batch_targets(
         let mut latencies = vec![Vec::<f64>::new(); count];
         let mut active = (0..count).collect::<Vec<_>>();
 
-        for attempt in 0..stability_attempts {
+        for attempt in 0..policy.stability_attempts {
             if active.is_empty() {
                 break;
             }
@@ -1651,33 +1676,33 @@ async fn check_batch_targets(
                 }
             }
 
-            let remaining = stability_attempts.saturating_sub(attempt + 1);
+            let remaining = policy.stability_attempts.saturating_sub(attempt + 1);
             if remaining == 0 {
                 active.clear();
             } else {
                 active.retain(|&entry_index| {
-                    successes[entry_index] + remaining >= min_successful_attempts
-                        && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                    successes[entry_index] + remaining >= policy.min_successful_attempts
+                        && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                             || late_streak[entry_index] + remaining >= STRICT_LATE_SUCCESS_STREAK)
                 });
             }
 
             if !active.is_empty()
-                && stability_attempts >= STRICT_STABILITY_ATTEMPTS
-                && attempt + 1 < stability_attempts
+                && policy.stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && attempt + 1 < policy.stability_attempts
             {
                 sleep(STRICT_INTER_ATTEMPT_DELAY).await;
             }
         }
 
         let mut secondary_success = vec![false; count];
-        if min_successful_targets > 1 {
+        if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
                 let eligible = (0..count)
                     .filter(|&entry_index| {
                         !secondary_success[entry_index]
-                            && successes[entry_index] >= min_successful_attempts
-                            && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+                            && successes[entry_index] >= policy.min_successful_attempts
+                            && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                                 || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
                     })
                     .collect::<Vec<_>>();
@@ -1708,9 +1733,9 @@ async fn check_batch_targets(
             let target_count =
                 usize::from(successes[index] > 0) + usize::from(secondary_success[index]);
 
-            if successes[index] >= min_successful_attempts
-                && target_count >= min_successful_targets
-                && (stability_attempts < STRICT_STABILITY_ATTEMPTS
+            if successes[index] >= policy.min_successful_attempts
+                && target_count >= policy.min_successful_targets
+                && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
                     || late_streak[index] >= STRICT_LATE_SUCCESS_STREAK)
                 && latencies[index].iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
             {
