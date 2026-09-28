@@ -23,6 +23,7 @@ pub const LIGHT_TARGETS: &[&str] = &[
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
+pub const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
 pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
@@ -1322,7 +1323,7 @@ async fn check_batch(
             let values = latencies.get(config).cloned().unwrap_or_default();
             let wins = successes.get(config).copied().unwrap_or(0);
 
-            if wins >= MIN_SUCCESSFUL_TARGETS
+            if wins >= MIN_SUCCESSFUL_ATTEMPTS
                 && !values.is_empty()
                 && values.iter().copied().fold(0.0, f64::max) <= MAX_LATENCY_MS
             {
@@ -1371,8 +1372,8 @@ pub async fn validate_candidates_with_targets(
         batch_size,
         timeout_seconds,
         STABILITY_ATTEMPTS,
+        MIN_SUCCESSFUL_ATTEMPTS,
         MIN_SUCCESSFUL_TARGETS,
-        1,
     )
     .await
 }
@@ -1791,7 +1792,7 @@ async fn validate_candidates_inner(
                 index + 1,
                 total_batches,
                 batch.len(),
-                MIN_SUCCESSFUL_TARGETS,
+                MIN_SUCCESSFUL_ATTEMPTS,
                 STABILITY_ATTEMPTS
             );
         } else {
@@ -1800,7 +1801,7 @@ async fn validate_candidates_inner(
                 index + 1,
                 total_batches,
                 batch.len(),
-                MIN_SUCCESSFUL_TARGETS,
+                MIN_SUCCESSFUL_ATTEMPTS,
                 STABILITY_ATTEMPTS
             );
         }
