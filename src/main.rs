@@ -868,6 +868,8 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{decode_base64_variants, normalize_config};
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
 
     #[test]
     fn decodes_large_single_line_base64_sources() {
