@@ -679,7 +679,7 @@ fn is_uuid(value: &str) -> bool {
 
 fn decode_vmess_payload(encoded: &str) -> Option<String> {
     let mut padded = encoded.to_string();
-    while padded.len() % 4 != 0 {
+    while !padded.len().is_multiple_of(4) {
         padded.push('=');
     }
 
@@ -828,7 +828,7 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 
     for input in inputs {
         let mut padded = input.clone();
-        while padded.len() % 4 != 0 {
+        while !padded.len().is_multiple_of(4) {
             padded.push('=');
         }
 

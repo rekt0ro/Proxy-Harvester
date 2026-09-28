@@ -26,6 +26,12 @@ fn output_path(path: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(format!("{}-base64.txt", path.display())))
 }
 
+fn main() -> Result<(), String> {
+    encode_file("subscriptions/all.txt")?;
+    encode_file("subscriptions/light.txt")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::output_path;
@@ -42,10 +48,4 @@ mod tests {
             Path::new("subscriptions/light-base64.txt")
         );
     }
-}
-
-fn main() -> Result<(), String> {
-    encode_file("subscriptions/all.txt")?;
-    encode_file("subscriptions/light.txt")?;
-    Ok(())
 }
