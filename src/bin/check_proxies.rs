@@ -24,14 +24,12 @@ fn required(args: &[String], name: &str) -> Result<String, String> {
 }
 
 fn requires_singbox(config: &str) -> bool {
-    config
-        .split_once("://")
-        .is_some_and(|(scheme, _)| {
-            matches!(
-                scheme.to_ascii_lowercase().as_str(),
-                "hysteria" | "socks4" | "socks4a"
-            )
-        })
+    config.split_once("://").is_some_and(|(scheme, _)| {
+        matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "hysteria" | "socks4" | "socks4a"
+        )
+    })
 }
 
 fn ranked(metadata: &std::collections::HashMap<String, ProxyMetrics>) -> Vec<String> {
@@ -136,11 +134,15 @@ mod tests {
 
     #[test]
     fn routes_singbox_only_protocols_correctly() {
-        assert!(requires_singbox("hysteria://example.com:443?upmbps=100&downmbps=100"));
+        assert!(requires_singbox(
+            "hysteria://example.com:443?upmbps=100&downmbps=100"
+        ));
         assert!(requires_singbox("socks4://example.com:1080"));
         assert!(requires_singbox("socks4a://example.com:1080"));
         assert!(!requires_singbox("socks5://example.com:1080"));
-        assert!(!requires_singbox("vless://uuid@example.com:443?security=tls"));
+        assert!(!requires_singbox(
+            "vless://uuid@example.com:443?security=tls"
+        ));
     }
 }
 
