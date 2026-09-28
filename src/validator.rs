@@ -30,6 +30,7 @@ pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
 pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
+pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
 pub const MAX_LATENCY_MS: f64 = 800.0;
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -1659,6 +1660,20 @@ async fn check_batch_targets(
         for attempt in 0..policy.stability_attempts {
             if active.is_empty() {
                 break;
+            }
+
+            if policy.stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && STRICT_RECONNECT_AFTER_ATTEMPTS.contains(&(attempt + 1))
+            {
+                for &entry_index in &active {
+                    clients[entry_index] = client_for_port(local_ports[entry_index], timeout_seconds)
+                        .map_err(|error| {
+                            let _ = child.start_kill();
+                            let _ = child.wait();
+                            let _ = fs::remove_dir_all(&work);
+                            error
+                        })?;
+                }
             }
 
             let results = stream::iter(active.iter().copied())

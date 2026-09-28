@@ -3,7 +3,7 @@ use crate::validator::{
     ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
     MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY,
     STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS,
-    STRICT_STABILITY_ATTEMPTS,
+    STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1075,6 +1075,20 @@ async fn check_batch_targets(
         for attempt in 0..policy.stability_attempts {
             if active.is_empty() {
                 break;
+            }
+
+            if policy.stability_attempts >= STRICT_STABILITY_ATTEMPTS
+                && STRICT_RECONNECT_AFTER_ATTEMPTS.contains(&(attempt + 1))
+            {
+                for &entry_index in &active {
+                    clients[entry_index] = client_for_port(local_ports[entry_index], request_timeout)
+                        .map_err(|error| {
+                            let _ = child.start_kill();
+                            let _ = child.wait();
+                            let _ = fs::remove_dir_all(&work);
+                            error
+                        })?;
+                }
             }
 
             let results = stream::iter(active.iter().copied())
