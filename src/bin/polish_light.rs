@@ -207,7 +207,7 @@ fn persist_history(
 
     if updated.len() > HISTORY_MAX_ENTRIES {
         let mut entries = updated.into_iter().collect::<Vec<_>>();
-        entries.sort_unstable_by(|(_, a), (_, b)| b.last_seen.cmp(&a.last_seen));
+        entries.sort_unstable_by_key(|(_, entry)| std::cmp::Reverse(entry.last_seen));
         entries.truncate(HISTORY_MAX_ENTRIES);
         updated = entries.into_iter().collect();
     }
