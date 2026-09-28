@@ -31,7 +31,7 @@ const TEST_CONCURRENCY: usize = 8;
 const TEST_CONNECTION_CONCURRENCY: usize = 64;
 const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
-const MAX_COMPACT_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
@@ -796,7 +796,7 @@ fn display_protocol(scheme: &str) -> &str {
 
 fn looks_like_base64(value: &str) -> bool {
     value.len() >= 16
-        && value.len() <= 8192
+        && value.len() <= MAX_BASE64_BYTES
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
         })
@@ -805,9 +805,9 @@ fn looks_like_base64(value: &str) -> bool {
 fn decode_base64_variants(text: &str) -> Vec<String> {
     let mut inputs = Vec::new();
 
-    if !text.contains("://") && text.len() <= MAX_COMPACT_BASE64_BYTES.saturating_mul(2) {
+    if !text.contains("://") && text.len() <= MAX_BASE64_BYTES.saturating_mul(2) {
         let compact = text.split_whitespace().collect::<String>();
-        if compact.len() <= MAX_COMPACT_BASE64_BYTES && looks_like_base64(&compact) {
+        if compact.len() <= MAX_BASE64_BYTES && looks_like_base64(&compact) {
             inputs.push(compact);
         }
     }
@@ -867,7 +867,17 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_config;
+    use super::{decode_base64_variants, normalize_config};
+
+    #[test]
+    fn decodes_large_single_line_base64_sources() {
+        let payload = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls\n"
+            .repeat(300);
+        let encoded = STANDARD.encode(payload.as_bytes());
+
+        assert!(encoded.len() > 8192);
+        assert_eq!(decode_base64_variants(&encoded), vec![payload]);
+    }
 
     #[test]
     fn rejects_protocols_without_a_proxy_validator() {
