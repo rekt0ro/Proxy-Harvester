@@ -157,6 +157,7 @@ jobs:
         run: |
           cargo build --release --bins
           test -x ./target/release/ProxyRift
+          test -x ./target/release/check_proxies
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
 
@@ -180,6 +181,30 @@ jobs:
 
       - name: Collect and transport-test configs
         run: ./target/release/ProxyRift
+
+      - name: Validate All subscription
+        env:
+          ALL_MIN_PUBLISH: "50"
+        run: |
+          set +e
+          ./target/release/check_proxies             --input subscriptions/.all.txt             --output /tmp/proxyrift/all.next.txt             --workers 32             --batch-size 250             --timeout 3             --target https://www.google.com/generate_204             --xray "$HOME/.local/bin/xray"
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/all.next.txt ]; then
+            all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
+            echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
+            if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
+              cp /tmp/proxyrift/all.next.txt subscriptions/all.txt
+              echo "Published refreshed All subscription."
+            else
+              echo "All verified pool is too small to replace the current subscription; preserving the previous All subscription."
+            fi
+          elif [ "${status}" -ne 0 ]; then
+            echo "All validation failed; preserving the previous All subscription."
+          else
+            echo "All validation produced no configs; preserving the previous All subscription."
+          fi
 
       - name: Build Light subscription
         env:
