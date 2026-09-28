@@ -362,7 +362,6 @@ fn vmess_security(value: &str) -> Result<&'static str, String> {
         "zero" => Ok("zero"),
         "aes-128-gcm" => Ok("aes-128-gcm"),
         "chacha20-poly1305" => Ok("chacha20-poly1305"),
-        "aes-128-ctr" => Ok("aes-128-ctr"),
         other => Err(format!("unsupported sing-box VMess security {other}")),
     }
 }
@@ -1751,6 +1750,11 @@ mod tests {
         ));
         assert!(valid_probe_body("https://example.com/", b"<html>"));
         assert!(!valid_probe_body("https://example.com/", b""));
+    }
+
+    #[test]
+    fn vmess_security_does_not_advertise_invalid_cipher() {
+        assert!(vmess_security("aes-128-ctr").is_err());
     }
 
     #[test]
