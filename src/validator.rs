@@ -1199,6 +1199,28 @@ fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     }
 }
 
+fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(body.len()) {
+        return false;
+    }
+    body.extend_from_slice(chunk);
+    true
+}
+
+pub(crate) async fn read_response_body_limited(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, ()> {
+    let mut body = Vec::with_capacity(MAX_RESPONSE_BYTES.min(16_384));
+
+    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+        if !append_limited_response_chunk(&mut body, &chunk) {
+            return Err(());
+        }
+    }
+
+    Ok(body)
+}
+
 async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
@@ -1225,7 +1247,9 @@ async fn probe_request(client: &Client, url: Url) -> Result<f64, ProbeError> {
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = response.bytes().await.map_err(|_| ProbeError::Failed)?;
+    let body = read_response_body_limited(response)
+        .await
+        .map_err(|_| ProbeError::Failed)?;
     if body.len() > MAX_RESPONSE_BYTES
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)
@@ -1941,6 +1965,22 @@ mod tests {
 
         let other = Url::parse("https://example.com/").expect("example target should parse");
         assert!(valid_probe_status(&other, 200));
+    }
+
+    #[test]
+    fn bounded_response_chunk_rejects_overflow() {
+        let mut body = Vec::new();
+        assert!(super::append_limited_response_chunk(&mut body, &[1, 2, 3]));
+        assert_eq!(body.len(), 3);
+
+        let remaining = super::MAX_RESPONSE_BYTES - body.len();
+        assert!(super::append_limited_response_chunk(
+            &mut body,
+            &vec![0u8; remaining]
+        ));
+        assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
+        assert!(!super::append_limited_response_chunk(&mut body, &[0]));
+        assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
     }
 
     #[test]

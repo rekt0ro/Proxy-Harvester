@@ -976,7 +976,9 @@ async fn request_url(client: &Client, url: &str) -> Result<f64, String> {
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = response.bytes().await.map_err(|error| error.to_string())?;
+    let body = crate::validator::read_response_body_limited(response)
+        .await
+        .map_err(|_| "response body exceeds validation limit".to_string())?;
     if body.len() > MAX_RESPONSE_BYTES
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(url, &body)
