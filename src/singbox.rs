@@ -1201,10 +1201,9 @@ async fn check_batch(
 
         let mut active = Vec::with_capacity(batch_entries.len());
         let mut client_error = None;
-        let fresh_connections = stability_attempts >= STRICT_STABILITY_ATTEMPTS;
 
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], request_timeout, fresh_connections) {
+            match client_for_port(local_ports[index], request_timeout, stability_attempts >= STRICT_STABILITY_ATTEMPTS) {
                 Ok(client) => active.push((config.clone(), client)),
                 Err(error) => {
                     client_error = Some(error);
