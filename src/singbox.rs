@@ -1338,6 +1338,7 @@ async fn check_batch_targets(
 async fn check_batch(
     binary: &str,
     entries: &[(String, Value)],
+    target: &str,
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
@@ -1419,7 +1420,7 @@ async fn check_batch(
         for _ in 0..STABILITY_ATTEMPTS {
             let results = stream::iter(active.clone())
                 .map(|(config, client)| async move {
-                    let result = request_url(&client, PRIMARY_TARGET).await;
+                    let result = request_url(&client, target).await;
                     (config, result)
                 })
                 .buffer_unordered(workers.max(1))
@@ -1612,9 +1613,10 @@ async fn validate_candidates_with_targets_policy(
     Ok(metadata)
 }
 
-pub async fn validate_candidates_with_settings(
+pub async fn validate_candidates_with_target(
     binary: &str,
     candidates: &[String],
+    target: &str,
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
@@ -1656,7 +1658,7 @@ pub async fn validate_candidates_with_settings(
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
-            "target {PRIMARY_TARGET}: batch {}/{} testing {} configs with sing-box; requiring {MIN_SUCCESSFUL_ATTEMPTS}/{} attempts",
+            "target {target}: batch {}/{} testing {} configs with sing-box; requiring {MIN_SUCCESSFUL_ATTEMPTS}/{} attempts",
             index + 1,
             total_batches,
             batch.len(),
@@ -1666,6 +1668,7 @@ pub async fn validate_candidates_with_settings(
             check_batch(
                 binary,
                 batch,
+                target,
                 workers.max(1),
                 request_timeout,
                 max_latency_ms,
@@ -1675,7 +1678,7 @@ pub async fn validate_candidates_with_settings(
     }
 
     println!(
-        "{}/{} verified by sing-box against {PRIMARY_TARGET} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
+        "{}/{} verified by sing-box against {target} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
         metadata.len(),
         candidates.len(),
         STABILITY_ATTEMPTS,
@@ -1683,6 +1686,24 @@ pub async fn validate_candidates_with_settings(
     );
 
     Ok(metadata)
+}
+
+pub async fn validate_candidates_with_settings(
+    binary: &str,
+    candidates: &[String],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_with_target(
+        binary,
+        candidates,
+        PRIMARY_TARGET,
+        workers,
+        request_timeout,
+        max_latency_ms,
+    )
+    .await
 }
 
 pub async fn validate_candidates(
