@@ -499,7 +499,9 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
 
     if !url.username().is_empty() {
         let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
-        let method = if let Some((method, _)) = userinfo.split_once(':') {
+        let method = if url.password().is_some() {
+            userinfo.to_string()
+        } else if let Some((method, _)) = userinfo.split_once(':') {
             method.to_string()
         } else {
             let decoded = decode_base64_string(&userinfo)?;
