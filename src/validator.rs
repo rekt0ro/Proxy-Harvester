@@ -57,15 +57,15 @@ pub(crate) struct ValidationPolicy {
 impl ValidationPolicy {
     pub(crate) const fn new(
         max_latency_ms: f64,
-        policy.stability_attempts: usize,
-        policy.min_successful_attempts: usize,
-        policy.min_successful_targets: usize,
+        stability_attempts: usize,
+        min_successful_attempts: usize,
+        min_successful_targets: usize,
     ) -> Self {
         Self {
             max_latency_ms,
-            policy.stability_attempts,
-            policy.min_successful_attempts,
-            policy.min_successful_targets,
+            stability_attempts,
+            min_successful_attempts,
+            min_successful_targets,
         }
     }
 }

@@ -1143,7 +1143,7 @@ async fn check_batch(
     entries: &[(String, Value)],
     workers: usize,
     request_timeout: Duration,
-    policy.max_latency_ms: f64,
+    max_latency_ms: f64,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() {
         return Ok(HashMap::new());
@@ -1337,7 +1337,7 @@ async fn validate_candidates_with_targets_policy(
 
     if targets.len() < policy.min_successful_targets {
         return Err(format!(
-            "Light validation requires at least {policy.min_successful_targets} targets"
+    "Light validation requires at least {} targets"
         ));
     }
 
