@@ -1249,19 +1249,9 @@ mod tests {
 
     #[test]
     fn accepts_shadowsocks_plain_and_base64_userinfo() {
-        assert!(
-            normalize_config(
-                "ss://aes-256-gcm:secret@example.com:8388"
-            )
-            .is_some()
-        );
+        assert!(normalize_config("ss://aes-256-gcm:secret@example.com:8388").is_some());
 
-        assert!(
-            normalize_config(
-                "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388"
-            )
-            .is_some()
-        );
+        assert!(normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some());
     }
 
     #[test]
