@@ -1378,8 +1378,7 @@ mod tests {
         let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
 
         let hysteria2 = vec![
-            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret"
-                .to_string(),
+            "hysteria2://password@example.com:443?obfs=salamander&obfs-password=secret".to_string(),
         ];
 
         let selected = super::select_all_candidates(&working, &hysteria2);
@@ -1496,7 +1495,8 @@ mod tests {
             "hy2://password@example.com:443".to_string(),
             "hysteria2://password@example.net:443".to_string(),
             "socks4://127.0.0.1:1080".to_string(),
-            "socks5://127.0.0.1:1081".to_string(),        ];
+            "socks5://127.0.0.1:1081".to_string(),
+        ];
 
         let named = assign_config_names(configs);
 
