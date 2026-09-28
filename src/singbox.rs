@@ -867,6 +867,10 @@ async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
             .into_iter()
             .filter_map(|(port, ready)| (!ready).then_some(port))
             .collect();
+
+        if !pending.is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pending.is_empty()
