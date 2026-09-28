@@ -642,8 +642,9 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
 
             let link = Url::parse(clean(config)).map_err(|error| error.to_string())?;
             if let Some(packet_encoding) = link.query_pairs().find_map(|(key, value)| {
-                key.eq_ignore_ascii_case("packetEncoding")
-                    .then_some(value.into_owned())
+                (key.eq_ignore_ascii_case("packetEncoding")
+                    || key.eq_ignore_ascii_case("packet-encoding"))
+                .then_some(value.into_owned())
             }) {
                 let packet_encoding = packet_encoding.to_ascii_lowercase();
                 let packet_encoding = match packet_encoding.as_str() {
@@ -1618,6 +1619,13 @@ mod tests {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=tcp&packetEncoding=none";
         let outbound = singbox_outbound(config).expect("VLESS packet encoding none should map");
         assert_eq!(outbound["packet_encoding"], "");
+    }
+
+    #[test]
+    fn maps_vless_packet_encoding_alias() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=tcp&packet-encoding=packetaddr";
+        let outbound = singbox_outbound(config).expect("VLESS packet-encoding alias should map");
+        assert_eq!(outbound["packet_encoding"], "packetaddr");
     }
 
     #[test]

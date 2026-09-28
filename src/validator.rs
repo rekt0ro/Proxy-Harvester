@@ -519,6 +519,18 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "id": uuid,
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
+    let packet_encoding = first_query(
+        &url,
+        &["packetEncoding", "packet-encoding"],
+        Some(""),
+    )
+    .to_ascii_lowercase();
+    if !packet_encoding.is_empty() && packet_encoding != "none" {
+        return Err(format!(
+            "VLESS packet encoding {packet_encoding} requires sing-box Light validation"
+        ));
+    }
+
     let flow = first_query(&url, &["flow"], Some(""));
     if !flow.is_empty() {
         match flow.as_str() {
@@ -2155,6 +2167,15 @@ mod tests {
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
             .is_none());
+    }
+
+    #[test]
+    fn rejects_vless_packet_encoding_for_xray() {
+        let result = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=tcp&packetEncoding=packetaddr",
+        );
+        let error = result.expect_err("packet encoding should not use Xray All validation");
+        assert!(error.contains("requires sing-box"));
     }
 
     #[test]
