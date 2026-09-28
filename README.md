@@ -2,7 +2,7 @@
 
 ### Light (Recommended)
 
-Up to 200 verified proxy configurations that pass multi-target consumer-style checks. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
+Up to 200 verified proxy configurations that pass multi-target connectivity and stability checks. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
 
 Plain text:
 
