@@ -504,18 +504,35 @@ fn split_concatenated_configs(config: &str) -> Vec<&str> {
         "http://",
     ];
 
-    let mut starts = vec![0];
+    let mut matches = Vec::new();
 
     for index in 1..config.len() {
         if !config.is_char_boundary(index) {
             continue;
         }
 
-        if SCHEMES.iter().any(|scheme| {
-            config[index..].len() >= scheme.len()
+        for scheme in SCHEMES {
+            if config[index..].len() >= scheme.len()
                 && config[index..index + scheme.len()].eq_ignore_ascii_case(scheme)
-        }) {
+            {
+                matches.push((index, scheme.len()));
+            }
+        }
+    }
+
+    matches.sort_unstable_by_key(|(index, length)| (*index, std::cmp::Reverse(*length)));
+
+    let mut starts = vec![0];
+    let mut previous_end = SCHEMES
+        .iter()
+        .find(|scheme| config.len() >= scheme.len() && config[..scheme.len()].eq_ignore_ascii_case(scheme))
+        .map(|scheme| scheme.len())
+        .unwrap_or_default();
+
+    for (index, length) in matches {
+        if index >= previous_end {
             starts.push(index);
+            previous_end = index + length;
         }
     }
 
