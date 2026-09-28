@@ -509,14 +509,12 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
     let payload = config.split_once("://")?.1.split('#').next()?;
 
     if let Some((credentials, _remote)) = payload.rsplit_once('@') {
-        let decoded = b64decode(credentials)?;
-        let decoded = String::from_utf8(decoded).ok()?;
+        let decoded = decode_base64_string(credentials)?;
         let method = decoded.split_once(':')?.0;
         return supported(method, METHODS).then(|| config.to_string());
     }
 
-    let decoded = b64decode(payload)?;
-    let decoded = String::from_utf8(decoded).ok()?;
+    let decoded = decode_base64_string(payload)?;
     let (credentials, _remote) = decoded.rsplit_once('@')?;
     let method = credentials.split_once(':')?.0;
 
@@ -697,7 +695,7 @@ fn is_uuid(value: &str) -> bool {
     true
 }
 
-fn decode_vmess_payload(encoded: &str) -> Option<String> {
+fn decode_base64_string(encoded: &str) -> Option<String> {
     let mut padded = encoded.to_string();
     while !padded.len().is_multiple_of(4) {
         padded.push('=');
@@ -725,6 +723,10 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
     }
 
     None
+}
+
+fn decode_vmess_payload(encoded: &str) -> Option<String> {
+    decode_base64_string(encoded)
 }
 
 fn decode_html_entities(text: &str) -> String {
