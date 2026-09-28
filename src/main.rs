@@ -37,6 +37,27 @@ const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 
 #[tokio::main]
+#[derive(Debug)]
+enum SourceBodyError {
+    TooLarge,
+    Read(reqwest::Error),
+}
+
+async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(SourceBodyError::Read)?;
+        if chunk.len() > MAX_SOURCE_BYTES.saturating_sub(body.len()) {
+            return Err(SourceBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] ProxyRift starting...");
 
@@ -65,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Ok(response) => {
                             if response
                                 .content_length()
-                                .is_some_and(|length| length as usize > MAX_SOURCE_BYTES)
+                                .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
                                 println!(
                                     "[WARN] Skipping source {source_label}: response exceeds {} bytes",
@@ -74,33 +95,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 return Vec::new();
                             }
 
-                            match response.bytes().await {
-                                Ok(bytes) if bytes.len() <= MAX_SOURCE_BYTES => {
-                                    match String::from_utf8(bytes.to_vec()) {
-                                        Ok(text) => {
-                                            let configs = extract_configs(&text);
-                                            println!(
-                                                "[INFO] Found {} configs from source {source_label}.",
-                                                configs.len()
-                                            );
-                                            configs
-                                        }
-                                        Err(error) => {
-                                            println!(
-                                                "[WARN] Failed to decode source {source_label} as UTF-8: {error}"
-                                            );
-                                            Vec::new()
-                                        }
+                            match read_source_body(response).await {
+                                Ok(bytes) => match String::from_utf8(bytes) {
+                                    Ok(text) => {
+                                        let configs = extract_configs(&text);
+                                        println!(
+                                            "[INFO] Found {} configs from source {source_label}.",
+                                            configs.len()
+                                        );
+                                        configs
                                     }
-                                }
-                                Ok(_) => {
+                                    Err(error) => {
+                                        println!(
+                                            "[WARN] Failed to decode source {source_label} as UTF-8: {error}"
+                                        );
+                                        Vec::new()
+                                    }
+                                },
+                                Err(SourceBodyError::TooLarge) => {
                                     println!(
                                         "[WARN] Skipping source {source_label}: response exceeds {} bytes",
                                         MAX_SOURCE_BYTES
                                     );
                                     Vec::new()
                                 }
-                                Err(error) => {
+                                Err(SourceBodyError::Read(error)) => {
                                     println!("[WARN] Failed to read source {source_label}: {error}");
                                     Vec::new()
                                 }
@@ -286,6 +305,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] Done.");
 
     Ok(())
+}
+
+fn append_limited_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    if chunk.len() > MAX_SOURCE_BYTES.saturating_sub(body.len()) {
+        return false;
+    }
+    body.extend_from_slice(chunk);
+    true
 }
 
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
@@ -949,6 +976,25 @@ fn source_label(url: &str) -> String {
         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "<invalid source>".to_string())
 }
+#[cfg(test)]
+mod tests {
+    use super::{append_limited_chunk, MAX_SOURCE_BYTES};
+
+    #[test]
+    fn bounded_source_chunk_stops_at_limit() {
+        let mut body = Vec::new();
+        assert!(append_limited_chunk(&mut body, &[1, 2, 3]));
+        assert_eq!(body.len(), 3);
+
+        let remaining = MAX_SOURCE_BYTES - body.len();
+        assert!(append_limited_chunk(&mut body, &vec![0u8; remaining]));
+        assert_eq!(body.len(), MAX_SOURCE_BYTES);
+
+        assert!(!append_limited_chunk(&mut body, &[0]));
+        assert_eq!(body.len(), MAX_SOURCE_BYTES);
+    }
+}
+
 async fn tcp_latency_endpoint(host: &str, port: u16) -> Option<u64> {
     let start = Instant::now();
 
