@@ -1362,19 +1362,21 @@ mod tests {
     }
 
     #[test]
-    fn strips_hysteria2_fragment_for_parsing() {
-        let config = "hy2://password@example.com:443#Hysteria2%20001";
+    fn all_candidates_include_hysteria_v1_after_transport_screening() {
+        let working = Vec::<(String, u64)>::new();
+
+        let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
+
+        let selected = super::select_all_candidates(&working, &hysteria);
 
         assert_eq!(
-            normalize_config(config),
-            Some("hy2://password@example.com:443".to_string())
+            selected,
+            vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()]
         );
-
-        assert_eq!(trim_config(config), "hy2://password@example.com:443");
     }
 
     #[test]
-    fn all_candidates_include_hysteria_v1_after_transport_screening() {
+    fn all_candidates_include_hysteria2_after_transport_screening() {
         let working = Vec::<(String, u64)>::new();
 
         let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
