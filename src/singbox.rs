@@ -569,10 +569,11 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
 }
 
 fn singbox_outbound(config: &str) -> Result<Value, String> {
-    let scheme = Url::parse(clean(config))
-        .map_err(|error| error.to_string())?
-        .scheme()
-        .to_ascii_lowercase();
+    let cleaned = clean(config);
+    let scheme = cleaned
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_default();
 
     if scheme == "hysteria2" || scheme == "hy2" {
         return singbox_hysteria2_outbound(config);
