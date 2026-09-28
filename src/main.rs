@@ -39,14 +39,14 @@ const MAX_LIGHT_CANDIDATES: usize = 10000;
 #[derive(Debug)]
 enum SourceBodyError {
     TooLarge,
-    Read(reqwest::Error),
+    Read,
 }
 
 async fn read_source_body(response: reqwest::Response) -> Result<Vec<u8>, SourceBodyError> {
     let mut body = Vec::new();
     let mut response = response;
 
-    while let Some(chunk) = response.chunk().await.map_err(SourceBodyError::Read)? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| SourceBodyError::Read)? {
         if !append_limited_chunk(&mut body, &chunk) {
             return Err(SourceBodyError::TooLarge);
         }
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 );
                                 Vec::new()
                             }
-                            Err(SourceBodyError::Read(_)) => {
+                            Err(SourceBodyError::Read) => {
                                 println!("[WARN] Failed to read source #{source_number}.");
                                 Vec::new()
                             }
