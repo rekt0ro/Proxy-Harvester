@@ -491,45 +491,61 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
         "none",
     ];
 
-    let method = if !url.username().is_empty() {
-        percent_decode_str(url.username())
-            .decode_utf8()
-            .ok()?
-            .into_owned()
-    } else {
-        let payload = config
-            .split_once("://")?
-            .1
-            .split('#')
-            .next()?
-            .split('@')
-            .next()?;
-        let mut padded = payload.to_string();
-        while !padded.len().is_multiple_of(4) {
-            padded.push('=');
+    fn supported(method: &str, methods: &[&str]) -> bool {
+        methods
+            .iter()
+            .any(|candidate| method.eq_ignore_ascii_case(candidate))
+    }
+
+    if !url.username().is_empty() {
+        let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
+        let method = if url.password().is_some() {
+            userinfo.to_string()
+        } else if let Some((method, _)) = userinfo.split_once(':') {
+            method.to_string()
+        } else {
+            let decoded = decode_base64_string(&userinfo)?;
+            decoded.split_once(':')?.0.to_string()
+        };
+        return supported(&method, METHODS).then(|| config.to_string());
+    }
+
+    let payload = config.split_once("://")?.1.split('#').next()?;
+
+    if let Some((credentials, _remote)) = payload.rsplit_once('@') {
+        let decoded = decode_base64_string(credentials)?;
+        let method = decoded.split_once(':')?.0;
+        return supported(method, METHODS).then(|| config.to_string());
+    }
+
+    let decoded = decode_base64_string(payload)?;
+    let (credentials, _remote) = decoded.rsplit_once('@')?;
+    let method = credentials.split_once(':')?.0;
+
+    supported(method, METHODS).then(|| config.to_string())
+}
+
+fn valid_vless_encryption(value: &str) -> bool {
+    let blocks = value.split('.').collect::<Vec<_>>();
+    if blocks.len() < 4 || blocks[0] != "mlkem768x25519plus" {
+        return false;
+    }
+
+    if !matches!(blocks[1], "native" | "xorpub" | "random") || !matches!(blocks[2], "1rtt" | "0rtt")
+    {
+        return false;
+    }
+
+    blocks[3..].iter().all(|block| {
+        if block.len() < 20 {
+            return true;
         }
 
-        let decoded = [
-            STANDARD.decode(payload),
-            STANDARD.decode(&padded),
-            URL_SAFE.decode(payload),
-            URL_SAFE_NO_PAD.decode(payload),
-        ]
-        .into_iter()
-        .find_map(Result::ok)?;
-
-        let decoded = String::from_utf8(decoded).ok()?;
-        decoded.split_once(':')?.0.to_string()
-    };
-
-    if METHODS
-        .iter()
-        .any(|supported| method.eq_ignore_ascii_case(supported))
-    {
-        Some(config.to_string())
-    } else {
-        None
-    }
+        matches!(
+            URL_SAFE_NO_PAD.decode(block),
+            Ok(bytes) if bytes.len() == 32 || bytes.len() == 1184
+        )
+    })
 }
 
 fn normalize_vless(config: &str, url: &Url) -> Option<String> {
@@ -558,13 +574,17 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
     }
 
     if url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("encryption") && !value.eq_ignore_ascii_case("none")
+        key.eq_ignore_ascii_case("encryption")
+            && !value.trim().is_empty()
+            && !value.eq_ignore_ascii_case("none")
+            && !valid_vless_encryption(value.as_ref())
     }) {
         return None;
     }
 
     if url.query_pairs().any(|(key, value)| {
         (key.eq_ignore_ascii_case("packetencoding") || key.eq_ignore_ascii_case("packet-encoding"))
+            && !value.trim().is_empty()
             && !matches!(
                 value.to_ascii_lowercase().as_str(),
                 "xudp" | "packetaddr" | "none"
@@ -706,7 +726,7 @@ fn is_uuid(value: &str) -> bool {
     true
 }
 
-fn decode_vmess_payload(encoded: &str) -> Option<String> {
+fn decode_base64_string(encoded: &str) -> Option<String> {
     let mut padded = encoded.to_string();
     while !padded.len().is_multiple_of(4) {
         padded.push('=');
@@ -734,6 +754,10 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
     }
 
     None
+}
+
+fn decode_vmess_payload(encoded: &str) -> Option<String> {
+    decode_base64_string(encoded)
 }
 
 fn decode_html_entities(text: &str) -> String {
@@ -934,6 +958,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_vless_mlkem_encryption() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.ptjHQxBQxTJ9MWr2cd5qWIflBSACHOevTauCQwa_71U";
+
+        assert!(normalize_config(config).is_some());
+    }
+
+    #[test]
+    fn rejects_invalid_vless_mlkem_encryption() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.invalid.1rtt.seed";
+        assert!(normalize_config(config).is_none());
+    }
+
+    #[test]
+    fn accepts_shadowsocks_plain_and_base64_userinfo() {
+        assert!(normalize_config("ss://aes-256-gcm:secret@example.com:8388").is_some());
+
+        assert!(normalize_config("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388").is_some());
+    }
+
+    #[test]
+    fn accepts_legacy_base64_shadowsocks_urls() {
+        let legacy = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNzd29yZEBleGFtcGxlLmNvbTo4Mzg4";
+        assert!(normalize_config(legacy).is_some());
+    }
+
+    #[test]
     fn retains_supported_proxy_schemes() {
         assert!(normalize_config("http://127.0.0.1:8080").is_some(), "http");
         assert!(
@@ -1008,6 +1058,20 @@ mod tests {
                     .to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn retains_vless_with_empty_packet_encoding_value() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&packetEncoding=";
+        assert_eq!(normalize_config(config), Some(config.to_string()));
+    }
+
+    #[test]
+    fn retains_vless_with_empty_encryption_value() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&encryption=";
+        assert_eq!(normalize_config(config), Some(config.to_string()));
     }
 
     #[test]

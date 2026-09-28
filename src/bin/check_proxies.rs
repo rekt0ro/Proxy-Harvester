@@ -23,6 +23,15 @@ fn required(args: &[String], name: &str) -> Result<String, String> {
     }
 }
 
+fn requires_singbox(config: &str) -> bool {
+    config.split_once("://").is_some_and(|(scheme, _)| {
+        matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "hysteria" | "socks4" | "socks4a"
+        )
+    })
+}
+
 fn ranked(metadata: &std::collections::HashMap<String, ProxyMetrics>) -> Vec<String> {
     let mut configs: Vec<_> = metadata.keys().cloned().collect();
     configs.sort_unstable_by(|a, b| {
@@ -70,15 +79,11 @@ async fn main() -> Result<(), String> {
     let candidates = read_lines(&input)?;
 
     let mut xray_candidates = Vec::new();
-    let mut hysteria_candidates = Vec::new();
+    let mut singbox_candidates = Vec::new();
 
     for config in candidates {
-        let is_hysteria = config
-            .split_once("://")
-            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("hysteria"));
-
-        if is_hysteria {
-            hysteria_candidates.push(config);
+        if requires_singbox(&config) {
+            singbox_candidates.push(config);
         } else {
             xray_candidates.push(config);
         }
@@ -100,11 +105,11 @@ async fn main() -> Result<(), String> {
         );
     }
 
-    if !hysteria_candidates.is_empty() {
+    if !singbox_candidates.is_empty() {
         metadata.extend(
             validate_singbox_candidates(
                 &singbox,
-                &hysteria_candidates,
+                &singbox_candidates,
                 &target,
                 workers,
                 Duration::from_secs_f64(timeout),
@@ -121,4 +126,22 @@ async fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requires_singbox;
+
+    #[test]
+    fn routes_singbox_only_protocols_correctly() {
+        assert!(requires_singbox(
+            "hysteria://example.com:443?upmbps=100&downmbps=100"
+        ));
+        assert!(requires_singbox("socks4://example.com:1080"));
+        assert!(requires_singbox("socks4a://example.com:1080"));
+        assert!(!requires_singbox("socks5://example.com:1080"));
+        assert!(!requires_singbox(
+            "vless://uuid@example.com:443?security=tls"
+        ));
+    }
 }

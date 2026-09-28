@@ -128,6 +128,16 @@ fn b64decode(value: &str) -> Option<Vec<u8>> {
     None
 }
 
+fn query_bool(url: &Url, names: &[&str]) -> bool {
+    url.query_pairs().any(|(key, value)| {
+        names.iter().any(|name| key.eq_ignore_ascii_case(name))
+            && matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+    })
+}
+
 fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
     for (key, value) in url.query_pairs() {
         if names.iter().any(|name| key.eq_ignore_ascii_case(name)) && !value.is_empty() {
@@ -343,6 +353,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
     if security == "tls" {
         let mut tls = json!({ "serverName": sni });
+        if query_bool(url, &["insecure", "allowInsecure"]) {
+            tls["allowInsecure"] = json!(true);
+        }
         if !alpn.is_empty() {
             tls["alpn"] = json!(alpn);
         }
@@ -484,9 +497,15 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !service.is_empty() {
                 settings["serviceName"] = json!(service);
             }
-            if first_query(url, &["mode"], Some("")).eq_ignore_ascii_case("multi") {
-                settings["multiMode"] = json!(true);
+
+            let mode = first_query(url, &["mode"], Some("gun")).to_ascii_lowercase();
+            match mode.as_str() {
+                "gun" => {}
+                "multi" => settings["multiMode"] = json!(true),
+                "guna" => return Err("unsupported gRPC mode guna".to_string()),
+                other => return Err(format!("unsupported gRPC mode {other}")),
             }
+
             out["grpcSettings"] = settings;
         }
         "xhttp" => {
@@ -501,11 +520,12 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             }
             let extra = first_query(url, &["extra"], Some(""));
             if !extra.is_empty() {
-                if let Ok(value) = serde_json::from_str::<Value>(&extra) {
-                    if value.is_object() {
-                        settings["extra"] = normalize_xhttp_extra(value);
-                    }
+                let value = serde_json::from_str::<Value>(&extra)
+                    .map_err(|_| "invalid XHTTP extra JSON".to_string())?;
+                if !value.is_object() {
+                    return Err("XHTTP extra must be a JSON object".to_string());
                 }
+                settings["extra"] = normalize_xhttp_extra(value);
             }
             out["xhttpSettings"] = settings;
         }
@@ -818,6 +838,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
+    let mut insecure = false;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -838,6 +859,14 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true;
+            }
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -852,6 +881,9 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
+    }
+    if insecure {
+        tls["allowInsecure"] = json!(true);
     }
 
     let mut stream_settings = json!({
@@ -2111,6 +2143,29 @@ mod tests {
     }
 
     #[test]
+    fn vless_tls_preserves_insecure_setting() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&insecure=1",
+        )
+        .expect("VLESS TLS should parse");
+
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
+
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&allowInsecure=1",
+        )
+        .expect("VLESS TLS should accept allowInsecure");
+
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
+    }
+
+    #[test]
     fn vless_percent_encoded_username_is_decoded() {
         let config = "vless://user%40name@example.com:443?security=tls&sni=edge.example";
         let parsed = parse_config(config).expect("VLESS should parse");
@@ -2151,6 +2206,17 @@ mod tests {
             config["streamSettings"]["wsSettings"]["earlyDataHeaderName"],
             "Sec-WebSocket-Protocol"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_xhttp_extra() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=not-json";
+        let error = parse_config(config).expect_err("invalid XHTTP extra should be rejected");
+        assert!(error.contains("invalid XHTTP extra JSON"));
+
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=%5B1%2C2%5D";
+        let error = parse_config(config).expect_err("non-object XHTTP extra should be rejected");
+        assert!(error.contains("XHTTP extra must be a JSON object"));
     }
 
     #[test]
@@ -2337,15 +2403,27 @@ mod tests {
     }
 
     #[test]
-    fn ignores_removed_allow_insecure_tls_option() {
+    fn preserves_allow_insecure_tls_option() {
         let config = parse_config(
             "vless://user@example.com:443?security=tls&sni=example.com&allowInsecure=1",
         )
         .expect("VLESS TLS should parse");
 
-        assert!(config["streamSettings"]["tlsSettings"]
-            .get("allowInsecure")
-            .is_none());
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_insecure_tls_setting() {
+        let config = parse_hy2("hysteria2://password@example.com:443?insecure=1")
+            .expect("Hysteria2 insecure setting should parse");
+
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
     }
 
     #[test]
@@ -2368,9 +2446,10 @@ mod tests {
             config["streamSettings"]["finalmask"]["quicParams"]["udpHop"]["ports"],
             "1234,5000-6000"
         );
-        assert!(config["streamSettings"]["tlsSettings"]
-            .get("allowInsecure")
-            .is_none());
+        assert_eq!(
+            config["streamSettings"]["tlsSettings"]["allowInsecure"],
+            true
+        );
     }
 
     #[test]
@@ -2386,12 +2465,22 @@ mod tests {
 
     #[test]
     fn ignores_removed_allow_insecure_hysteria2_option() {
-        let config = parse_hy2("hysteria2://password@example.com:443?insecure=1&sni=example.com")
-            .expect("Hysteria2 TLS should parse");
+        let config =
+            parse_hy2("hysteria2://password@example.com:443?allowInsecure=1&sni=example.com")
+                .expect("Hysteria2 TLS should parse");
 
         assert!(config["streamSettings"]["tlsSettings"]
             .get("allowInsecure")
             .is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_grpc_mode() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=grpc&serviceName=Tun&mode=guna";
+
+        let error = parse_config(config).expect_err("guna is unsupported by Xray");
+        assert!(error.contains("unsupported gRPC mode guna"));
     }
 
     #[test]

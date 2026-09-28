@@ -360,9 +360,9 @@ fn vmess_security(value: &str) -> Result<&'static str, String> {
         "auto" => Ok("auto"),
         "none" => Ok("none"),
         "zero" => Ok("zero"),
+        "aes-128-cfb" => Ok("aes-128-cfb"),
         "aes-128-gcm" => Ok("aes-128-gcm"),
         "chacha20-poly1305" => Ok("chacha20-poly1305"),
-        "aes-128-ctr" => Ok("aes-128-ctr"),
         other => Err(format!("unsupported sing-box VMess security {other}")),
     }
 }
@@ -784,7 +784,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 &stream,
                 query_bool(
                     &Url::parse(clean(config)).map_err(|error| error.to_string())?,
-                    &["insecure"],
+                    &["insecure", "allowInsecure"],
                 ),
             )? {
                 outbound["tls"] = tls;
@@ -865,7 +865,9 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": password,
             });
 
-            if let Some(tls) = tls_settings(&stream, query_bool(&url, &["insecure"]))? {
+            if let Some(tls) =
+                tls_settings(&stream, query_bool(&url, &["insecure", "allowInsecure"]))?
+            {
                 outbound["tls"] = tls;
             }
             if let Some(transport) = transport {
@@ -1752,6 +1754,19 @@ mod tests {
     }
 
     #[test]
+    fn accepts_vmess_aes_128_cfb_security() {
+        assert_eq!(
+            vmess_security("aes-128-cfb").expect("VMess CFB should map"),
+            "aes-128-cfb"
+        );
+    }
+
+    #[test]
+    fn vmess_security_does_not_advertise_invalid_cipher() {
+        assert!(vmess_security("aes-128-ctr").is_err());
+    }
+
+    #[test]
     fn maps_vmess_empty_security_to_auto() {
         let payload = json!({
             "v": "2",
@@ -1791,6 +1806,20 @@ mod tests {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=tcp&packet-encoding=packetaddr";
         let outbound = singbox_outbound(config).expect("VLESS packet-encoding alias should map");
         assert_eq!(outbound["packet_encoding"], "packetaddr");
+    }
+
+    #[test]
+    fn maps_vless_allow_insecure_to_singbox_tls() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&allowInsecure=1";
+        let outbound = singbox_outbound(config).expect("VLESS allowInsecure should map");
+        assert_eq!(outbound["tls"]["insecure"], true);
+    }
+
+    #[test]
+    fn maps_trojan_allow_insecure_to_singbox_tls() {
+        let config = "trojan://password@example.com:443?security=tls&allowInsecure=1";
+        let outbound = singbox_outbound(config).expect("Trojan allowInsecure should map");
+        assert_eq!(outbound["tls"]["insecure"], true);
     }
 
     #[test]
