@@ -334,6 +334,13 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::Xray;
     }
 
+    if transport == "grpc"
+        && (has_query_key(&url, &["authority"])
+            || query_value(&url, &["mode"]).eq_ignore_ascii_case("multi"))
+    {
+        return LightBackend::Xray;
+    }
+
     if url.scheme().eq_ignore_ascii_case("vless") {
         let flow = query_value(&url, &["flow"]).to_ascii_lowercase();
         if !flow.is_empty() && flow != "xtls-rprx-vision" {
@@ -857,6 +864,20 @@ mod tests {
         let config =
             "vless://uuid@example.com:443?security=reality&type=tcp&pbk=public&sid=01&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::Dual);
+    }
+
+    #[test]
+    fn routes_grpc_authority_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&authority=grpc.example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_grpc_multi_to_xray() {
+        let config =
+            "trojan://pass@example.com:443?security=tls&type=grpc&serviceName=Tun&mode=multi";
+        assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
     #[test]
