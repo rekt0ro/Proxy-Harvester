@@ -334,12 +334,6 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::Xray;
     }
 
-    // Reality is checked by both cores for transport classes that both
-    // consumer cores can represent.
-    if security == "reality" {
-        return LightBackend::Dual;
-    }
-
     if url.scheme().eq_ignore_ascii_case("vless") {
         let flow = query_value(&url, &["flow"]).to_ascii_lowercase();
         if !flow.is_empty() && flow != "xtls-rprx-vision" {
@@ -355,6 +349,12 @@ fn light_backend(config: &str) -> LightBackend {
         {
             return LightBackend::Xray;
         }
+    }
+
+    // Reality is checked by both cores for transport classes that both
+    // consumer cores can represent.
+    if security == "reality" {
+        return LightBackend::Dual;
     }
 
     LightBackend::SingBox
@@ -875,6 +875,13 @@ mod tests {
     fn routes_reality_xhttp_to_xray_only() {
         let config =
             "vless://uuid@example.com:443?security=reality&type=xhttp&pbk=public&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_reality_vision_udp443_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=tcp&flow=xtls-rprx-vision-udp443";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 

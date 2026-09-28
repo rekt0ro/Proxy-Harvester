@@ -180,13 +180,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
+    let hysteria_candidates = configs
+        .iter()
+        .filter(|config| config_scheme(config) == "hysteria")
+        .cloned()
+        .collect::<Vec<_>>();
     let hysteria2_candidates = configs
         .iter()
         .filter(|config| matches!(config_scheme(config).as_str(), "hysteria2" | "hy2"))
         .cloned()
         .collect::<Vec<_>>();
+    let mut special_hysteria_candidates = hysteria_candidates.clone();
+    special_hysteria_candidates.extend(hysteria2_candidates.iter().cloned());
 
-    if ranked_working_configs.is_empty() && hysteria2_candidates.is_empty() {
+    if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
         diagnose_configs(&configs).await;
         return Ok(());
@@ -248,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let sampled_transport_count = light_candidates.len();
 
-    for config in &hysteria2_candidates {
+    for config in &special_hysteria_candidates {
         if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
             break;
         }
@@ -274,7 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     fs::write(&light_candidates_path, light_candidates_subscription).await?;
 
-    let working_configs = select_all_candidates(&ranked_working_configs, &hysteria2_candidates);
+    let working_configs =
+        select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
 
     let all_subscription = format!("{}\n", working_configs.join("\n"));
     let temporary_all = output_dir.join(".all.txt");
@@ -333,7 +341,7 @@ fn config_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
         Regex::new(
-            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
+            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
         )
         .expect("config regex must compile")
     })
@@ -379,6 +387,7 @@ fn normalize_config(config: &str) -> Option<String> {
             | "vmess"
             | "trojan"
             | "ss"
+            | "hysteria"
             | "hysteria2"
             | "hy2"
             | "wg"
@@ -970,6 +979,19 @@ mod tests {
     }
 
     #[test]
+    fn all_candidates_include_hysteria_v1_after_transport_screening() {
+        let working = Vec::<(String, u64)>::new();
+        let hysteria = vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()];
+
+        let selected = super::select_all_candidates(&working, &hysteria);
+
+        assert_eq!(
+            selected,
+            vec!["hysteria://example.com:443?upmbps=100&downmbps=100".to_string()]
+        );
+    }
+
+    #[test]
     fn all_candidates_include_hysteria2_after_transport_screening() {
         let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
         let hysteria2 = vec![
@@ -992,6 +1014,12 @@ mod tests {
     fn retains_vless_with_empty_security_value() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=&type=tcp";
+        assert_eq!(super::normalize_config(config), Some(config.to_string()));
+    }
+
+    #[test]
+    fn retains_legacy_hysteria_links() {
+        let config = "hysteria://example.com:443?upmbps=100&downmbps=100&peer=edge.example.com";
         assert_eq!(super::normalize_config(config), Some(config.to_string()));
     }
 
