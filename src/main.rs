@@ -531,8 +531,7 @@ fn valid_vless_encryption(value: &str) -> bool {
         return false;
     }
 
-    if !matches!(blocks[1], "native" | "xorpub" | "random")
-        || !matches!(blocks[2], "1rtt" | "0rtt")
+    if !matches!(blocks[1], "native" | "xorpub" | "random") || !matches!(blocks[2], "1rtt" | "0rtt")
     {
         return false;
     }
