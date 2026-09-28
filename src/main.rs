@@ -391,6 +391,7 @@ fn normalize_config(config: &str) -> Option<String> {
             | "hy2"
             | "wg"
             | "socks"
+            | "socks4"
             | "socks5"
             | "socks5h"
             | "http"
