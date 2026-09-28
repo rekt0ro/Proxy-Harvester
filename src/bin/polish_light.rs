@@ -619,7 +619,7 @@ async fn main() -> Result<(), String> {
     let mut final_attempts = HashMap::<String, usize>::new();
     let mut final_metadata = HashMap::<String, ProxyMetrics>::new();
 
-    let chunk_count = (candidates.len() + DISCOVERY_CHUNK_SIZE - 1) / DISCOVERY_CHUNK_SIZE;
+    let chunk_count = candidates.len().div_ceil(DISCOVERY_CHUNK_SIZE);
 
     for (chunk_index, chunk) in candidates.chunks(DISCOVERY_CHUNK_SIZE).enumerate() {
         let wave = chunk_index + 1;
