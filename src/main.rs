@@ -499,11 +499,13 @@ fn normalize_shadowsocks(config: &str, url: &Url) -> Option<String> {
 
     if !url.username().is_empty() {
         let userinfo = percent_decode_str(url.username()).decode_utf8().ok()?;
-        let method = userinfo
-            .split_once(':')
-            .map(|(method, _)| method)
-            .unwrap_or(&userinfo);
-        return supported(method, METHODS).then(|| config.to_string());
+        let method = if let Some((method, _)) = userinfo.split_once(':') {
+            method.to_string()
+        } else {
+            let decoded = decode_base64_string(&userinfo)?;
+            decoded.split_once(':')?.0.to_string()
+        };
+        return supported(&method, METHODS).then(|| config.to_string());
     }
 
     let payload = config.split_once("://")?.1.split('#').next()?;
