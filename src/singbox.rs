@@ -784,7 +784,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 &stream,
                 query_bool(
                     &Url::parse(clean(config)).map_err(|error| error.to_string())?,
-                    &["insecure"],
+                    &["insecure", "allowInsecure"],
                 ),
             )? {
                 outbound["tls"] = tls;
