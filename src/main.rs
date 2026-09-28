@@ -341,7 +341,7 @@ fn config_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
         Regex::new(
-            r#"(?i)(?:vmess|vless|trojan|ssr?|socks5?|hysteria2?|hy2|tuic|wg|ssh|naive\+https)://[^\s<>"']+|(?:https?)://[^\s<>"']+:\d+[^\s<>"']*"#,
+            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4|5h?)?|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
         )
         .expect("config regex must compile")
     })
@@ -896,7 +896,10 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_limited_chunk, decode_base64_variants, normalize_config, MAX_SOURCE_BYTES};
+    use super::{
+        append_limited_chunk, decode_base64_variants, extract_configs, normalize_config,
+        MAX_SOURCE_BYTES,
+    };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
 
@@ -941,8 +944,31 @@ mod tests {
     fn retains_supported_proxy_schemes() {
         assert!(normalize_config("http://127.0.0.1:8080").is_some(), "http");
         assert!(
+            normalize_config("socks4://127.0.0.1:1080").is_some(),
+            "socks4"
+        );
+        assert!(
             normalize_config("socks5://127.0.0.1:1080").is_some(),
             "socks5"
+        );
+        assert!(
+            normalize_config("socks5h://127.0.0.1:1080").is_some(),
+            "socks5h"
+        );
+    }
+
+    #[test]
+    fn extracts_socks_variants_from_sources() {
+        let configs = extract_configs(
+            "socks4://127.0.0.1:1080 socks5://127.0.0.1:1081 socks5h://127.0.0.1:1082",
+        );
+        assert_eq!(
+            configs,
+            vec![
+                "socks4://127.0.0.1:1080".to_string(),
+                "socks5://127.0.0.1:1081".to_string(),
+                "socks5h://127.0.0.1:1082".to_string(),
+            ]
         );
     }
 

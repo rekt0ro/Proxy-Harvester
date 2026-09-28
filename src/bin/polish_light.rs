@@ -303,7 +303,10 @@ fn light_backend(config: &str) -> LightBackend {
     let security = query_value(&url, &["security"]).to_ascii_lowercase();
 
     let scheme = url.scheme().to_ascii_lowercase();
-    if matches!(scheme.as_str(), "http" | "socks" | "socks5" | "socks5h") {
+    if matches!(
+        scheme.as_str(),
+        "http" | "socks" | "socks4" | "socks5" | "socks5h"
+    ) {
         return LightBackend::Xray;
     }
 
@@ -875,6 +878,12 @@ mod tests {
     fn routes_normal_vless_to_singbox() {
         let config = "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
         assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_socks4_to_xray() {
+        let config = "socks4://127.0.0.1:1080";
+        assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
     #[test]
