@@ -23,8 +23,8 @@ fn encode_file(path: &str) -> Result<(), String> {
             .unwrap_or("subscription-base64.txt")
     ));
 
-    let result = fs::write(&temporary, format!("{encoded}\n"))
-        .and_then(|_| fs::rename(&temporary, &output));
+    let result =
+        fs::write(&temporary, format!("{encoded}\n")).and_then(|_| fs::rename(&temporary, &output));
 
     if let Err(error) = result {
         let _ = fs::remove_file(&temporary);
@@ -73,9 +73,6 @@ mod tests {
             ".{}.tmp",
             output.file_name().unwrap().to_str().unwrap()
         ));
-        assert_eq!(
-            temporary,
-            Path::new("subscriptions/.all-base64.txt.tmp")
-        );
+        assert_eq!(temporary, Path::new("subscriptions/.all-base64.txt.tmp"));
     }
 }
