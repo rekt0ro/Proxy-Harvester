@@ -1337,7 +1337,8 @@ async fn validate_candidates_with_targets_policy(
 
     if targets.len() < policy.min_successful_targets {
         return Err(format!(
-    "Light validation requires at least {} targets"
+            "Light validation requires at least {} targets",
+            policy.min_successful_targets
         ));
     }
 
