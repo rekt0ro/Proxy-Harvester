@@ -333,7 +333,7 @@ fn config_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
         Regex::new(
-            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
+            r#"(?i)(?:vmess|vless|trojan|ss|socks(?:4a?|5h?)?|hysteria|hysteria2|hy2|wg|http)://[^\s<>"\']+"#,
         )
         .expect("config regex must compile")
     })
@@ -379,6 +379,7 @@ fn normalize_config(config: &str) -> Option<String> {
             | "vmess"
             | "trojan"
             | "ss"
+            | "hysteria"
             | "hysteria2"
             | "hy2"
             | "wg"
@@ -992,6 +993,12 @@ mod tests {
     fn retains_vless_with_empty_security_value() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=&type=tcp";
+        assert_eq!(super::normalize_config(config), Some(config.to_string()));
+    }
+
+    #[test]
+    fn retains_legacy_hysteria_links() {
+        let config = "hysteria://example.com:443?upmbps=100&downmbps=100&peer=edge.example.com";
         assert_eq!(super::normalize_config(config), Some(config.to_string()));
     }
 
