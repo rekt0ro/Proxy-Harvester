@@ -1375,8 +1375,8 @@ mod tests {
         );
     }
 
-#[test]
-fn all_candidates_include_hysteria2_after_transport_screening() {
+    #[test]
+    fn all_candidates_include_hysteria2_after_transport_screening() {
     let working = vec![("vless://uuid@example.com:443".to_string(), 20)];
 
     let hysteria2 = vec![
