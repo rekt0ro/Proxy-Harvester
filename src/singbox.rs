@@ -387,7 +387,12 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
         .1;
     let (authority, query) = rest
         .split_once('?')
-        .map(|(authority, query)| (authority.split('#').next().unwrap_or(authority), query.split('#').next().unwrap_or(query)))
+        .map(|(authority, query)| {
+            (
+                authority.split('#').next().unwrap_or(authority),
+                query.split('#').next().unwrap_or(query),
+            )
+        })
         .unwrap_or_else(|| (rest.split('#').next().unwrap_or(rest), ""));
 
     let host_port = authority
@@ -414,7 +419,10 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
         if host.is_empty() {
             return Err("Hysteria2 host missing".to_string());
         }
-        (host.to_string(), remainder.strip_prefix(':').unwrap_or("").to_string())
+        (
+            host.to_string(),
+            remainder.strip_prefix(':').unwrap_or("").to_string(),
+        )
     } else if let Some((host, port_spec)) = host_port.rsplit_once(':') {
         if host.contains(':') || host.is_empty() {
             return Err("invalid Hysteria2 host".to_string());
@@ -450,7 +458,12 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
                 if start == 0 || end == 0 || start > end {
                     return Err("invalid Hysteria2 port range".to_string());
                 }
-            } else if entry.parse::<u16>().ok().filter(|port| *port != 0).is_none() {
+            } else if entry
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .is_none()
+            {
                 return Err("invalid Hysteria2 port".to_string());
             }
         }
@@ -470,8 +483,21 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     for (key, value) in pairs.by_ref() {
         match key.to_ascii_lowercase().as_str() {
             "sni" => sni = Some(value.into_owned()),
-            "insecure" if matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on") => insecure = true,
-            "alpn" => alpns.extend(value.split(',').map(str::trim).filter(|value| !value.is_empty()).map(ToOwned::to_owned)),
+            "insecure"
+                if matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) =>
+            {
+                insecure = true
+            }
+            "alpn" => alpns.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            ),
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             "pinsha256" => has_pin = true,
@@ -501,7 +527,9 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
 
     if let Some(ports) = port_spec {
         if ports.len() == 1 && !ports[0].contains('-') {
-            outbound["server_port"] = json!(ports[0].parse::<u16>().map_err(|_| "invalid Hysteria2 port".to_string())?);
+            outbound["server_port"] = json!(ports[0]
+                .parse::<u16>()
+                .map_err(|_| "invalid Hysteria2 port".to_string())?);
         } else {
             outbound["server_ports"] = json!(ports);
         }

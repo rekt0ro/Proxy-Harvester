@@ -204,7 +204,10 @@ pub fn config_label(config: &str) -> String {
 fn hysteria2_probe_endpoint(config: &str) -> Option<(String, u16)> {
     let rest = config.split_once("://")?.1;
     let authority = rest.split(['?', '/']).next()?.split('#').next()?;
-    let host_port = authority.rsplit_once('@').map(|(_, value)| value).unwrap_or(authority);
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, value)| value)
+        .unwrap_or(authority);
 
     let (host, port_spec) = if let Some(stripped) = host_port.strip_prefix('[') {
         let (host, remainder) = stripped.split_once(']')?;
