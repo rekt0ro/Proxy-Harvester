@@ -757,8 +757,8 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 }
 
 fn parse_hy2(config: &str) -> Result<Value, String> {
-    let (host, port_spec, auth_raw) = hysteria2_parts(config)
-        .ok_or_else(|| "invalid Hysteria2 URL".to_string())?;
+    let (host, port_spec, auth_raw) =
+        hysteria2_parts(config).ok_or_else(|| "invalid Hysteria2 URL".to_string())?;
 
     let password = percent_decode_str(&auth_raw)
         .decode_utf8()
@@ -907,7 +907,10 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
         });
     }
 
-    if !finalmask.as_object().is_some_and(|object| object.is_empty()) {
+    if !finalmask
+        .as_object()
+        .is_some_and(|object| object.is_empty())
+    {
         stream_settings["finalmask"] = finalmask;
     }
 
