@@ -255,7 +255,7 @@ jobs:
 
       # Only the published subscriptions and bounded Light history leave this job.
       - name: Upload subscriptions
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: subscriptions
           path: |
