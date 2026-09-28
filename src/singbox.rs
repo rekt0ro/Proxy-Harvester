@@ -1,7 +1,6 @@
-use crate::validator::ProxyMetrics;
+use crate::validator::{config_label, ProxyMetrics};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use crate::validator::config_label;
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};

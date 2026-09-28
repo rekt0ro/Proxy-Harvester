@@ -1,8 +1,8 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use proxyrift::validator::{config_label, endpoint};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
+use proxyrift::validator::{config_label, endpoint};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::Endpoint;
 use regex::Regex;
