@@ -79,6 +79,25 @@ async fn test_chunk(
     Ok((index, working))
 }
 
+/// Write a file through a temporary sibling so readers never observe a
+/// half-written subscription.
+async fn write_atomic(
+    path: &Path,
+    contents: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("output");
+
+    let temporary = path.with_file_name(format!(".{file_name}.tmp"));
+
+    fs::write(&temporary, contents).await?;
+    fs::rename(&temporary, path).await?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[INFO] ProxyRift starting...");
@@ -129,25 +148,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
 
                         match read_source_body(response).await {
-                            Ok(bytes) => match String::from_utf8(bytes) {
-                                Ok(text) => {
-                                    let configs = extract_configs(&text);
+                            Ok(bytes) => {
+                                // Lossy decoding: one stray invalid byte must not
+                                // throw away an otherwise valid source.
+                                let text = String::from_utf8_lossy(&bytes);
+                                let configs = extract_configs(&text);
 
-                                    println!(
-                                        "[INFO] Found {} configs from source #{source_number}.",
-                                        configs.len()
-                                    );
+                                println!(
+                                    "[INFO] Found {} configs from source #{source_number}.",
+                                    configs.len()
+                                );
 
-                                    configs
-                                }
-
-                                Err(error) => {
-                                    println!(
-                                        "[WARN] Failed to decode source #{source_number} as UTF-8: {error}"
-                                    );
-                                    Vec::new()
-                                }
-                            },
+                                configs
+                            }
 
                             Err(SourceBodyError::TooLarge) => {
                                 println!(
@@ -182,6 +195,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut configs: Vec<String> = unique.into_iter().collect();
     configs.sort_unstable();
 
+    // The same server frequently appears with different remarks/fragments.
+    // Deduplicate on the identity of the config, not on its label.
+    let mut seen_keys = HashSet::new();
+    configs.retain(|config| seen_keys.insert(dedup_key(config)));
+
     if configs.len() > MAX_DISCOVERED_CONFIGS {
         println!(
             "[WARN] Discovery produced {} configs; sampling down to {} before transport testing.",
@@ -200,11 +218,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Err("no proxy configurations were collected".into());
     }
 
-    let mut scheme_counts = HashMap::new();
+    let mut scheme_counts: HashMap<String, usize> = HashMap::new();
 
     for config in &configs {
         *scheme_counts.entry(config_scheme(config)).or_insert(0usize) += 1;
     }
+
+    let mut scheme_counts = scheme_counts.into_iter().collect::<Vec<_>>();
+    scheme_counts.sort();
 
     for (scheme, count) in scheme_counts {
         println!("[INFO] Protocol {scheme}: {count}");
@@ -228,26 +249,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    let hysteria_candidates = configs
+    // Hysteria configs that passed the generic QUIC probe are already in
+    // `ranked_working_configs`. Only those the probe cannot evaluate at all
+    // (obfuscated ones) are force-retained for the core validation pass, so
+    // unreachable Hysteria links no longer crowd out the published pools.
+    let special_hysteria_candidates = configs
         .iter()
-        .filter(|config| config_scheme(config) == "hysteria")
+        .filter(|config| needs_core_validation_only(config))
         .cloned()
         .collect::<Vec<_>>();
-
-    let hysteria2_candidates = configs
-        .iter()
-        .filter(|config| matches!(config_scheme(config).as_str(), "hysteria2" | "hy2"))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    let mut special_hysteria_candidates = hysteria_candidates.clone();
-    special_hysteria_candidates.extend(hysteria2_candidates.iter().cloned());
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
 
         diagnose_configs(&configs).await;
-        return Ok(());
+        return Err("no usable configs remained after transport-aware screening".into());
     }
 
     ranked_working_configs.sort_unstable_by(|(config_a, latency_a), (config_b, latency_b)| {
@@ -337,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         format!("{}\n", light_candidates.join("\n"))
     };
 
-    fs::write(&light_candidates_path, light_candidates_subscription).await?;
+    write_atomic(&light_candidates_path, light_candidates_subscription).await?;
 
     let working_configs =
         select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
@@ -348,10 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         format!("{}\n", working_configs.join("\n"))
     };
 
-    let temporary_all = output_dir.join(".all.txt");
-
-    fs::write(&temporary_all, all_subscription).await?;
-    fs::rename(&temporary_all, &all_path).await?;
+    write_atomic(&all_path, all_subscription).await?;
 
     println!(
         "[INFO] Prepared {} core-validation candidates for All ({} transport-reachable; cap {}).",
@@ -498,8 +511,42 @@ fn extract_configs(text: &str) -> Vec<String> {
     found
 }
 
+/// Lower-case only the scheme so `VLESS://` and `vless://` dedupe together and
+/// every later `config_scheme` comparison sees a canonical value.
+fn lowercase_scheme(config: &str) -> String {
+    match config.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{}", scheme.to_ascii_lowercase(), rest),
+        None => config.to_string(),
+    }
+}
+
+/// True when the authority section carries an explicit numeric port.
+/// `Url::port()` cannot be used for this: it hides default ports (`http://x:80`).
+fn has_explicit_port(config: &str) -> bool {
+    let Some(rest) = config.split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+
+    let port = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped
+            .split_once(']')
+            .and_then(|(_, remainder)| remainder.strip_prefix(':'))
+    } else {
+        host_port.rsplit_once(':').map(|(_, port)| port)
+    };
+
+    matches!(port, Some(port) if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 fn normalize_config(config: &str) -> Option<String> {
-    let config = trim_config(config);
+    let config = lowercase_scheme(&trim_config(config));
     if config
         .chars()
         .any(|ch| ch.is_whitespace() || ch.is_control())
@@ -548,12 +595,25 @@ fn normalize_config(config: &str) -> Option<String> {
         return None;
     };
 
+    // Without an explicit port this is almost certainly an ordinary web link
+    // (`http://example.com/page`), not a proxy endpoint. Legacy fully-base64
+    // Shadowsocks links have no authority and are exempt.
+    let needs_port = scheme != "ss" || !url.username().is_empty();
+
+    if needs_port && !has_explicit_port(&config) {
+        return None;
+    }
+
     if scheme == "vless" {
         return normalize_vless(&config, &url);
     }
 
     if let Some(host) = url.host_str() {
-        if host.contains(':') && host.parse::<std::net::Ipv6Addr>().is_err() {
+        // `host_str` keeps the brackets of IPv6 literals, so strip them before
+        // validating; otherwise every IPv6 endpoint is wrongly rejected.
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+
+        if bare.contains(':') && bare.parse::<Ipv6Addr>().is_err() {
             return None;
         }
     }
@@ -570,6 +630,24 @@ fn normalize_config(config: &str) -> Option<String> {
     }
 
     Some(config)
+}
+
+/// Identity of a config independent of its remark/label, used for dedup.
+fn dedup_key(config: &str) -> String {
+    if config_scheme(config) == "vmess" {
+        let encoded = config
+            .split_once("://")
+            .map(|(_, rest)| rest.split('#').next().unwrap_or(rest).trim());
+
+        if let Some(decoded) = encoded.and_then(decode_vmess_payload) {
+            if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&decoded) {
+                object.remove("ps");
+                return format!("vmess://{}", Value::Object(object));
+            }
+        }
+    }
+
+    config.split('#').next().unwrap_or(config).to_string()
 }
 
 fn has_invalid_percent_escapes(value: &str) -> bool {
@@ -594,7 +672,7 @@ fn has_invalid_percent_escapes(value: &str) -> bool {
 fn has_bracketed_ipv4_host(config: &str) -> bool {
     let Some(authority) = config
         .split_once("://")
-        .and_then(|(_, rest)| rest.split(['?', '#']).next())
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
     else {
         return false;
     };
@@ -772,11 +850,12 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
         return false;
     }
 
+    // Reality cannot work without a public key, so a missing/empty one is invalid.
     let Some(public_key) = url
         .query_pairs()
         .find_map(|(key, value)| key.eq_ignore_ascii_case("pbk").then(|| value.into_owned()))
     else {
-        return false;
+        return true;
     };
 
     let public_key = public_key.trim();
@@ -813,7 +892,11 @@ fn normalize_hysteria2(config: &str) -> Option<String> {
 
 fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
     let rest = config.split_once("://")?.1;
-    let authority = rest.split(['?', '#']).next()?;
+
+    // The official form is `hysteria2://auth@host:port/?query`, so the
+    // authority must also end at the first `/`. Without this, `host:443/` was
+    // parsed as port "443/" and every such link was rejected.
+    let authority = rest.split(['/', '?', '#']).next()?;
 
     let (auth_raw, host_port) = authority.rsplit_once('@')?;
 
@@ -909,7 +992,7 @@ fn normalize_vmess(config: &str) -> Option<String> {
     }
 
     let port = match object.get("port") {
-        Some(Value::String(port)) => port.parse::<u16>().ok()?,
+        Some(Value::String(port)) => port.trim().parse::<u16>().ok()?,
         Some(Value::Number(port)) => port.as_u64().and_then(|port| u16::try_from(port).ok())?,
         _ => return None,
     };
@@ -920,7 +1003,7 @@ fn normalize_vmess(config: &str) -> Option<String> {
 
     let id = object.get("id")?.as_str()?.trim();
 
-    if !is_uuid(id) {
+    if !is_valid_vmess_id(id) {
         return None;
     }
 
@@ -964,6 +1047,13 @@ fn is_uuid(value: &str) -> bool {
     true
 }
 
+/// V2Ray/Xray accept either a UUID or any custom string of up to 30 bytes
+/// (hashed into a UUID), so a strict UUID check drops valid configs.
+fn is_valid_vmess_id(value: &str) -> bool {
+    is_uuid(value)
+        || (!value.is_empty() && value.len() <= 30 && !value.chars().any(|c| c.is_control()))
+}
+
 fn decode_base64_string(encoded: &str) -> Option<String> {
     let mut padded = encoded.to_string();
 
@@ -998,13 +1088,16 @@ fn decode_base64_string(encoded: &str) -> Option<String> {
 fn decode_vmess_payload(encoded: &str) -> Option<String> {
     decode_base64_string(encoded)
 }
+
 fn decode_html_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&quot;", "\"")
+    // `&amp;` must be decoded last, otherwise `&amp;quot;` would be decoded
+    // twice and turn into a literal `"`.
+    text.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 fn trim_config(config: &str) -> String {
@@ -1090,17 +1183,9 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
             }
         }
 
-        if matches!(scheme.as_str(), "hysteria2" | "hy2") {
-            named.push(set_config_fragment(&config, &name));
-            continue;
-        }
-
-        if let Ok(mut url) = Url::parse(&config) {
-            url.set_fragment(Some(&name));
-            named.push(url.to_string());
-        } else {
-            named.push(config);
-        }
+        // Rewrite only the fragment as text. Round-tripping through `Url`
+        // would silently re-serialize (and possibly alter) the rest of the link.
+        named.push(set_config_fragment(&config, &name));
     }
 
     named
@@ -1267,7 +1352,7 @@ mod tests {
 
     #[test]
     fn accepts_vless_mlkem_encryption() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&flow=xtls-rprx-vision&encryption=mlkem768x25519plus.native.1rtt.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
         assert!(normalize_config(config).is_some());
     }
@@ -1451,6 +1536,19 @@ mod tests {
     }
 
     #[test]
+    fn accepts_hysteria2_with_slash_before_query() {
+        let config = "hy2://password@example.com:443/?sni=example.com&insecure=1";
+
+        assert!(normalize_config(config).is_some());
+
+        assert_eq!(
+            super::hysteria2_probe_ports(config),
+            Some(vec![443]),
+            "the trailing slash must not leak into the port spec"
+        );
+    }
+
+    #[test]
     fn hysteria2_probe_ports_supports_port_hopping() {
         assert_eq!(
             super::hysteria2_probe_ports("hy2://password@example.com"),
@@ -1507,6 +1605,132 @@ mod tests {
         assert!(named[2].contains("#SOCKS%20001"));
         assert!(named[3].contains("#SOCKS%20002"));
     }
+
+    #[test]
+    fn rejects_plain_web_links_without_explicit_port() {
+        assert!(normalize_config("http://example.com/some/page").is_none());
+        assert!(normalize_config("http://example.com").is_none());
+
+        // An explicit default port is a legitimate proxy endpoint.
+        assert!(normalize_config("http://203.0.113.10:80").is_some());
+    }
+
+    #[test]
+    fn accepts_ipv6_hosts() {
+        assert!(normalize_config("trojan://secret@[2001:4860:4860::8888]:443").is_some());
+        assert!(normalize_config("socks5://[2001:4860:4860::8888]:1080").is_some());
+    }
+
+    #[test]
+    fn lowercases_scheme_only() {
+        assert_eq!(
+            normalize_config("SOCKS5://User:Pass@127.0.0.1:1080"),
+            Some("socks5://User:Pass@127.0.0.1:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn html_entities_are_not_double_decoded() {
+        assert_eq!(super::decode_html_entities("&amp;quot;"), "&quot;");
+        assert_eq!(super::decode_html_entities("a=1&amp;b=2"), "a=1&b=2");
+    }
+
+    #[test]
+    fn dedup_key_ignores_labels() {
+        assert_eq!(
+            super::dedup_key("trojan://secret@example.com:443#one"),
+            super::dedup_key("trojan://secret@example.com:443#two")
+        );
+
+        let a = STANDARD.encode(r#"{"v":"2","ps":"a","add":"h.com","port":"443","id":"00000000-0000-0000-0000-000000000001"}"#);
+        let b = STANDARD.encode(r#"{"v":"2","ps":"b","add":"h.com","port":"443","id":"00000000-0000-0000-0000-000000000001"}"#);
+
+        assert_eq!(
+            super::dedup_key(&format!("vmess://{a}")),
+            super::dedup_key(&format!("vmess://{b}"))
+        );
+    }
+
+    #[test]
+    fn reality_requires_a_public_key() {
+        let base = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality";
+
+        assert!(normalize_config(base).is_none());
+
+        assert!(normalize_config(&format!(
+            "{base}&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ))
+        .is_some());
+    }
+
+    #[test]
+    fn vmess_accepts_custom_string_ids() {
+        let make = |id: &str| {
+            let json = format!(
+                r#"{{"v":"2","add":"h.com","port":"443","id":"{id}"}}"#
+            );
+            format!("vmess://{}", STANDARD.encode(json))
+        };
+
+        assert!(normalize_config(&make("my-custom-id")).is_some());
+        assert!(normalize_config(&make(&"x".repeat(31))).is_none());
+    }
+
+    #[test]
+    fn obfuscated_hysteria_needs_core_validation_only() {
+        assert!(super::needs_core_validation_only(
+            "hy2://pw@example.com:443/?obfs=salamander&obfs-password=x"
+        ));
+        assert!(super::needs_core_validation_only(
+            "hysteria://example.com:443?obfs=xplus&obfsParam=x"
+        ));
+        assert!(!super::needs_core_validation_only(
+            "hy2://pw@example.com:443/?sni=example.com"
+        ));
+        assert!(!super::needs_core_validation_only(
+            "hysteria://example.com:443?upmbps=100"
+        ));
+        assert!(!super::needs_core_validation_only(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+        ));
+    }
+
+    #[test]
+    fn only_public_addresses_are_probed() {
+        use std::net::IpAddr;
+
+        for private in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:10.0.0.1",
+        ] {
+            let ip: IpAddr = private.parse().unwrap();
+            assert!(!super::is_public_ip(&ip), "{private}");
+        }
+
+        for public in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+            let ip: IpAddr = public.parse().unwrap();
+            assert!(super::is_public_ip(&ip), "{public}");
+        }
+    }
+}
+
+/// Hysteria/Hysteria2 links with obfuscation cannot be checked by the generic
+/// QUIC probe, so they are kept for the real core validation stage instead.
+fn needs_core_validation_only(config: &str) -> bool {
+    match config_scheme(config).as_str() {
+        "hysteria2" | "hy2" => !hysteria2_query_values(config, "obfs").is_empty(),
+        "hysteria" => !query_values(config, "obfs").is_empty(),
+        _ => false,
+    }
 }
 
 fn select_all_candidates(
@@ -1546,6 +1770,56 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Whether an address is safe to probe from the runner. Source lists are
+/// untrusted, so without this a malicious entry (or a hostname resolving to a
+/// private address) turns the harvester into a port scanner for the CI network
+/// and cloud metadata endpoints (169.254.169.254).
+fn is_public_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_ipv4(v4),
+
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_ipv4(&mapped);
+            }
+
+            let segments = v6.segments();
+
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Unique local fc00::/7
+                || (segments[0] & 0xfe00) == 0xfc00
+                // Link-local fe80::/10
+                || (segments[0] & 0xffc0) == 0xfe80
+                // Documentation 2001:db8::/32
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
+}
+
+fn is_public_ipv4(ip: &Ipv4Addr) -> bool {
+    let octets = ip.octets();
+
+    !(ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+        // 0.0.0.0/8
+        || octets[0] == 0
+        // Carrier-grade NAT 100.64.0.0/10
+        || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
+        // IETF protocol assignments 192.0.0.0/24
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        // Benchmarking 198.18.0.0/15
+        || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
+        // Reserved 240.0.0.0/4
+        || octets[0] >= 240)
+}
+
 async fn resolve_host_addresses(host: &str, port: u16) -> Option<Vec<SocketAddr>> {
     let addresses = timeout(
         Duration::from_secs(TCP_TIMEOUT_SECS),
@@ -1564,9 +1838,13 @@ async fn resolve_host_addresses(host: &str, port: u16) -> Option<Vec<SocketAddr>
     let mut unique = Vec::with_capacity(addresses.len());
 
     for address in addresses {
-        if seen.insert(address) {
+        if is_public_ip(&address.ip()) && seen.insert(address) {
             unique.push(address);
         }
+    }
+
+    if unique.is_empty() {
+        return None;
     }
 
     Some(unique)
@@ -1800,13 +2078,22 @@ fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
         return None;
     }
 
-    let sni = query_value(config, &["sni", "server_name"]).unwrap_or_else(|| host.clone());
+    // Hysteria v1 names the SNI parameter `peer`.
+    let sni = query_value(config, &["sni", "peer", "server_name"]).unwrap_or_else(|| host.clone());
+
+    // Hysteria v1 negotiates ALPN "hysteria" by default; probing it with "h3"
+    // fails the handshake and produced false negatives.
+    let default_alpn = if config_scheme(config) == "hysteria" {
+        "hysteria"
+    } else {
+        "h3"
+    };
 
     let alpn = {
         let values = query_csv_values(config, "alpn");
 
         if values.is_empty() {
-            vec!["h3".to_string()]
+            vec![default_alpn.to_string()]
         } else {
             values
         }
@@ -2013,14 +2300,9 @@ async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
 
     let ports = hysteria2_probe_ports(config)?;
 
-    let sni = hysteria2_query_values(config, "sni")
-        .into_iter()
-        .next()
-        .or_else(|| {
-            hysteria2_query_values(config, "server_name")
-                .into_iter()
-                .next()
-        })
+    let sni = ["sni", "peer", "server_name"]
+        .iter()
+        .find_map(|key| hysteria2_query_values(config, key).into_iter().next())
         .unwrap_or_else(|| host.clone());
 
     let alpn = {
