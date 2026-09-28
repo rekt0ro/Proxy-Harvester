@@ -1452,9 +1452,12 @@ async fn check_batch(
 
             for (config, result) in results {
                 *attempts.entry(config.clone()).or_insert(0) += 1;
-                if let Ok(latency) = result {
+                if let Ok(sample) = result {
                     *successes.entry(config.clone()).or_insert(0) += 1;
-                    latencies.entry(config).or_default().push(latency);
+                    latencies
+                        .entry(config)
+                        .or_default()
+                        .push(sample.latency_ms);
                 }
             }
         }
