@@ -466,7 +466,7 @@ fn singbox_hysteria_outbound(config: &str) -> Result<Value, String> {
                 if !value.trim().is_empty() {
                     peer = Some(value);
                 }
-            },
+            }
             "insecure"
                 if matches!(
                     value.trim().to_ascii_lowercase().as_str(),
@@ -1911,8 +1911,7 @@ mod tests {
 
     #[test]
     fn blank_hysteria_peer_defaults_to_server_name() {
-        let config =
-            "hysteria://example.com:443?peer=&upmbps=100&downmbps=100";
+        let config = "hysteria://example.com:443?peer=&upmbps=100&downmbps=100";
         let outbound = singbox_outbound(config).expect("blank peer should use host");
         assert_eq!(outbound["tls"]["server_name"], "example.com");
     }
