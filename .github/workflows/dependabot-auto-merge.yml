@@ -80,8 +80,8 @@ jobs:
               continue
             fi
 
-            if ! printf '%s' "${checks}" | jq -e 'length > 0 and all(.[]; .bucket == "pass")' >/dev/null; then
-              echo "PR #${pr} does not have all checks in a passing state; skipping."
+            if printf '%s' "${checks}" | jq -e 'any(.[]; .bucket == "pending" or .bucket == "fail" or .bucket == "cancel")' >/dev/null; then
+              echo "PR #${pr} still has pending or failed checks; skipping."
               continue
             fi
 

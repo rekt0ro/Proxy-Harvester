@@ -42,6 +42,7 @@ mod tests {
             Path::new("subscriptions/light-base64.txt")
         );
     }
+}
 
 fn main() -> Result<(), String> {
     encode_file("subscriptions/all.txt")?;
