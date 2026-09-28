@@ -1111,22 +1111,30 @@ async fn wait_for_rate_limit() {
     }
 }
 
-fn client_for_port(port: u16, timeout_seconds: f64) -> Result<Client, String> {
+fn client_for_port(
+    port: u16,
+    timeout_seconds: f64,
+    fresh_connections: bool,
+) -> Result<Client, String> {
     let request_timeout = if timeout_seconds.is_finite() && timeout_seconds > 0.0 {
         Duration::from_secs_f64(timeout_seconds)
     } else {
         Duration::from_secs(1)
     };
 
-    Client::builder()
+    let mut builder = Client::builder()
         .proxy(
             reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        .user_agent("ProxyRift/3.0")
-        .build()
-        .map_err(|error| error.to_string())
+        .user_agent("ProxyRift/3.0");
+
+    if fresh_connections {
+        builder = builder.pool_max_idle_per_host(0);
+    }
+
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
@@ -1255,7 +1263,7 @@ async fn check_batch(
 
         let mut active = Vec::with_capacity(batch_entries.len());
         for (index, (config, _)) in batch_entries.iter().enumerate() {
-            let client = match client_for_port(local_ports[index], timeout_seconds) {
+            let client = match client_for_port(local_ports[index], timeout_seconds, false) {
                 Ok(client) => client,
                 Err(error) => {
                     let _ = child.kill();
@@ -1585,7 +1593,7 @@ async fn check_batch_targets(
 
         let mut clients = Vec::with_capacity(batch_entries.len());
         for (index, _) in batch_entries.iter().enumerate() {
-            match client_for_port(local_ports[index], timeout_seconds) {
+            match client_for_port(local_ports[index], timeout_seconds, true) {
                 Ok(client) => clients.push(client),
                 Err(error) => {
                     let _ = child.kill();
