@@ -231,6 +231,27 @@ jobs:
             --target https://www.google.com/generate_204 \
             --xray "$HOME/.local/bin/xray"
           then
+            if [ -s /tmp/proxyrift/all.next.txt ]; then
+              all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
+              echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
+              if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
+                mv -f /tmp/proxyrift/all.next.txt subscriptions/all.txt
+                echo "Published refreshed All subscription."
+              elif [ -s /tmp/proxyrift/all.previous.txt ]; then
+                cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
+                echo "All verified pool is too small; restored the previous All subscription."
+              else
+                echo "::error::All validation produced too few configs and no previous subscription is available."
+                exit 1
+              fi
+            elif [ -s /tmp/proxyrift/all.previous.txt ]; then
+              cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
+              echo "All validation produced no configs; restored the previous All subscription."
+            else
+              echo "::error::All validation produced no configs and no previous subscription is available."
+              exit 1
+            fi
+          else
             status=$?
             if [ -s /tmp/proxyrift/all.previous.txt ]; then
               cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
@@ -238,27 +259,6 @@ jobs:
             fi
             echo "::error::All subscription validation failed."
             exit "$status"
-          fi
-
-          if [ -s /tmp/proxyrift/all.next.txt ]; then
-            all_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/all.next.txt)"
-            echo "All verified/publish candidate count: ${all_count} (minimum ${ALL_MIN_PUBLISH})"
-            if [ "${all_count}" -ge "${ALL_MIN_PUBLISH}" ]; then
-              mv -f /tmp/proxyrift/all.next.txt subscriptions/all.txt
-              echo "Published refreshed All subscription."
-            elif [ -s /tmp/proxyrift/all.previous.txt ]; then
-              cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
-              echo "All verified pool is too small; restored the previous All subscription."
-            else
-              echo "::error::All validation produced too few configs and no previous subscription is available."
-              exit 1
-            fi
-          elif [ -s /tmp/proxyrift/all.previous.txt ]; then
-            cp /tmp/proxyrift/all.previous.txt subscriptions/all.txt
-            echo "All validation produced no configs; restored the previous All subscription."
-          else
-            echo "::error::All validation produced no configs and no previous subscription is available."
-            exit 1
           fi
 
       - name: Build Light subscription
