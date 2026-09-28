@@ -146,16 +146,6 @@ fn b64decode(value: &str) -> Option<Vec<u8>> {
     None
 }
 
-fn query_bool(url: &Url, names: &[&str]) -> bool {
-    url.query_pairs().any(|(key, value)| {
-        names.iter().any(|name| key.eq_ignore_ascii_case(name))
-            && matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-    })
-}
-
 fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
     for (key, value) in url.query_pairs() {
         if names.iter().any(|name| key.eq_ignore_ascii_case(name)) && !value.is_empty() {
@@ -392,10 +382,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     });
 
     if security == "tls" {
+        // Xray removed TLS allowInsecure after 2026-06-01. Do not emit the
+        // removed field because certificate pinning cannot be derived from a URL alone.
         let mut tls = json!({ "serverName": sni });
-        if query_bool(url, &["insecure", "allowInsecure"]) {
-            tls["allowInsecure"] = json!(true);
-        }
         if !alpn.is_empty() {
             tls["alpn"] = json!(alpn);
         }
@@ -913,7 +902,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
-    let mut insecure = false;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -934,14 +922,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
-            "insecure"
-                if matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                ) =>
-            {
-                insecure = true;
-            }
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -956,9 +936,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
-    }
-    if insecure {
-        tls["allowInsecure"] = json!(true);
     }
 
     let mut stream_settings = json!({
@@ -2253,26 +2230,17 @@ mod tests {
     }
 
     #[test]
-    fn vless_tls_preserves_insecure_setting() {
-        let config = parse_config(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&insecure=1",
-        )
-        .expect("VLESS TLS should parse");
+    fn ignores_removed_allow_insecure_vless_option() {
+        for parameter in ["insecure=1", "allowInsecure=1"] {
+            let config = parse_config(&format!(
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&{parameter}"
+            ))
+            .expect("VLESS TLS should parse");
 
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
-
-        let config = parse_config(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&allowInsecure=1",
-        )
-        .expect("VLESS TLS should accept allowInsecure");
-
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
+            assert!(config["streamSettings"]["tlsSettings"]
+                .get("allowInsecure")
+                .is_none());
+        }
     }
 
     #[test]
@@ -2611,27 +2579,13 @@ mod tests {
     }
 
     #[test]
-    fn preserves_allow_insecure_tls_option() {
-        let config = parse_config(
-            "vless://user@example.com:443?security=tls&sni=example.com&allowInsecure=1",
-        )
-        .expect("VLESS TLS should parse");
-
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
-    }
-
-    #[test]
-    fn preserves_hysteria2_insecure_tls_setting() {
+    fn ignores_removed_allow_insecure_hysteria2_option() {
         let config = parse_hy2("hysteria2://password@example.com:443?insecure=1")
-            .expect("Hysteria2 insecure setting should parse");
+            .expect("Hysteria2 TLS should parse");
 
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
+        assert!(config["streamSettings"]["tlsSettings"]
+            .get("allowInsecure")
+            .is_none());
     }
 
     #[test]
@@ -2654,10 +2608,9 @@ mod tests {
             config["streamSettings"]["finalmask"]["quicParams"]["udpHop"]["ports"],
             "1234,5000-6000"
         );
-        assert_eq!(
-            config["streamSettings"]["tlsSettings"]["allowInsecure"],
-            true
-        );
+        assert!(config["streamSettings"]["tlsSettings"]
+            .get("allowInsecure")
+            .is_none());
     }
 
     #[test]
@@ -2669,17 +2622,6 @@ mod tests {
             config["streamSettings"]["tlsSettings"]["serverName"],
             "example.com"
         );
-    }
-
-    #[test]
-    fn ignores_removed_allow_insecure_hysteria2_option() {
-        let config =
-            parse_hy2("hysteria2://password@example.com:443?allowInsecure=1&sni=example.com")
-                .expect("Hysteria2 TLS should parse");
-
-        assert!(config["streamSettings"]["tlsSettings"]
-            .get("allowInsecure")
-            .is_none());
     }
 
     #[test]
