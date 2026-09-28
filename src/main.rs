@@ -354,6 +354,23 @@ fn normalize_config(config: &str) -> Option<String> {
 
     let scheme = config_scheme(&config);
 
+    if !matches!(
+        scheme.as_str(),
+        "vless"
+            | "vmess"
+            | "trojan"
+            | "ss"
+            | "hysteria2"
+            | "hy2"
+            | "wg"
+            | "socks"
+            | "socks5"
+            | "socks5h"
+            | "http"
+    ) {
+        return None;
+    }
+
     if scheme == "vmess" {
         return normalize_vmess(&config);
     }
@@ -846,6 +863,36 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
     results.sort_unstable();
     results.dedup();
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_config;
+
+    #[test]
+    fn rejects_protocols_without_a_proxy_validator() {
+        for config in [
+            "https://127.0.0.1:443",
+            "ssr://encoded",
+            "ssh://user@127.0.0.1:22",
+            "tuic://token@127.0.0.1:443",
+            "naive+https://user:pass@example.com:443",
+        ] {
+            assert!(normalize_config(config).is_none(), "{config}");
+        }
+    }
+
+    #[test]
+    fn retains_supported_proxy_schemes() {
+        assert!(
+            normalize_config("http://127.0.0.1:8080").is_some(),
+            "http"
+        );
+        assert!(
+            normalize_config("socks5://127.0.0.1:1080").is_some(),
+            "socks5"
+        );
+    }
 }
 
 fn config_scheme(config: &str) -> String {
