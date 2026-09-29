@@ -1155,10 +1155,7 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     if is_throughput_target(url) {
         request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+    let response = request.send().await.map_err(|error| error.to_string())?;
 
     if response.status().as_u16() == 429 {
         extend_rate_limit(rate_limit_wait(response.headers()));
