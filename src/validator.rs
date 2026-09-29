@@ -2447,6 +2447,15 @@ mod tests {
     }
 
     #[test]
+    fn accepts_websocket_early_data_header_without_size() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
+        let parsed = parse_config(config)
+            .expect("unused WebSocket early-data header should parse");
+        assert!(parsed["streamSettings"]["wsSettings"].get("maxEarlyData").is_none());
+        assert!(parsed["streamSettings"]["wsSettings"].get("earlyDataHeaderName").is_none());
+    }
+
+    #[test]
     fn vmess_tcp_http_preserves_path_and_host() {
         let payload = json!({
             "add": "example.com",
