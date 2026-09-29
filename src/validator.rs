@@ -2872,10 +2872,8 @@ mod tests {
 
     #[test]
     fn preserves_hysteria2_pin_sha256_for_xray() {
-        let parsed = parse_hy2(
-            "hysteria2://password@example.com:443?pinSHA256=AA:BB:CC:DD",
-        )
-        .expect("Hysteria2 certificate pin should parse");
+        let parsed = parse_hy2("hysteria2://password@example.com:443?pinSHA256=AA:BB:CC:DD")
+            .expect("Hysteria2 certificate pin should parse");
         assert_eq!(
             parsed["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"],
             "AA:BB:CC:DD"
