@@ -575,7 +575,7 @@ fn light_backend(config: &str) -> LightBackend {
                             .unwrap_or("")
                             .to_ascii_lowercase();
 
-                        if network == "xhttp" {
+                        if matches!(network.as_str(), "xhttp" | "splithttp") {
                             return LightBackend::Xray;
                         }
 
@@ -626,7 +626,7 @@ fn light_backend(config: &str) -> LightBackend {
             || !query_value(&url, &["sni"]).is_empty()
             || !query_value(&url, &["peer"]).is_empty());
 
-    if transport == "xhttp" || raw_http_over_tls {
+    if matches!(transport.as_str(), "xhttp" | "splithttp") || raw_http_over_tls {
         return LightBackend::Xray;
     }
 
