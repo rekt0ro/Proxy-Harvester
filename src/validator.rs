@@ -2545,9 +2545,8 @@ mod tests {
 
     #[test]
     fn trims_malformed_security_suffix() {
-        let config =
-            parse_config("trojan://password@example.com:443?security=tls...%20&type=tcp")
-                .expect("trailing security punctuation should be repaired");
+        let config = parse_config("trojan://password@example.com:443?security=tls...%20&type=tcp")
+            .expect("trailing security punctuation should be repaired");
 
         assert_eq!(config["streamSettings"]["security"], "tls");
     }
