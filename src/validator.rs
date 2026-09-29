@@ -247,9 +247,11 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
 
     COMMON_QUERY_KEYS
         .iter()
-        .any(|key| suffix.get(..key.len()).is_some_and(|tail| {
-            tail.eq_ignore_ascii_case(key)
-        }))
+        .any(|key| {
+            suffix
+                .get(..key.len())
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
+        })
         .then(|| digits.to_string())
 }
 
@@ -2639,10 +2641,9 @@ mod tests {
 
     #[test]
     fn ignores_blank_security_values() {
-        let config = parse_config(
-            "trojan://password@example.com:443?security=%20&type=tcp"
-        )
-        .expect("blank security should use Trojan's TLS default");
+        let config =
+            parse_config("trojan://password@example.com:443?security=%20&type=tcp")
+                .expect("blank security should use Trojan's TLS default");
 
         assert_eq!(config["streamSettings"]["security"], "tls");
     }
