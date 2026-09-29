@@ -223,7 +223,8 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
     }
 
     let digits = &value[..digits_len];
-    let suffix = &value[digits_len..];
+    let suffix = value[digits_len..]
+        .trim_start_matches(|ch: char| matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t'));
     const COMMON_QUERY_KEYS: &[&str] = &[
         "security=",
         "sni=",
@@ -246,11 +247,9 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
 
     COMMON_QUERY_KEYS
         .iter()
-        .any(|key| {
-            suffix
-                .get(..key.len())
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
-        })
+        .any(|key| suffix.get(..key.len()).is_some_and(|tail| {
+            tail.eq_ignore_ascii_case(key)
+        }))
         .then(|| digits.to_string())
 }
 
@@ -507,6 +506,19 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                 return Ok(Some(normalize_xhttp_extra(value)));
             }
 
+            if decoded.contains('+') {
+                let plus_as_space = decoded.replace('+', " ");
+                if plus_as_space != decoded {
+                    if let Ok(value) = serde_json::from_str::<Value>(&plus_as_space) {
+                        if !value.is_object() {
+                            return Err("XHTTP extra must be a JSON object".to_string());
+                        }
+
+                        return Ok(Some(normalize_xhttp_extra(value)));
+                    }
+                }
+            }
+
             if !decoded.contains('%') {
                 break;
             }
@@ -530,6 +542,8 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
     if network == "tcp" {
         network = "raw".to_string();
+    } else if network == "splithttp" {
+        network = "xhttp".to_string();
     }
 
     match network.as_str() {
@@ -537,12 +551,26 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         _ => return Err(format!("unsupported transport {network}")),
     }
 
-    let security = first_query(url, &["security"], Some("none"));
-    let security = security.trim().trim_end_matches('.').to_ascii_lowercase();
-    match security.as_str() {
-        "none" | "tls" | "reality" => {}
+    let security = url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            if !key.eq_ignore_ascii_case("security") {
+                return None;
+            }
+            let normalized = value
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .unwrap_or_else(|| "none".to_string());
+
+    let security = match security.as_str() {
+        "none" => "none".to_string(),
+        "tls" | "t" | "tl" => "tls".to_string(),
+        "reality" => "reality".to_string(),
         _ => return Err(format!("unsupported security {security}")),
-    }
+    };
 
     if security == "reality" && !matches!(network.as_str(), "raw" | "xhttp" | "grpc") {
         return Err("reality unsupported with this transport".to_string());
@@ -2568,13 +2596,15 @@ mod tests {
 
     #[test]
     fn repairs_concatenated_websocket_early_data_query() {
-        let config = parse_config(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560security%3Dtls",
-        )
-        .expect("concatenated WebSocket early-data should be repaired");
+        for separator in ["security%3Dtls", "%26security%3Dtls", "%20security%3Dtls"] {
+            let config = parse_config(&format!(
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560{separator}",
+            ))
+            .expect("concatenated WebSocket early-data should be repaired");
 
-        assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
-        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+            assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
+            assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+        }
     }
 
     #[test]
@@ -2596,9 +2626,44 @@ mod tests {
     }
 
     #[test]
+    fn repairs_truncated_tls_security_values() {
+        for value in ["t", "tl"] {
+            let config = parse_config(&format!(
+                "trojan://password@example.com:443?security={value}&type=tcp"
+            ))
+            .expect("truncated TLS security should be repaired");
+
+            assert_eq!(config["streamSettings"]["security"], "tls");
+        }
+    }
+
+    #[test]
+    fn ignores_blank_security_values() {
+        let config = parse_config(
+            "trojan://password@example.com:443?security=%20&type=tcp"
+        )
+        .expect("blank security should use Trojan's TLS default");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
+    }
+
+    #[test]
     fn accepts_deeply_encoded_xhttp_extra() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%2525257B%25252522mode%25252522%253A%25252522auto%25252522%2525257D";
         parse_config(config).expect("deeply encoded XHTTP extra should parse");
+    }
+
+    #[test]
+    fn accepts_form_encoded_xhttp_extra() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%7B%22mode%22%3A+%22auto%22%7D";
+        parse_config(config).expect("form-encoded XHTTP extra should parse");
+    }
+
+    #[test]
+    fn accepts_legacy_splithttp_transport_name() {
+        let config = "vmess://eyJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOjQ0MywiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJuZXQiOiJzcGxpdGh0dHAiLCJ0bHMiOiJ0bHMifQ==";
+        let parsed = parse_config(config).expect("legacy SplitHTTP VMess should parse");
+        assert_eq!(parsed["streamSettings"]["network"], "xhttp");
     }
 
     #[test]
