@@ -197,6 +197,80 @@ fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
     }
     default.unwrap_or_default().to_string()
 }
+
+fn repair_websocket_early_data(value: &str) -> Option<String> {
+    let value = value.trim();
+
+    if value.is_empty() {
+        return None;
+    }
+
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(value.to_string());
+    }
+
+    let digits_len = value
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits_len == 0 {
+        return None;
+    }
+
+    let digits = &value[..digits_len];
+    let suffix = &value[digits_len..];
+    const COMMON_QUERY_KEYS: &[&str] = &[
+        "security=",
+        "sni=",
+        "host=",
+        "type=",
+        "path=",
+        "fp=",
+        "fingerprint=",
+        "encryption=",
+        "alpn=",
+        "packetEncoding=",
+        "headerType=",
+        "flow=",
+        "allowInsecure=",
+        "insecure=",
+        "eh=",
+        "earlyDataHeaderName=",
+        "early_data_header_name=",
+    ];
+
+    COMMON_QUERY_KEYS
+        .iter()
+        .any(|key| {
+            suffix
+                .get(..key.len())
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
+        })
+        .then(|| digits.to_string())
+}
+
+fn websocket_early_data_query_value(url: &Url) -> String {
+    let mut invalid = None;
+
+    for (key, value) in url.query_pairs() {
+        if !["ed", "maxEarlyData", "max_early_data"]
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+
+        let value = value.into_owned();
+        if let Some(repaired) = repair_websocket_early_data(&value) {
+            return repaired;
+        }
+        if invalid.is_none() && !value.trim().is_empty() {
+            invalid = Some(value);
+        }
+    }
+
+    invalid.unwrap_or_default()
+}
 fn decode_component(value: &str) -> String {
     percent_encoding::percent_decode_str(value)
         .decode_utf8_lossy()
@@ -419,7 +493,7 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
             .decode_utf8_lossy()
             .into_owned();
 
-        for _ in 0..2 {
+        for _ in 0..5 {
             if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
                 if !value.is_object() {
                     return Err("XHTTP extra must be a JSON object".to_string());
@@ -428,10 +502,7 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                 return Ok(Some(normalize_xhttp_extra(value)));
             }
 
-            let encoded_object = decoded.trim_start().to_ascii_lowercase().starts_with("%7b")
-                && decoded.trim_end().to_ascii_lowercase().ends_with("%7d");
-
-            if !encoded_object {
+            if !decoded.contains('%') {
                 break;
             }
 
@@ -461,7 +532,8 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         _ => return Err(format!("unsupported transport {network}")),
     }
 
-    let security = first_query(url, &["security"], Some("none")).to_ascii_lowercase();
+    let security = first_query(url, &["security"], Some("none"));
+    let security = security.trim().trim_end_matches('.').to_ascii_lowercase();
     match security.as_str() {
         "none" | "tls" | "reality" => {}
         _ => return Err(format!("unsupported security {security}")),
@@ -545,7 +617,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut ws_early_data_header = String::new();
 
     if network == "ws" {
-        ws_early_data = first_query(url, &["ed", "maxEarlyData", "max_early_data"], Some(""));
+        ws_early_data = websocket_early_data_query_value(url);
         ws_early_data_header = first_query(
             url,
             &["eh", "earlyDataHeaderName", "early_data_header_name"],
@@ -553,12 +625,16 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         );
 
         if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
-            if ws_early_data.is_empty() {
-                ws_early_data = encoded_early_data
-                    .split('&')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+            if ws_early_data.is_empty() || ws_early_data.parse::<u64>().is_err() {
+                ws_early_data =
+                    repair_websocket_early_data(encoded_early_data.split('&').next().unwrap_or(""))
+                        .unwrap_or_else(|| {
+                            encoded_early_data
+                                .split('&')
+                                .next()
+                                .unwrap_or("")
+                                .to_string()
+                        });
             }
             if ws_early_data_header.is_empty() {
                 ws_early_data_header = "Sec-WebSocket-Protocol".to_string();
@@ -568,11 +644,13 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
         if !ws_early_data.is_empty() {
             let early_data = ws_early_data
+                .trim()
                 .parse::<u64>()
                 .map_err(|_| "invalid WebSocket early-data size".to_string())?;
             if early_data > u32::MAX as u64 {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
+            ws_early_data = early_data.to_string();
         }
     }
 
@@ -2442,6 +2520,41 @@ mod tests {
             config["streamSettings"]["wsSettings"]["earlyDataHeaderName"],
             "Sec-WebSocket-Protocol"
         );
+    }
+
+    #[test]
+    fn repairs_concatenated_websocket_early_data_query() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560security%3Dtls",
+        )
+        .expect("concatenated WebSocket early-data should be repaired");
+
+        assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
+        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+    }
+
+    #[test]
+    fn trims_malformed_websocket_early_data_value() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&ed=2560%20",
+        )
+        .expect("whitespace around WebSocket early-data should be harmless");
+
+        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+    }
+
+    #[test]
+    fn trims_malformed_security_suffix() {
+        let config = parse_config("trojan://password@example.com:443?security=tls...%20&type=tcp")
+            .expect("trailing security punctuation should be repaired");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
+    }
+
+    #[test]
+    fn accepts_deeply_encoded_xhttp_extra() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%2525257B%25252522mode%25252522%253A%25252522auto%25252522%2525257D";
+        parse_config(config).expect("deeply encoded XHTTP extra should parse");
     }
 
     #[test]

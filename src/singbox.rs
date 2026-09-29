@@ -586,11 +586,11 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
         .split_once('?')
         .map(|(authority, query)| {
             (
-                authority.split('#').next().unwrap_or(authority),
+                authority.split(['#', '/']).next().unwrap_or(authority),
                 query.split('#').next().unwrap_or(query),
             )
         })
-        .unwrap_or_else(|| (rest.split('#').next().unwrap_or(rest), ""));
+        .unwrap_or_else(|| (rest.split(['#', '/']).next().unwrap_or(rest), ""));
 
     let host_port = authority
         .rsplit_once('@')
@@ -2052,6 +2052,24 @@ mod tests {
         assert_eq!(outbound["obfs"]["password"], "secret");
         assert_eq!(outbound["tls"]["insecure"], true);
         assert_eq!(outbound["tls"]["server_name"], "edge.example.com");
+    }
+
+    #[test]
+    fn maps_hysteria2_trailing_slash_before_query() {
+        let config = "hy2://password@example.com:443/?insecure=1&sni=example.com";
+        let outbound = singbox_outbound(config).expect("trailing slash before query should parse");
+        assert_eq!(outbound["server"], "example.com");
+        assert_eq!(outbound["server_port"], 443);
+        assert_eq!(outbound["tls"]["insecure"], true);
+        assert_eq!(outbound["tls"]["server_name"], "example.com");
+    }
+
+    #[test]
+    fn maps_hysteria2_trailing_slash_on_nondefault_port() {
+        let config = "hysteria2://password@example.com:33333/?insecure=1";
+        let outbound =
+            singbox_outbound(config).expect("trailing slash on explicit port should parse");
+        assert_eq!(outbound["server_port"], 33333);
     }
 
     #[test]
