@@ -1,9 +1,10 @@
 use crate::validator::{
-    config_label, extend_rate_limit, rate_limit_wait, wait_for_rate_limit, ProxyMetrics,
-    ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
-    MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY,
-    STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS,
-    STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
+    config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
+    read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
+    ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
+    PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
+    STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
+    STRICT_STABILITY_ATTEMPTS, SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1149,11 +1150,12 @@ fn valid_probe_body(url: &str, body: &[u8]) -> bool {
 async fn request_url(client: &Client, url: &str) -> Result<crate::validator::ProbeSample, String> {
     wait_for_rate_limit().await;
     let started = std::time::Instant::now();
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+    let response_limit = response_limit_for_target(url);
+    let mut request = client.get(url);
+    if is_throughput_target(url) {
+        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
 
     if response.status().as_u16() == 429 {
         extend_rate_limit(rate_limit_wait(response.headers()));
@@ -1166,16 +1168,16 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+        .is_some_and(|length| length as usize > response_limit)
     {
         return Err("response body exceeds validation limit".to_string());
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = crate::validator::read_response_body_limited(response)
+    let body = read_response_body_limited_to(response, response_limit)
         .await
         .map_err(|_| "response body exceeds validation limit".to_string())?;
-    if body.len() > MAX_RESPONSE_BYTES
+    if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(url, &body)
     {
@@ -1375,8 +1377,7 @@ async fn check_batch_targets(
                         if sample.latency_ms <= policy.max_latency_ms {
                             secondary_success[entry_index] = true;
                         }
-                        if target == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0
-                        {
+                        if is_throughput_target(target) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }

@@ -14,13 +14,18 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
-pub const THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=16384";
+pub const EARLY_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=1048576";
+pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=10485760";
+pub const THROUGHPUT_TARGET: &str = EARLY_THROUGHPUT_TARGET;
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
-    "https://speed.cloudflare.com/__down?bytes=16384",
+    EARLY_THROUGHPUT_TARGET,
     "https://example.com/",
 ];
+pub const EARLY_THROUGHPUT_BYTES: usize = 1_048_576;
+pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
+pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
@@ -218,7 +223,9 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
     }
 
     let digits = &value[..digits_len];
-    let suffix = &value[digits_len..];
+    let suffix = value[digits_len..].trim_start_matches(|ch: char| {
+        matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
+    });
     const COMMON_QUERY_KEYS: &[&str] = &[
         "security=",
         "sni=",
@@ -502,6 +509,19 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                 return Ok(Some(normalize_xhttp_extra(value)));
             }
 
+            if decoded.contains('+') {
+                let plus_as_space = decoded.replace('+', " ");
+                if plus_as_space != decoded {
+                    if let Ok(value) = serde_json::from_str::<Value>(&plus_as_space) {
+                        if !value.is_object() {
+                            return Err("XHTTP extra must be a JSON object".to_string());
+                        }
+
+                        return Ok(Some(normalize_xhttp_extra(value)));
+                    }
+                }
+            }
+
             if !decoded.contains('%') {
                 break;
             }
@@ -525,6 +545,8 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
     if network == "tcp" {
         network = "raw".to_string();
+    } else if network == "splithttp" {
+        network = "xhttp".to_string();
     }
 
     match network.as_str() {
@@ -532,12 +554,23 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         _ => return Err(format!("unsupported transport {network}")),
     }
 
-    let security = first_query(url, &["security"], Some("none"));
-    let security = security.trim().trim_end_matches('.').to_ascii_lowercase();
-    match security.as_str() {
-        "none" | "tls" | "reality" => {}
+    let security = url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            if !key.eq_ignore_ascii_case("security") {
+                return None;
+            }
+            let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .unwrap_or_else(|| "none".to_string());
+
+    let security = match security.as_str() {
+        "none" => "none".to_string(),
+        "tls" | "t" | "tl" => "tls".to_string(),
+        "reality" => "reality".to_string(),
         _ => return Err(format!("unsupported security {security}")),
-    }
+    };
 
     if security == "reality" && !matches!(network.as_str(), "raw" | "xhttp" | "grpc") {
         return Err("reality unsupported with this transport".to_string());
@@ -1616,30 +1649,44 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
     url.as_str() != PRIMARY_TARGET || status == 204
 }
 
+pub(crate) fn response_limit_for_target(url: &str) -> usize {
+    match url {
+        EARLY_THROUGHPUT_TARGET => EARLY_THROUGHPUT_BYTES,
+        STRICT_THROUGHPUT_TARGET => STRICT_THROUGHPUT_BYTES,
+        _ => MAX_RESPONSE_BYTES,
+    }
+}
+
+pub(crate) fn is_throughput_target(url: &str) -> bool {
+    matches!(url, EARLY_THROUGHPUT_TARGET | STRICT_THROUGHPUT_TARGET)
+}
+
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
-        "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
+        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
+        STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
     }
 }
 
-fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
-    if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(body.len()) {
+fn append_limited_response_chunk_to(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    if chunk.len() > limit.saturating_sub(body.len()) {
         return false;
     }
     body.extend_from_slice(chunk);
     true
 }
 
-pub(crate) async fn read_response_body_limited(
+pub(crate) async fn read_response_body_limited_to(
     mut response: reqwest::Response,
+    limit: usize,
 ) -> Result<Vec<u8>, ()> {
-    let mut body = Vec::with_capacity(MAX_RESPONSE_BYTES.min(16_384));
+    let mut body = Vec::with_capacity(limit.min(16_384));
 
     while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-        if !append_limited_response_chunk(&mut body, &chunk) {
+        if !append_limited_response_chunk_to(&mut body, &chunk, limit) {
             return Err(());
         }
     }
@@ -1650,11 +1697,12 @@ pub(crate) async fn read_response_body_limited(
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
-    let response = client
-        .get(url.as_str())
-        .send()
-        .await
-        .map_err(|_| ProbeError::Failed)?;
+    let response_limit = response_limit_for_target(url.as_str());
+    let mut request = client.get(url.as_str());
+    if is_throughput_target(url.as_str()) {
+        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    }
+    let response = request.send().await.map_err(|_| ProbeError::Failed)?;
 
     if response.status().as_u16() == 429 {
         extend_rate_limit(rate_limit_wait(response.headers()));
@@ -1667,16 +1715,16 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+        .is_some_and(|length| length as usize > response_limit)
     {
         return Err(ProbeError::Failed);
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = read_response_body_limited(response)
+    let body = read_response_body_limited_to(response, response_limit)
         .await
         .map_err(|_| ProbeError::Failed)?;
-    if body.len() > MAX_RESPONSE_BYTES
+    if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)
     {
@@ -1827,7 +1875,7 @@ async fn check_batch(
                             .entry(config.clone())
                             .or_default()
                             .push(sample.latency_ms);
-                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
                             throughputs
                                 .entry(config)
                                 .or_default()
@@ -2198,7 +2246,7 @@ async fn check_batch_targets(
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
                         latencies[entry_index].push(sample.latency_ms);
-                        if targets[0].as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(targets[0].as_str()) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
@@ -2451,16 +2499,25 @@ mod tests {
     #[test]
     fn bounded_response_chunk_rejects_overflow() {
         let mut body = Vec::new();
-        assert!(super::append_limited_response_chunk(&mut body, &[1, 2, 3]));
+        assert!(super::append_limited_response_chunk_to(
+            &mut body,
+            &[1, 2, 3],
+            super::MAX_RESPONSE_BYTES
+        ));
         assert_eq!(body.len(), 3);
 
         let remaining = super::MAX_RESPONSE_BYTES - body.len();
-        assert!(super::append_limited_response_chunk(
+        assert!(super::append_limited_response_chunk_to(
             &mut body,
-            &vec![0u8; remaining]
+            &vec![0u8; remaining],
+            super::MAX_RESPONSE_BYTES
         ));
         assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
-        assert!(!super::append_limited_response_chunk(&mut body, &[0]));
+        assert!(!super::append_limited_response_chunk_to(
+            &mut body,
+            &[0],
+            super::MAX_RESPONSE_BYTES
+        ));
         assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
     }
 
@@ -2469,10 +2526,25 @@ mod tests {
         let primary = Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
 
-        let speed =
-            Url::parse("https://speed.cloudflare.com/__down?bytes=16384").expect("speed target");
-        assert!(valid_probe_body(&speed, &vec![0_u8; 16_384]));
-        assert!(!valid_probe_body(&speed, &vec![0_u8; 16_383]));
+        let speed = Url::parse(EARLY_THROUGHPUT_TARGET).expect("speed target");
+        assert!(valid_probe_body(
+            &speed,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
+        ));
+        assert!(!valid_probe_body(
+            &speed,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
+        ));
+
+        let strict_speed = Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
+        assert!(valid_probe_body(
+            &strict_speed,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES]
+        ));
+        assert!(!valid_probe_body(
+            &strict_speed,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
+        ));
 
         let example = Url::parse("https://example.com/").expect("example.com");
         assert!(valid_probe_body(&example, b"<html>"));
@@ -2524,13 +2596,15 @@ mod tests {
 
     #[test]
     fn repairs_concatenated_websocket_early_data_query() {
-        let config = parse_config(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560security%3Dtls",
-        )
-        .expect("concatenated WebSocket early-data should be repaired");
+        for separator in ["security%3Dtls", "%26security%3Dtls", "%20security%3Dtls"] {
+            let config = parse_config(&format!(
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560{separator}",
+            ))
+            .expect("concatenated WebSocket early-data should be repaired");
 
-        assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
-        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+            assert_eq!(config["streamSettings"]["wsSettings"]["path"], "/");
+            assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+        }
     }
 
     #[test]
@@ -2552,9 +2626,42 @@ mod tests {
     }
 
     #[test]
+    fn repairs_truncated_tls_security_values() {
+        for value in ["t", "tl"] {
+            let config = parse_config(&format!(
+                "trojan://password@example.com:443?security={value}&type=tcp"
+            ))
+            .expect("truncated TLS security should be repaired");
+
+            assert_eq!(config["streamSettings"]["security"], "tls");
+        }
+    }
+
+    #[test]
+    fn ignores_blank_security_values() {
+        let config = parse_config("trojan://password@example.com:443?security=%20&type=tcp")
+            .expect("blank security should use Trojan's TLS default");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
+    }
+
+    #[test]
     fn accepts_deeply_encoded_xhttp_extra() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%2525257B%25252522mode%25252522%253A%25252522auto%25252522%2525257D";
         parse_config(config).expect("deeply encoded XHTTP extra should parse");
+    }
+
+    #[test]
+    fn accepts_form_encoded_xhttp_extra() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%7B%22mode%22%3A+%22auto%22%7D";
+        parse_config(config).expect("form-encoded XHTTP extra should parse");
+    }
+
+    #[test]
+    fn accepts_legacy_splithttp_transport_name() {
+        let config = "vmess://eyJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOjQ0MywiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJuZXQiOiJzcGxpdGh0dHAiLCJ0bHMiOiJ0bHMifQ==";
+        let parsed = parse_config(config).expect("legacy SplitHTTP VMess should parse");
+        assert_eq!(parsed["streamSettings"]["network"], "xhttp");
     }
 
     #[test]

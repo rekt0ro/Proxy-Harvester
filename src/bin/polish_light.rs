@@ -575,7 +575,7 @@ fn light_backend(config: &str) -> LightBackend {
                             .unwrap_or("")
                             .to_ascii_lowercase();
 
-                        if network == "xhttp" {
+                        if matches!(network.as_str(), "xhttp" | "splithttp") {
                             return LightBackend::Xray;
                         }
 
@@ -626,7 +626,7 @@ fn light_backend(config: &str) -> LightBackend {
             || !query_value(&url, &["sni"]).is_empty()
             || !query_value(&url, &["peer"]).is_empty());
 
-    if transport == "xhttp" || raw_http_over_tls {
+    if matches!(transport.as_str(), "xhttp" | "splithttp") || raw_http_over_tls {
         return LightBackend::Xray;
     }
 
@@ -849,9 +849,10 @@ async fn validate_light_batch(
     }
 
     println!(
-        "[INFO] Multi-target Light validation: {}/{} candidates verified.",
+        "[INFO] Multi-target Light validation: {}/{} candidates verified using {} throughput target.",
         verified.len(),
-        candidates.len()
+        candidates.len(),
+        if settings.strict { "10 MiB" } else { "1 MiB" }
     );
 
     Ok(verified)
@@ -904,7 +905,12 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
+    let early_targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
+    let strict_targets = [
+        primary_target.as_str(),
+        proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+        LIGHT_TARGETS[2],
+    ];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -966,7 +972,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             chunk,
-            &targets,
+            &early_targets,
             ValidationSettings {
                 workers,
                 batch_size,
@@ -1071,7 +1077,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             &final_candidates,
-            &targets,
+            &strict_targets,
             ValidationSettings {
                 workers: final_workers,
                 batch_size: final_batch_size,
@@ -1263,6 +1269,19 @@ mod tests {
         let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"xhttp"}"#;
         let config = format!("vmess://{}", STANDARD.encode(payload));
         assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vmess_splithttp_to_xray_only() {
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"splithttp"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_url_splithttp_to_xray_only() {
+        let config = "vless://uuid@example.com:443?security=tls&type=splithttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
     #[test]
