@@ -1236,13 +1236,6 @@ async fn main() -> Result<(), String> {
         &global_positions,
         &history,
     );
-    let mut selected = select_verified_configs(
-        &final_verified,
-        selection_limit,
-        max_per_endpoint,
-        max_per_family,
-    );
-
     benchmark_finalists(
         &xray,
         &singbox,
@@ -1257,7 +1250,7 @@ async fn main() -> Result<(), String> {
         max_per_family,
     )
     .await?;
-    selected = select_verified_configs(
+    let selected = select_verified_configs(
         &final_verified,
         selection_limit,
         max_per_endpoint,
