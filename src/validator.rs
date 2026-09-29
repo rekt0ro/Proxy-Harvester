@@ -1643,10 +1643,6 @@ fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     }
 }
 
-fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
-    append_limited_response_chunk_to(body, chunk, MAX_RESPONSE_BYTES)
-}
-
 fn append_limited_response_chunk_to(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
     if chunk.len() > limit.saturating_sub(body.len()) {
         return false;
@@ -2475,16 +2471,25 @@ mod tests {
     #[test]
     fn bounded_response_chunk_rejects_overflow() {
         let mut body = Vec::new();
-        assert!(super::append_limited_response_chunk(&mut body, &[1, 2, 3]));
+        assert!(super::append_limited_response_chunk_to(
+            &mut body,
+            &[1, 2, 3],
+            super::MAX_RESPONSE_BYTES
+        ));
         assert_eq!(body.len(), 3);
 
         let remaining = super::MAX_RESPONSE_BYTES - body.len();
-        assert!(super::append_limited_response_chunk(
+        assert!(super::append_limited_response_chunk_to(
             &mut body,
-            &vec![0u8; remaining]
+            &vec![0u8; remaining],
+            super::MAX_RESPONSE_BYTES
         ));
         assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
-        assert!(!super::append_limited_response_chunk(&mut body, &[0]));
+        assert!(!super::append_limited_response_chunk_to(
+            &mut body,
+            &[0],
+            super::MAX_RESPONSE_BYTES
+        ));
         assert_eq!(body.len(), super::MAX_RESPONSE_BYTES);
     }
 
