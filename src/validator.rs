@@ -550,6 +550,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
+        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            return Err("WebSocket early-data header is set without early data".to_string());
+        }
     }
 
     match network.as_str() {
@@ -595,7 +598,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            if !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
