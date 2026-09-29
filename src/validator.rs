@@ -861,18 +861,18 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-    if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
-        key.eq_ignore_ascii_case("plugin")
-            .then_some(value.into_owned())
-    }) {
-        let name = plugin
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
-            return Err(format!("unsupported Shadowsocks plugin {name}"));
+    for (key, value) in url.query_pairs() {
+        if key.eq_ignore_ascii_case("plugin") {
+            let name = value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if name != "obfs-local" && name != "v2ray-plugin" {
+                return Err(format!("unsupported Shadowsocks plugin {name}"));
+            }
+            break;
         }
     }
 
