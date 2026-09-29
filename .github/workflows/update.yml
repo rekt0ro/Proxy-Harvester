@@ -104,8 +104,7 @@ jobs:
           resolve_release "${XRAY_REPOSITORY}" '^Xray-linux-64\.zip$' xray
           resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
 
-          echo "Latest stable Xray: ${xray_version} (${xray_asset})"
-          echo "Latest stable sing-box: ${singbox_version} (${singbox_asset})"
+          echo "Validation core resolution complete."
       - name: Compute cache keys
         id: keys
         env:
