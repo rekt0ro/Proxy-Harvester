@@ -1,8 +1,7 @@
 name: Update Configs
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
+  # Triggered every 30 minutes by an external scheduler via GitHub's workflow_dispatch API.
   workflow_dispatch:
 
 concurrency:
