@@ -550,6 +550,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
+        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            return Err("WebSocket early-data header is set without early data".to_string());
+        }
     }
 
     match network.as_str() {
@@ -595,7 +598,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            if !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
@@ -858,6 +861,13 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    if url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+    {
+        return Err("Shadowsocks plugins unsupported".to_string());
+    }
+
     let (host, port, method, password) = if let Some(password) = url.password() {
         let method = decode_component(url.username());
         let (host, port) = endpoint_from_url(&url, None)?;
