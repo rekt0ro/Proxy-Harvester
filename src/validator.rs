@@ -489,6 +489,18 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         if !fp.is_empty() {
             tls["fingerprint"] = json!(fp);
         }
+        let ech = first_query(url, &["ech"], Some("")).replace(' ', "+");
+        if !ech.is_empty() {
+            tls["echConfigList"] = json!(ech);
+        }
+        let pcs = first_query(url, &["pcs"], Some(""));
+        if !pcs.is_empty() {
+            tls["pinnedPeerCertSha256"] = json!(pcs);
+        }
+        let vcn = first_query(url, &["vcn"], Some(""));
+        if !vcn.is_empty() {
+            tls["verifyPeerCertByName"] = json!(vcn);
+        }
         out["tlsSettings"] = tls;
     } else if security == "reality" {
         let pbk = first_query(url, &["pbk", "publicKey"], Some(""));
@@ -511,6 +523,18 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         }
         if !spx.is_empty() {
             reality["spiderX"] = json!(spx);
+        }
+        let ech = first_query(url, &["ech"], Some("")).replace(' ', "+");
+        if !ech.is_empty() {
+            reality["echConfigList"] = json!(ech);
+        }
+        let pcs = first_query(url, &["pcs"], Some(""));
+        if !pcs.is_empty() {
+            reality["pinnedPeerCertSha256"] = json!(pcs);
+        }
+        let vcn = first_query(url, &["vcn"], Some(""));
+        if !vcn.is_empty() {
+            reality["verifyPeerCertByName"] = json!(vcn);
         }
         out["realitySettings"] = reality;
     }
@@ -764,6 +788,9 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         ("sni", "sni"),
         ("alpn", "alpn"),
         ("fp", "fp"),
+        ("ech", "ech"),
+        ("pcs", "pcs"),
+        ("vcn", "vcn"),
         ("host", "host"),
         ("path", "path"),
         ("allowInsecure", "insecure"),
@@ -1000,6 +1027,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
+    let mut ech = None;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -1020,6 +1048,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "ech" => ech = Some(value.into_owned().replace(' ', "+")),
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -1034,6 +1063,9 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
+    }
+    if let Some(ech) = ech.filter(|value| !value.is_empty()) {
+        tls["echConfigList"] = json!(ech);
     }
 
     let mut stream_settings = json!({
@@ -2793,6 +2825,39 @@ mod tests {
 
         let error = parse_config(config).expect_err("guna is unsupported by Xray");
         assert!(error.contains("unsupported gRPC mode guna"));
+    }
+
+    #[test]
+    fn preserves_xray_vless_tls_extensions() {
+        let pin = "00".repeat(32);
+        let config = format!(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=YWJj&pcs={pin}&vcn=example.com,alt.example.com"
+        );
+        let parsed = parse_config(&config).expect("Xray TLS extensions should parse");
+        let tls = &parsed["streamSettings"]["tlsSettings"];
+        assert_eq!(tls["echConfigList"], "YWJj");
+        assert_eq!(tls["pinnedPeerCertSha256"], pin);
+        assert_eq!(tls["verifyPeerCertByName"], "example.com,alt.example.com");
+    }
+
+    #[test]
+    fn preserves_literal_plus_in_xray_ech_values() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=QUJD+REVGRw==";
+        let parsed = parse_config(config).expect("ECH value should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["echConfigList"],
+            "QUJD+REVGRw=="
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_ech_values() {
+        let parsed = parse_hy2("hysteria2://password@example.com:443?ech=YWJj")
+            .expect("Hysteria2 ECH should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["echConfigList"],
+            "YWJj"
+        );
     }
 
     #[test]
