@@ -1,12 +1,7 @@
 name: Update Configs
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
   workflow_dispatch:
-  pull_request:
-    paths-ignore:
-      - "subscriptions/**"
 
 concurrency:
   group: update-configs
