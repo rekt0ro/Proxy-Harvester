@@ -891,22 +891,22 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": string_at(&xray, &["settings", "servers", "0", "password"])?,
             });
 
-            if let Some(plugin) = url.and_then(|url| {
-                url.query_pairs().find_map(|(key, value)| {
-                key.eq_ignore_ascii_case("plugin")
-                    .then_some(value.into_owned())
-                })
-            }) {
-                let mut parts = plugin.splitn(2, ';');
-                let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
-                if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
-                    return Err(format!("unsupported Shadowsocks plugin {name}"));
-                }
+            if let Ok(url) = Url::parse(clean(config)) {
+                if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
+                    key.eq_ignore_ascii_case("plugin")
+                        .then_some(value.into_owned())
+                }) {
+                    let mut parts = plugin.splitn(2, ';');
+                    let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+                    if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
+                        return Err(format!("unsupported Shadowsocks plugin {name}"));
+                    }
 
-                let opts = parts.next().unwrap_or("").to_string();
-                outbound["plugin"] = json!(name);
-                if !opts.is_empty() {
-                    outbound["plugin_opts"] = json!(opts);
+                    let opts = parts.next().unwrap_or("").to_string();
+                    outbound["plugin"] = json!(name);
+                    if !opts.is_empty() {
+                        outbound["plugin_opts"] = json!(opts);
+                    }
                 }
             }
 
