@@ -550,9 +550,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
-        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
-            return Err("WebSocket early-data header is set without early data".to_string());
-        }
     }
 
     match network.as_str() {
@@ -598,7 +595,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data_header.is_empty() {
+            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
@@ -865,7 +862,10 @@ fn parse_ss(config: &str) -> Result<Value, String> {
         .query_pairs()
         .any(|(key, value)| {
             key.eq_ignore_ascii_case("plugin")
-                && !(value.starts_with("obfs-local") || value.starts_with("v2ray-plugin"))
+                && !matches!(
+                    value.split(';').next().unwrap_or("").trim(),
+                    "obfs-local" | "v2ray-plugin"
+                )
         })
     {
         return Err("unsupported Shadowsocks plugin".to_string());
@@ -2439,6 +2439,21 @@ mod tests {
             parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
             "a+b"
         );
+    }
+
+    #[test]
+    fn accepts_websocket_early_data_header_without_size() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
+        let parsed = parse_config(config)
+            .expect("unused WebSocket early-data header should parse");
+        assert!(parsed["streamSettings"]["wsSettings"].get("maxEarlyData").is_none());
+        assert!(parsed["streamSettings"]["wsSettings"].get("earlyDataHeaderName").is_none());
+    }
+
+    #[test]
+    fn accepts_shadowsocks_sip003_plugin_url() {
+        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        parse_config(config).expect("SIP003 plugin URL should parse");
     }
 
     #[test]
