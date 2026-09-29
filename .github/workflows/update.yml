@@ -115,13 +115,15 @@ jobs:
           LOCK_HASH: ${{ hashFiles('Cargo.lock') }}
           RUST_VERSION: ${{ steps.rust-version.outputs.version }}
           XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          XRAY_SHA256: ${{ steps.validation-cores.outputs.xray_sha256 }}
           SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+          SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
         run: |
           {
             echo "registry=${RUNNER_OS_NAME}-cargo-registry-${LOCK_HASH}"
             echo "build=${RUNNER_OS_NAME}-cargo-build-rust-${RUST_VERSION}-${LOCK_HASH}"
-            echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-verified"
-            echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-verified"
+            echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-${XRAY_SHA256}-verified"
+            echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-${SINGBOX_SHA256}-verified"
           } >> "$GITHUB_OUTPUT"
       - name: Restore Rust registry cache
         id: cargo-registry-restore
