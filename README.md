@@ -1,45 +1,45 @@
+# ProxyRift
+
+ProxyRift collects public proxy configurations, removes duplicates, checks transport reachability, and publishes two refreshed subscription lists.
+
 ## Subscriptions
 
-### Light (Recommended)
-
-Up to 200 verified proxy configurations selected from a capped 10,000-candidate screened pool. Light uses multi-target connectivity, adaptive strict rechecks, endpoint diversity, reliability/jitter scoring, a small transfer-throughput signal, and bounded history of prior strict checks. The transfer signal helps ranking but does not add a separate validation pass. Reality configurations are checked through both Xray and sing-box; other transports use the core selected for their compatibility.
-
-Plain text:
-
-```text
-https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light.txt
-```
-
-Base64:
-
-```text
-https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light-base64.txt
-```
-
-### All
-
-Up to 2,000 transport-reachable configurations from the ranked shared screening pool. All stays broad and does not run the expensive Light validation stage.
-
-Plain text:
+**All**
 
 ```text
 https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt
 ```
 
-Base64:
+**All (Base64)**
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base64.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all_base64.txt
 ```
 
-## Supported Protocols
+**Light**
 
-VMess · VLESS · Trojan · Shadowsocks · Hysteria · Hysteria 2 · SOCKS
+```text
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light.txt
+```
 
-## Updates
+**Light (Base64)**
 
-Subscriptions are refreshed automatically every 2 hours.
+```text
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light_base64.txt
+```
 
-## Disclaimer
+## How it works
 
-Configurations are collected from publicly available sources. Use them responsibly and in accordance with applicable laws and service terms.
+`collect → deduplicate → reachability check → select → publish`
+
+`All` contains up to 2,000 transport-reachable configurations and does not use the more expensive Light validation stage.
+
+`Light` is a smaller pool selected from the same screened candidates using deeper connectivity checks, multiple targets, endpoint diversity, reliability and jitter signals, and a small transfer test.
+
+The lists are regenerated automatically, so individual endpoints may come and go.
+
+## Supported protocols
+
+VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, and SOCKS where supported by the validation cores.
+
+Xray and sing-box are used for protocol-specific validation where appropriate.
