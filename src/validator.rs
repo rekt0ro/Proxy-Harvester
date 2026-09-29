@@ -835,7 +835,10 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
-    if matches!(flow.as_str(), "xtls-rprx-vision" | "xtls-rprx-vision-udp443") {
+    if matches!(
+        flow.as_str(),
+        "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+    ) {
         user["flow"] = json!(flow);
     }
     Ok(json!({
@@ -889,9 +892,8 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess UUID missing".to_string())?;
 
-    let network = normalize_transport(
-        &json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()),
-    );
+    let network =
+        normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
 
     let mut q = vec![
         ("type".to_string(), network.clone()),
@@ -2654,7 +2656,10 @@ mod tests {
         )
         .expect("invalid optional WebSocket early data should be ignored");
 
-        assert_eq!(config["streamSettings"]["wsSettings"].get("maxEarlyData"), None);
+        assert_eq!(
+            config["streamSettings"]["wsSettings"].get("maxEarlyData"),
+            None
+        );
     }
 
     #[test]
