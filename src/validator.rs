@@ -223,8 +223,9 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
     }
 
     let digits = &value[..digits_len];
-    let suffix = value[digits_len..]
-        .trim_start_matches(|ch: char| matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t'));
+    let suffix = value[digits_len..].trim_start_matches(|ch: char| {
+        matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
+    });
     const COMMON_QUERY_KEYS: &[&str] = &[
         "security=",
         "sni=",
@@ -559,10 +560,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !key.eq_ignore_ascii_case("security") {
                 return None;
             }
-            let normalized = value
-                .trim()
-                .trim_end_matches('.')
-                .to_ascii_lowercase();
+            let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
             (!normalized.is_empty()).then_some(normalized)
         })
         .unwrap_or_else(|| "none".to_string());
@@ -2641,9 +2639,8 @@ mod tests {
 
     #[test]
     fn ignores_blank_security_values() {
-        let config =
-            parse_config("trojan://password@example.com:443?security=%20&type=tcp")
-                .expect("blank security should use Trojan's TLS default");
+        let config = parse_config("trojan://password@example.com:443?security=%20&type=tcp")
+            .expect("blank security should use Trojan's TLS default");
 
         assert_eq!(config["streamSettings"]["security"], "tls");
     }
