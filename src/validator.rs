@@ -2441,9 +2441,7 @@ mod tests {
         let parsed = parse_config(config)
             .expect("unused WebSocket early-data header should parse");
         assert!(parsed["streamSettings"]["wsSettings"].get("maxEarlyData").is_none());
-        assert!(parsed["streamSettings"]["wsSettings"]
-            .get("earlyDataHeaderName")
-            .is_none());
+        assert!(parsed["streamSettings"]["wsSettings"].get("earlyDataHeaderName").is_none());
     }
 
     #[test]
