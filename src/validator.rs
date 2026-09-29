@@ -242,6 +242,7 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
             .bytes()
             .take_while(|byte| byte.is_ascii_digit())
             .count();
+
         if digits_len > 0 {
             let digits = &normalized[..digits_len];
             let suffix = normalized[digits_len..].trim_start_matches(|ch: char| {
@@ -270,8 +271,6 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
 }
 
 fn websocket_early_data_query_value(url: &Url) -> String {
-    let mut invalid = None;
-
     for (key, value) in url.query_pairs() {
         if !["ed", "maxEarlyData", "max_early_data"]
             .iter()
@@ -280,17 +279,14 @@ fn websocket_early_data_query_value(url: &Url) -> String {
             continue;
         }
 
-        let value = value.into_owned();
         if let Some(repaired) = repair_websocket_early_data(&value) {
             return repaired;
         }
-        if invalid.is_none() && !value.trim().is_empty() {
-            invalid = Some(value);
-        }
     }
 
-    invalid.unwrap_or_default()
+    String::new()
 }
+
 fn decode_component(value: &str) -> String {
     percent_encoding::percent_decode_str(value)
         .decode_utf8_lossy()
@@ -327,6 +323,24 @@ fn csv(value: &str) -> Vec<String> {
 /// that is what DNS lookup, Xray and sing-box expect, and `config_label` adds
 /// the brackets back for display. (`host_str()` keeps them, which broke IPv6
 /// probing and produced `[[::1]]` labels.)
+fn normalize_transport(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    normalized
+        .split([',', ';', '|'])
+        .map(str::trim)
+        .find_map(|candidate| match candidate {
+            "raw" | "tcp" => Some("raw".to_string()),
+            "ws" => Some("ws".to_string()),
+            "http" | "h2" => Some("http".to_string()),
+            "grpc" => Some("grpc".to_string()),
+            "httpupgrade" => Some("httpupgrade".to_string()),
+            "xhttp" | "splithttp" => Some("xhttp".to_string()),
+            _ => None,
+        })
+        .unwrap_or(normalized)
+}
+
 fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u16), String> {
     let host = match url.host().ok_or_else(|| "missing host".to_string())? {
         Host::Domain(domain) => domain.to_string(),
@@ -521,7 +535,7 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                         decoded = inner;
                         continue;
                     }
-                    _ => return Err("XHTTP extra must be a JSON object".to_string()),
+                    _ => return Ok(None),
                 }
             }
 
@@ -529,11 +543,9 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                 let plus_as_space = decoded.replace('+', " ");
                 if plus_as_space != decoded {
                     if let Ok(value) = serde_json::from_str::<Value>(&plus_as_space) {
-                        if !value.is_object() {
-                            return Err("XHTTP extra must be a JSON object".to_string());
+                        if value.is_object() {
+                            return Ok(Some(normalize_xhttp_extra(value)));
                         }
-
-                        return Ok(Some(normalize_xhttp_extra(value)));
                     }
                 }
             }
@@ -551,19 +563,16 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
             decoded = next;
         }
 
-        return Err("invalid XHTTP extra JSON".to_string());
+        // XHTTP extra is optional source metadata. Ignore malformed values
+        // rather than rejecting an otherwise usable VLESS configuration.
+        return Ok(None);
     }
 
     Ok(None)
 }
 
 fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
-    let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
-    if network == "tcp" {
-        network = "raw".to_string();
-    } else if network == "splithttp" {
-        network = "xhttp".to_string();
-    }
+    let network = normalize_transport(&first_query(url, &["type", "network"], Some("tcp")));
 
     match network.as_str() {
         "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp" => {}
@@ -581,15 +590,18 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         })
         .unwrap_or_else(|| "none".to_string());
 
-    let security = match security.as_str() {
+    let mut security = match security.as_str() {
         "none" => "none".to_string(),
         "tls" | "t" | "tl" => "tls".to_string(),
         "reality" => "reality".to_string(),
         _ => return Err(format!("unsupported security {security}")),
     };
 
+    // REALITY is valid only with RAW, XHTTP, and gRPC. Preserve the transport
+    // when a source combines REALITY with another transport, but fall back to
+    // ordinary TLS so the usable transport is still testable.
     if security == "reality" && !matches!(network.as_str(), "raw" | "xhttp" | "grpc") {
-        return Err("reality unsupported with this transport".to_string());
+        security = "tls".to_string();
     }
 
     let sni = first_query(url, &["sni", "server_name", "peer"], Some(host));
@@ -673,33 +685,41 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             Some(""),
         );
 
-        if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
-            if ws_early_data.is_empty() || ws_early_data.parse::<u64>().is_err() {
-                ws_early_data =
-                    repair_websocket_early_data(encoded_early_data.split('&').next().unwrap_or(""))
-                        .unwrap_or_else(|| {
-                            encoded_early_data
-                                .split('&')
-                                .next()
-                                .unwrap_or("")
-                                .to_string()
-                        });
+        let lower_path = path.to_ascii_lowercase();
+        let suffix_marker = ["?ed=", "?maxearlydata=", "?max_early_data="]
+            .iter()
+            .filter_map(|marker| lower_path.find(marker).map(|index| (index, *marker)))
+            .min_by_key(|(index, _)| *index);
+
+        if let Some((index, marker)) = suffix_marker {
+            let base_path = &path[..index];
+            let encoded_early_data = &path[index + marker.len()..];
+
+            if ws_early_data.is_empty() {
+                ws_early_data = repair_websocket_early_data(
+                    encoded_early_data.split(['&', '?']).next().unwrap_or(""),
+                )
+                .unwrap_or_default();
             }
-            if ws_early_data_header.is_empty() {
+
+            if !ws_early_data.is_empty() && ws_early_data_header.is_empty() {
                 ws_early_data_header = "Sec-WebSocket-Protocol".to_string();
             }
             path = base_path.to_string();
         }
 
         if !ws_early_data.is_empty() {
-            let early_data = ws_early_data
-                .trim()
-                .parse::<u64>()
-                .map_err(|_| "invalid WebSocket early-data size".to_string())?;
-            if early_data > u32::MAX as u64 {
-                return Err("WebSocket early-data size exceeds Xray limit".to_string());
+            match ws_early_data.trim().parse::<u64>() {
+                Ok(early_data) if early_data <= u32::MAX as u64 => {
+                    ws_early_data = early_data.to_string();
+                }
+                _ => {
+                    // Early data is optional. Drop malformed or oversized values
+                    // instead of rejecting the entire WebSocket candidate.
+                    ws_early_data.clear();
+                    ws_early_data_header.clear();
+                }
             }
-            ws_early_data = early_data.to_string();
         }
     }
 
@@ -815,13 +835,11 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
-    if !flow.is_empty() {
-        match flow.as_str() {
-            "xtls-rprx-vision" | "xtls-rprx-vision-udp443" => {
-                user["flow"] = json!(flow);
-            }
-            _ => return Err(format!("unsupported VLESS flow {flow}")),
-        }
+    if matches!(
+        flow.as_str(),
+        "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+    ) {
+        user["flow"] = json!(flow);
     }
     Ok(json!({
         "protocol": "vless",
@@ -874,10 +892,8 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "VMess UUID missing".to_string())?;
 
-    let mut network = json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string());
-    if network.eq_ignore_ascii_case("h2") {
-        network = "http".to_string();
-    }
+    let network =
+        normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
 
     let mut q = vec![
         ("type".to_string(), network.clone()),
@@ -890,7 +906,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         .get("type")
         .and_then(Value::as_str)
         .is_some_and(|value| value.eq_ignore_ascii_case("http"))
-        && network.eq_ignore_ascii_case("tcp")
+        && network.eq_ignore_ascii_case("raw")
     {
         q.push(("headerType".to_string(), "http".to_string()));
     }
@@ -2634,6 +2650,59 @@ mod tests {
     }
 
     #[test]
+    fn ignores_invalid_websocket_early_data() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&ed=not-a-number",
+        )
+        .expect("invalid optional WebSocket early data should be ignored");
+
+        assert_eq!(
+            config["streamSettings"]["wsSettings"].get("maxEarlyData"),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_oversized_websocket_early_data() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&ed=4294967296",
+        )
+        .expect("oversized optional WebSocket early data should be ignored");
+
+        assert_eq!(
+            config["streamSettings"]["wsSettings"].get("maxEarlyData"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalizes_multi_transport_vmess() {
+        let payload = json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "tcp,udp",
+            "tls": "tls"
+        });
+        let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+        let parsed =
+            parse_config(&config).expect("multi-value VMess transport should be normalized");
+        assert_eq!(parsed["streamSettings"]["network"], "raw");
+    }
+
+    #[test]
+    fn falls_back_to_tls_for_invalid_reality_transport() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality&type=ws&sni=example.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=",
+        )
+        .expect("invalid REALITY transport should fall back to TLS");
+
+        assert_eq!(config["streamSettings"]["security"], "tls");
+        assert!(config["streamSettings"].get("tlsSettings").is_some());
+        assert!(config["streamSettings"].get("realitySettings").is_none());
+    }
+
+    #[test]
     fn trims_malformed_security_suffix() {
         let config = parse_config("trojan://password@example.com:443?security=tls...%20&type=tcp")
             .expect("trailing security punctuation should be repaired");
@@ -2695,14 +2764,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_xhttp_extra() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=not-json";
-        let error = parse_config(config).expect_err("invalid XHTTP extra should be rejected");
-        assert!(error.contains("invalid XHTTP extra JSON"));
+    fn ignores_invalid_xhttp_extra() {
+        let invalid_json =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=not-json";
+        let parsed =
+            parse_config(invalid_json).expect("invalid optional XHTTP extra should be ignored");
+        assert_eq!(parsed["streamSettings"]["xhttpSettings"].get("extra"), None);
 
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=%5B1%2C2%5D";
-        let error = parse_config(config).expect_err("non-object XHTTP extra should be rejected");
-        assert!(error.contains("XHTTP extra must be a JSON object"));
+        let non_object =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=%5B1%2C2%5D";
+        let parsed =
+            parse_config(non_object).expect("non-object optional XHTTP extra should be ignored");
+        assert_eq!(parsed["streamSettings"]["xhttpSettings"].get("extra"), None);
     }
 
     #[test]
@@ -3143,11 +3216,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_vless_flow() {
-        let result = parse_vless(
+    fn drops_unsupported_vless_flow() {
+        let parsed = parse_vless(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-direct-udp443",
-        );
+        )
+        .expect("unsupported VLESS flow should be ignored");
 
-        assert!(result.is_err());
+        assert_eq!(parsed["settings"]["vnext"][0]["users"][0].get("flow"), None);
     }
 }
