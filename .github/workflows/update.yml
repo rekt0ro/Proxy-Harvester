@@ -13,12 +13,8 @@ permissions:
   contents: read
 
 env:
-  XRAY_VERSION: "26.3.27"
-  # SHA-256 of Xray-linux-64.zip for the version above (64 lowercase hex chars).
-  XRAY_SHA256: "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
-  SINGBOX_VERSION: "1.14.1"
-  # SHA-256 of sing-box-<version>-linux-amd64.tar.gz for the version above.
-  SINGBOX_SHA256: "12cb2816b52febb356f6a885b740cc8758c3f30b8ae0ca8edba80f0d2d35343f"
+  Xray_REPOSITORY: "XTLS/Xray-core"
+  SINGBOX_REPOSITORY: "SagerNet/sing-box"
 
 jobs:
   # Job 1: does all the untrusted work (downloads, config testing) with a READ-ONLY token.
@@ -63,12 +59,702 @@ jobs:
       - name: Verify Rust dependency lock
         run: test -s Cargo.lock
 
+      - name: Resolve latest stable validation cores
+        id: validation-cores
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          resolve_release() {
+            local repository="$1"
+            local asset_pattern="$2"
+            local output_prefix="$3"
+            local releases stable tag version asset_name digest
+            releases="$(curl -fsSL               -H "Accept: application/vnd.github+json"               -H "Authorization: Bearer $GH_TOKEN"               -H "X-GitHub-Api-Version: 2022-11-28"               "https://api.github.com/repos/${repository}/releases?per_page=100")"
+
+            stable="$(jq -c '[.[] | select(.draft == false and .prerelease == false)] | first' <<< "$releases")"
+            test "$stable" != "null"
+
+            tag="$(jq -r '.tag_name' <<< "$stable")"
+            case "$tag" in
+              v*) version="${tag#v}" ;;
+              *) version="$tag" ;;
+            esac
+            test -n "$version"
+
+            asset_name="$(jq -r --arg pattern "$asset_pattern"               '.assets[] | select(.name | test($pattern)) | .name' <<< "$stable" | head -n 1)"
+            test -n "$asset_name"
+
+            digest="$(jq -r --arg asset "$asset_name"               '.assets[] | select(.name == $asset) | .digest' <<< "$stable")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            digest="${digest#sha256:}"
+
+            {
+              echo "${output_prefix}_version=$version"
+              echo "${output_prefix}_sha256=$digest"
+              echo "${output_prefix}_asset=$asset_name"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          resolve_release "${Xray_REPOSITORY}" '^Xray-linux-64\\.zip
+      - name: Restore Rust registry cache
+        id: cargo-registry-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.keys.outputs.registry }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore Rust build cache
+        id: cargo-build-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ steps.keys.outputs.build }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
+
+      - name: Restore Xray binary cache
+        id: xray-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ steps.keys.outputs.xray }}
+
+      - name: Install Xray (latest stable, checksum-verified)
+        env:
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          XRAY_SHA256: ${{ steps.validation-cores.outputs.xray_sha256 }}
+          XRAY_ASSET: ${{ steps.validation-cores.outputs.xray_asset }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/xray-download
+
+          if [ ! -x "$HOME/.local/bin/xray" ]; then
+            if [[ ! "$XRAY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "XRAY_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              exit 1
+            fi
+
+            asset_url="https://github.com/${Xray_REPOSITORY}/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}"
+            curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
+            echo "${XRAY_SHA256}  /tmp/xray-download/xray.zip" | sha256sum -c -
+            unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
+            install -m 0755 /tmp/xray-download/extracted/xray "$HOME/.local/bin/xray"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/xray" version
+
+      - name: Save Xray binary cache
+        if: steps.xray-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ steps.keys.outputs.xray }}
+
+      - name: Restore sing-box binary cache
+        id: singbox-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ steps.keys.outputs.singbox }}
+
+      - name: Install sing-box (latest stable, checksum-verified)
+        env:
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+          SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
+          SINGBOX_ASSET: ${{ steps.validation-cores.outputs.singbox_asset }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/singbox-download
+
+          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
+            if [[ ! "$SINGBOX_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "SINGBOX_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              exit 1
+            fi
+
+            asset_url="https://github.com/${SINGBOX_REPOSITORY}/releases/download/v${SINGBOX_VERSION}/${SINGBOX_ASSET}"
+            curl -fsSL "$asset_url" -o /tmp/singbox-download/sing-box.tar.gz
+            echo "${SINGBOX_SHA256}  /tmp/singbox-download/sing-box.tar.gz" | sha256sum -c -
+            tar -xzf /tmp/singbox-download/sing-box.tar.gz -C /tmp/singbox-download
+            install -m 0755 "/tmp/singbox-download/sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" "$HOME/.local/bin/sing-box"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          singbox_version="$("$HOME/.local/bin/sing-box" version | head -n 1)"
+          echo "$singbox_version"
+          grep -F "$SINGBOX_VERSION" <<< "$singbox_version" >/dev/null
+
+      - name: Save sing-box binary cache
+        if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ steps.keys.outputs.singbox }}
+
+      - name: Validate Rust formatting
+        run: cargo fmt --all
+
+      - name: Check runner network
+        run: |
+          curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
+          curl -fsS --max-time 10 "https://api.ipify.org?format=json" -o /dev/null
+
+      - name: Build Rust binaries
+        run: |
+          cargo build --release --locked --bins
+          test -x ./target/release/ProxyRift
+          test -x ./target/release/check_proxies
+          test -x ./target/release/polish_light
+          test -x ./target/release/encode_subscriptions
+
+      - name: Save Rust registry cache
+        if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.keys.outputs.registry }}
+
+      - name: Save Rust build cache
+        if: steps.cargo-build-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: target
+          key: ${{ steps.keys.outputs.build }}
+
+      - name: Collect and transport-test configs
+        run: ./target/release/ProxyRift
+
+      - name: Build Light subscription
+        env:
+          LIGHT_MAX_CANDIDATES: "10000"
+          LIGHT_MIN_PUBLISH: "50"
+        run: |
+          mkdir -p /tmp/proxyrift
+          echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
+          set +e
+          ./target/release/polish_light \
+            --candidates subscriptions/.light-candidates.txt \
+            --output /tmp/proxyrift/light.next.txt \
+            --workers 48 \
+            --batch-size 1000 \
+            --timeout 3 \
+            --selected-recheck-limit 500 \
+            --max-candidates "$LIGHT_MAX_CANDIDATES" \
+            --selected-workers 48 \
+            --selected-batch-size 500 \
+            --primary-target https://www.google.com/generate_204 \
+            --singbox "$HOME/.local/bin/sing-box" \
+            --selection-limit 200 \
+            --max-per-endpoint 1 \
+            --max-per-family 3
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/light.next.txt ]; then
+            light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
+            echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
+            if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
+              cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
+              mv -f subscriptions/.light.txt.next subscriptions/light.txt
+              echo "Published refreshed Light subscription."
+            else
+              echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
+            fi
+          elif [ "$status" -ne 0 ]; then
+            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
+          else
+            echo "Light validation produced no configs; preserving the previous Light subscription."
+          fi
+
+      # GitHub Raw cannot set subscription response headers, so publish client-facing update metadata in the first line.
+      # Hiddify currently parses this value as an integer number of hours, so 1 is the safest value.
+      - name: Add subscription update metadata
+        run: |
+          for f in subscriptions/all.txt subscriptions/light.txt; do
+            test -s "$f"
+            tmp="${f}.tmp"
+            { 
+              printf '%s\n' '#profile-update-interval: 1'
+              cat "$f"
+            } > "$tmp"
+            mv -f "$tmp" "$f"
+          done
+
+      - name: Generate Base64 subscriptions
+        run: ./target/release/encode_subscriptions
+
+      # Only the published subscriptions and bounded Light history leave this job.
+      - name: Upload subscriptions
+        uses: actions/upload-artifact@v7
+        with:
+          name: subscriptions
+          path: |
+            subscriptions/all.txt
+            subscriptions/light.txt
+            subscriptions/all-base64.txt
+            subscriptions/light-base64.txt
+            subscriptions/light-history.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Clean generated temporary files
+        if: always()
+        run: |
+          rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
+          rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
+
+  # Job 2: the ONLY job with a write token. It just copies four files and pushes.
+  publish:
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download subscriptions
+        uses: actions/download-artifact@v8
+        with:
+          name: subscriptions
+          path: ${{ runner.temp }}/subscriptions
+
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+
+          src="${RUNNER_TEMP}/subscriptions"
+          files="all.txt light.txt all-base64.txt light-base64.txt"
+
+          for f in $files; do
+            test -s "${src}/${f}"
+            cp "${src}/${f}" "subscriptions/${f}"
+          done
+
+          if [ -s "${src}/light-history.json" ]; then
+            cp "${src}/light-history.json" "subscriptions/light-history.json"
+            git add -- "subscriptions/light-history.json"
+          fi
+
+          git config user.name "rekt0ro"
+          git config user.email "104654981+rekt0ro@users.noreply.github.com"
+
+          for f in $files; do
+            git add -- "subscriptions/${f}"
+          done
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "Update subscriptions"
+          git fetch origin main
+          git rebase --autostash origin/main
+          git push origin HEAD:main
+
+  # Job 3: deletes old caches; needs only the actions:write permission.
+  cleanup:
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      actions: write
+
+    steps:
+      - name: Clean obsolete caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUNNER_OS_NAME: ${{ runner.os }}
+          REGISTRY_KEY: ${{ needs.collect.outputs.registry_key }}
+          BUILD_KEY: ${{ needs.collect.outputs.build_key }}
+          XRAY_KEY: ${{ needs.collect.outputs.xray_key }}
+          SINGBOX_KEY: ${{ needs.collect.outputs.singbox_key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for k in "$REGISTRY_KEY" "$BUILD_KEY" "$XRAY_KEY" "$SINGBOX_KEY"; do
+            if [ -z "$k" ]; then
+              echo "Refusing cache cleanup because a current cache key is empty." >&2
+              exit 1
+            fi
+          done
+
+          cleanup_prefix() {
+            local prefix="$1"
+            local current_key="$2"
+
+            gh cache list \
+              --repo "$GH_REPO" \
+              --key "$prefix" \
+              --ref refs/heads/main \
+              --limit 100 \
+              --json id,key \
+              --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r cache_id cache_key; do
+              [ -z "$cache_id" ] && continue
+              if [ "$cache_key" = "$current_key" ]; then
+                continue
+              fi
+              echo "Deleting obsolete cache $cache_id ($cache_key)"
+              gh api --method DELETE "/repos/$GH_REPO/actions/caches/$cache_id"
+            done
+          }
+
+          cleanup_prefix "${RUNNER_OS_NAME}-cargo-registry-" "$REGISTRY_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-cargo-build-rust-" "$BUILD_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-xray-" "$XRAY_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-sing-box-" "$SINGBOX_KEY"
+ xray
+          resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\\.[0-9]+\\.[0-9]+-linux-amd64\\.tar\\.gz
+      - name: Restore Rust registry cache
+        id: cargo-registry-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.keys.outputs.registry }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore Rust build cache
+        id: cargo-build-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: ${{ steps.keys.outputs.build }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
+
+      - name: Restore Xray binary cache
+        id: xray-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ steps.keys.outputs.xray }}
+
+      - name: Install Xray (checksum-verified)
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/xray-download
+
+          if [ ! -x "$HOME/.local/bin/xray" ]; then
+            if [[ ! "$XRAY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "XRAY_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              exit 1
+            fi
+
+            asset_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip"
+            curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
+            echo "${XRAY_SHA256}  /tmp/xray-download/xray.zip" | sha256sum -c -
+            unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
+            install -m 0755 /tmp/xray-download/extracted/xray "$HOME/.local/bin/xray"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/xray" version
+
+      - name: Save Xray binary cache
+        if: steps.xray-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/xray
+          key: ${{ steps.keys.outputs.xray }}
+
+      - name: Restore sing-box binary cache
+        id: singbox-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ steps.keys.outputs.singbox }}
+
+      - name: Install sing-box (checksum-verified)
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.local/bin" /tmp/singbox-download
+
+          if [ ! -x "$HOME/.local/bin/sing-box" ]; then
+            if [[ ! "$SINGBOX_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "SINGBOX_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              exit 1
+            fi
+
+            asset_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+            curl -fsSL "$asset_url" -o /tmp/singbox-download/sing-box.tar.gz
+            echo "${SINGBOX_SHA256}  /tmp/singbox-download/sing-box.tar.gz" | sha256sum -c -
+            tar -xzf /tmp/singbox-download/sing-box.tar.gz -C /tmp/singbox-download
+            install -m 0755 "/tmp/singbox-download/sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" "$HOME/.local/bin/sing-box"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          singbox_version="$("$HOME/.local/bin/sing-box" version | head -n 1)"
+          echo "$singbox_version"
+          grep -F "$SINGBOX_VERSION" <<< "$singbox_version" >/dev/null
+
+      - name: Save sing-box binary cache
+        if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.local/bin/sing-box
+          key: ${{ steps.keys.outputs.singbox }}
+
+      - name: Validate Rust formatting
+        run: cargo fmt --all
+
+      - name: Check runner network
+        run: |
+          curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
+          curl -fsS --max-time 10 "https://api.ipify.org?format=json" -o /dev/null
+
+      - name: Build Rust binaries
+        run: |
+          cargo build --release --locked --bins
+          test -x ./target/release/ProxyRift
+          test -x ./target/release/check_proxies
+          test -x ./target/release/polish_light
+          test -x ./target/release/encode_subscriptions
+
+      - name: Save Rust registry cache
+        if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.keys.outputs.registry }}
+
+      - name: Save Rust build cache
+        if: steps.cargo-build-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: target
+          key: ${{ steps.keys.outputs.build }}
+
+      - name: Collect and transport-test configs
+        run: ./target/release/ProxyRift
+
+      - name: Build Light subscription
+        env:
+          LIGHT_MAX_CANDIDATES: "10000"
+          LIGHT_MIN_PUBLISH: "50"
+        run: |
+          mkdir -p /tmp/proxyrift
+          echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
+          set +e
+          ./target/release/polish_light \
+            --candidates subscriptions/.light-candidates.txt \
+            --output /tmp/proxyrift/light.next.txt \
+            --workers 48 \
+            --batch-size 1000 \
+            --timeout 3 \
+            --selected-recheck-limit 500 \
+            --max-candidates "$LIGHT_MAX_CANDIDATES" \
+            --selected-workers 48 \
+            --selected-batch-size 500 \
+            --primary-target https://www.google.com/generate_204 \
+            --singbox "$HOME/.local/bin/sing-box" \
+            --selection-limit 200 \
+            --max-per-endpoint 1 \
+            --max-per-family 3
+          status=$?
+          set -e
+
+          if [ -s /tmp/proxyrift/light.next.txt ]; then
+            light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
+            echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
+            if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
+              cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
+              mv -f subscriptions/.light.txt.next subscriptions/light.txt
+              echo "Published refreshed Light subscription."
+            else
+              echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
+            fi
+          elif [ "$status" -ne 0 ]; then
+            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
+          else
+            echo "Light validation produced no configs; preserving the previous Light subscription."
+          fi
+
+      # GitHub Raw cannot set subscription response headers, so publish client-facing update metadata in the first line.
+      # Hiddify currently parses this value as an integer number of hours, so 1 is the safest value.
+      - name: Add subscription update metadata
+        run: |
+          for f in subscriptions/all.txt subscriptions/light.txt; do
+            test -s "$f"
+            tmp="${f}.tmp"
+            { 
+              printf '%s\n' '#profile-update-interval: 1'
+              cat "$f"
+            } > "$tmp"
+            mv -f "$tmp" "$f"
+          done
+
+      - name: Generate Base64 subscriptions
+        run: ./target/release/encode_subscriptions
+
+      # Only the published subscriptions and bounded Light history leave this job.
+      - name: Upload subscriptions
+        uses: actions/upload-artifact@v7
+        with:
+          name: subscriptions
+          path: |
+            subscriptions/all.txt
+            subscriptions/light.txt
+            subscriptions/all-base64.txt
+            subscriptions/light-base64.txt
+            subscriptions/light-history.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Clean generated temporary files
+        if: always()
+        run: |
+          rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
+          rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
+
+  # Job 2: the ONLY job with a write token. It just copies four files and pushes.
+  publish:
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download subscriptions
+        uses: actions/download-artifact@v8
+        with:
+          name: subscriptions
+          path: ${{ runner.temp }}/subscriptions
+
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+
+          src="${RUNNER_TEMP}/subscriptions"
+          files="all.txt light.txt all-base64.txt light-base64.txt"
+
+          for f in $files; do
+            test -s "${src}/${f}"
+            cp "${src}/${f}" "subscriptions/${f}"
+          done
+
+          if [ -s "${src}/light-history.json" ]; then
+            cp "${src}/light-history.json" "subscriptions/light-history.json"
+            git add -- "subscriptions/light-history.json"
+          fi
+
+          git config user.name "rekt0ro"
+          git config user.email "104654981+rekt0ro@users.noreply.github.com"
+
+          for f in $files; do
+            git add -- "subscriptions/${f}"
+          done
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "Update subscriptions"
+          git fetch origin main
+          git rebase --autostash origin/main
+          git push origin HEAD:main
+
+  # Job 3: deletes old caches; needs only the actions:write permission.
+  cleanup:
+    needs: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      actions: write
+
+    steps:
+      - name: Clean obsolete caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUNNER_OS_NAME: ${{ runner.os }}
+          REGISTRY_KEY: ${{ needs.collect.outputs.registry_key }}
+          BUILD_KEY: ${{ needs.collect.outputs.build_key }}
+          XRAY_KEY: ${{ needs.collect.outputs.xray_key }}
+          SINGBOX_KEY: ${{ needs.collect.outputs.singbox_key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for k in "$REGISTRY_KEY" "$BUILD_KEY" "$XRAY_KEY" "$SINGBOX_KEY"; do
+            if [ -z "$k" ]; then
+              echo "Refusing cache cleanup because a current cache key is empty." >&2
+              exit 1
+            fi
+          done
+
+          cleanup_prefix() {
+            local prefix="$1"
+            local current_key="$2"
+
+            gh cache list \
+              --repo "$GH_REPO" \
+              --key "$prefix" \
+              --ref refs/heads/main \
+              --limit 100 \
+              --json id,key \
+              --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r cache_id cache_key; do
+              [ -z "$cache_id" ] && continue
+              if [ "$cache_key" = "$current_key" ]; then
+                continue
+              fi
+              echo "Deleting obsolete cache $cache_id ($cache_key)"
+              gh api --method DELETE "/repos/$GH_REPO/actions/caches/$cache_id"
+            done
+          }
+
+          cleanup_prefix "${RUNNER_OS_NAME}-cargo-registry-" "$REGISTRY_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-cargo-build-rust-" "$BUILD_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-xray-" "$XRAY_KEY"
+          cleanup_prefix "${RUNNER_OS_NAME}-sing-box-" "$SINGBOX_KEY"
+ singbox
+
+          echo "Latest stable Xray: ${xray_version} (${xray_asset})"
+          echo "Latest stable sing-box: ${singbox_version} (${singbox_asset})"
+
       - name: Compute cache keys
         id: keys
         env:
           RUNNER_OS_NAME: ${{ runner.os }}
           LOCK_HASH: ${{ hashFiles('Cargo.lock') }}
           RUST_VERSION: ${{ steps.rust-version.outputs.version }}
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
         run: |
           {
             echo "registry=${RUNNER_OS_NAME}-cargo-registry-${LOCK_HASH}"
