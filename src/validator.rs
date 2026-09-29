@@ -14,13 +14,20 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
-pub const THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=16384";
+pub const EARLY_THROUGHPUT_TARGET: &str =
+    "https://speed.cloudflare.com/__down?bytes=1048576";
+pub const STRICT_THROUGHPUT_TARGET: &str =
+    "https://speed.cloudflare.com/__down?bytes=10485760";
+pub const THROUGHPUT_TARGET: &str = EARLY_THROUGHPUT_TARGET;
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
     PRIMARY_TARGET,
-    "https://speed.cloudflare.com/__down?bytes=16384",
+    EARLY_THROUGHPUT_TARGET,
     "https://example.com/",
 ];
+pub const EARLY_THROUGHPUT_BYTES: usize = 1_048_576;
+pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
+pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
@@ -1616,30 +1623,44 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
     url.as_str() != PRIMARY_TARGET || status == 204
 }
 
+pub(crate) fn response_limit_for_target(url: &str) -> usize {
+    match url {
+        EARLY_THROUGHPUT_TARGET => EARLY_THROUGHPUT_BYTES,
+        STRICT_THROUGHPUT_TARGET => STRICT_THROUGHPUT_BYTES,
+        _ => MAX_RESPONSE_BYTES,
+    }
+}
+
+pub(crate) fn is_throughput_target(url: &str) -> bool {
+    matches!(url, EARLY_THROUGHPUT_TARGET | STRICT_THROUGHPUT_TARGET)
+}
+
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
-        "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
+        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
+        STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
     }
 }
 
-fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
-    if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(body.len()) {
+fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    if chunk.len() > limit.saturating_sub(body.len()) {
         return false;
     }
     body.extend_from_slice(chunk);
     true
 }
 
-pub(crate) async fn read_response_body_limited(
+pub(crate) async fn read_response_body_limited_to(
     mut response: reqwest::Response,
+    limit: usize,
 ) -> Result<Vec<u8>, ()> {
-    let mut body = Vec::with_capacity(MAX_RESPONSE_BYTES.min(16_384));
+    let mut body = Vec::with_capacity(limit.min(16_384));
 
     while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-        if !append_limited_response_chunk(&mut body, &chunk) {
+        if !append_limited_response_chunk(&mut body, &chunk, limit) {
             return Err(());
         }
     }
@@ -1647,14 +1668,21 @@ pub(crate) async fn read_response_body_limited(
     Ok(body)
 }
 
+pub(crate) async fn read_response_body_limited(
+    response: reqwest::Response,
+) -> Result<Vec<u8>, ()> {
+    read_response_body_limited_to(response, MAX_RESPONSE_BYTES).await
+}
+
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
-    let response = client
-        .get(url.as_str())
-        .send()
-        .await
-        .map_err(|_| ProbeError::Failed)?;
+    let response_limit = response_limit_for_target(url.as_str());
+    let mut request = client.get(url.as_str());
+    if is_throughput_target(url.as_str()) {
+        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    }
+    let response = request.send().await.map_err(|_| ProbeError::Failed)?;
 
     if response.status().as_u16() == 429 {
         extend_rate_limit(rate_limit_wait(response.headers()));
@@ -1667,16 +1695,16 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+        .is_some_and(|length| length as usize > response_limit as u64)
     {
         return Err(ProbeError::Failed);
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = read_response_body_limited(response)
+    let body = read_response_body_limited_to(response, response_limit)
         .await
         .map_err(|_| ProbeError::Failed)?;
-    if body.len() > MAX_RESPONSE_BYTES
+    if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)
     {
@@ -1827,7 +1855,7 @@ async fn check_batch(
                             .entry(config.clone())
                             .or_default()
                             .push(sample.latency_ms);
-                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
                             throughputs
                                 .entry(config)
                                 .or_default()
@@ -2198,7 +2226,7 @@ async fn check_batch_targets(
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
                         latencies[entry_index].push(sample.latency_ms);
-                        if targets[0].as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(targets[0].as_str()) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
