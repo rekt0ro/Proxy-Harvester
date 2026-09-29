@@ -679,16 +679,21 @@ fn light_backend(config: &str) -> LightBackend {
         }
     }
 
+    // Current Xray releases no longer accept the legacy HTTP transport.
+    // Sing-box still represents the equivalent transport, so keep raw
+    // headerType=http candidates off the Xray path unless they require an
+    // explicitly Xray-only TLS extension.
+    let legacy_raw_http = (transport.is_empty() || transport == "tcp" || transport == "raw")
+        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http");
+
+    if legacy_raw_http && !xray_only_tls_extensions(&url) {
+        return LightBackend::SingBox;
+    }
+
     // XHTTP is an Xray-only path in our Light validator, regardless of the
     // share-link protocol. Sending Trojan/VMess XHTTP to sing-box only creates
     // deterministic parser rejection.
-    let raw_http_over_tls = (transport.is_empty() || transport == "tcp" || transport == "raw")
-        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http")
-        && ((!security.is_empty() && security != "none")
-            || !query_value(&url, &["sni"]).is_empty()
-            || !query_value(&url, &["peer"]).is_empty());
-
-    if matches!(transport.as_str(), "xhttp" | "splithttp") || raw_http_over_tls {
+    if matches!(transport.as_str(), "xhttp" | "splithttp") {
         return LightBackend::Xray;
     }
 
@@ -1355,6 +1360,13 @@ mod tests {
         let config =
             "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&host=grpc.example.com";
         assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_legacy_raw_http_to_singbox() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=tcp&headerType=http&host=example.com&path=%2Fproxy";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
     }
 
     #[test]
