@@ -597,14 +597,12 @@ fn light_backend(config: &str) -> LightBackend {
                             }
                         }
 
-                        let has_certificate_extension = ["pcs", "vcn"]
-                            .iter()
-                            .any(|key| {
-                                value
-                                    .get(*key)
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|item| !item.is_empty())
-                            });
+                        let has_certificate_extension = ["pcs", "vcn"].iter().any(|key| {
+                            value
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|item| !item.is_empty())
+                        });
                         let ech = value
                             .get("ech")
                             .and_then(Value::as_str)
@@ -1323,8 +1321,7 @@ mod tests {
             "vless://uuid@example.com:443?security=tls&type=ws&pcs=0000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(light_backend(config), LightBackend::Xray);
 
-        let config =
-            "vless://uuid@example.com:443?security=tls&type=ws&vcn=example.com";
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&vcn=example.com";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
