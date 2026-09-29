@@ -21,7 +21,7 @@ on:
       - ".gitignore"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -57,6 +57,25 @@ jobs:
           key: ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
+
+      - name: Auto-format PR branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply Rust formatting
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/validator.rs src/singbox.rs
+            git commit -m "style: format Rust sources"
+            git push
+          fi
 
       - name: Format check
         run: cargo fmt --all -- --check
