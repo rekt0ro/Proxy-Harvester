@@ -209,22 +209,6 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
         return None;
     }
 
-    if value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Some(value.to_string());
-    }
-
-    let digits_len = value
-        .bytes()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digits_len == 0 {
-        return None;
-    }
-
-    let digits = &value[..digits_len];
-    let suffix = value[digits_len..].trim_start_matches(|ch: char| {
-        matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
-    });
     const COMMON_QUERY_KEYS: &[&str] = &[
         "security=",
         "sni=",
