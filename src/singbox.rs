@@ -895,14 +895,19 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 key.eq_ignore_ascii_case("plugin").then_some(value.into_owned())
             }) {
                 let mut parts = plugin.splitn(2, ';');
-                let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+                let name = parts
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
                 if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
                     return Err(format!("unsupported Shadowsocks plugin {name}"));
                 }
 
                 let inline_opts = parts.next().unwrap_or("").to_string();
                 let separate_opts = url.query_pairs().find_map(|(key, value)| {
-                    key.eq_ignore_ascii_case("plugin_opts").then_some(value.into_owned())
+                    key.eq_ignore_ascii_case("plugin_opts")
+                        .then_some(value.into_owned())
                 });
                 let opts = if inline_opts.is_empty() {
                     separate_opts.unwrap_or_default()
