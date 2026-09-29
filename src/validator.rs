@@ -204,9 +204,8 @@ fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
 }
 
 fn repair_websocket_early_data(value: &str) -> Option<String> {
-    let value = value.trim();
-
-    if value.is_empty() {
+    let mut normalized = value.trim().to_string();
+    if normalized.is_empty() {
         return None;
     }
 
