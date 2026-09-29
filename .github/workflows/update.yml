@@ -5,6 +5,8 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - "subscriptions/**"
 
 concurrency:
   group: update-configs
@@ -36,6 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           persist-credentials: false
 
       - name: Load sources
@@ -276,7 +279,7 @@ jobs:
 
   # Job 2: the ONLY job with a write token. Main publishes all subscriptions; the temporary test branch publishes only Light.
   publish:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test/light-100'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.head_ref == 'test/light-100')
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -286,6 +289,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
 
       - name: Download subscriptions
         uses: actions/download-artifact@v8
@@ -298,7 +303,8 @@ jobs:
           set -euo pipefail
 
           src="${RUNNER_TEMP}/subscriptions"
-          if [ "${GITHUB_REF}" = "refs/heads/test/light-100" ]; then
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [ "$branch" = "test/light-100" ]; then
             files="light.txt"
           else
             files="all.txt light.txt all-base64.txt light-base64.txt"
@@ -327,12 +333,12 @@ jobs:
           fi
 
           git commit -m "Update subscriptions"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+          if [ "$branch" = "main" ]; then
             git fetch origin main
             git rebase --autostash origin/main
             git push origin HEAD:main
           else
-            git push origin HEAD:"${GITHUB_REF_NAME}"
+            git push origin HEAD:"$branch"
           fi
 
   # Job 3: deletes old caches; needs only the actions:write permission.
