@@ -247,7 +247,6 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
         "maxEarlyData=",
         "max_early_data=",
         "ed=",
-        "eh=",
     ];
 
     for _ in 0..5 {
