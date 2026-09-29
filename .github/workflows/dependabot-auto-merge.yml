@@ -56,11 +56,11 @@ jobs:
             valid=true
             for path in "${files[@]}"; do
               case "${path}" in
-                .github/workflows/*.yml|.github/workflows/*.yaml)
+                .github/workflows/*.yml|.github/workflows/*.yaml|Cargo.toml|Cargo.lock)
                   ;;
                 *)
                   valid=false
-                  echo "PR #${pr} changes non-workflow file: ${path}"
+                  echo "PR #${pr} changes an unmanaged file: ${path}"
                   ;;
               esac
             done
