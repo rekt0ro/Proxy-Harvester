@@ -396,60 +396,6 @@ fn normalize_xhttp_extra(value: Value) -> Value {
     }
 }
 
-fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
-    let Some(query) = url.query() else {
-        return Ok(None);
-    };
-
-    for pair in query.split('&') {
-        let Some((raw_key, raw_value)) = pair.split_once('=') else {
-            continue;
-        };
-
-        let key = percent_decode_str(raw_key).decode_utf8_lossy();
-        if !key.eq_ignore_ascii_case("extra") {
-            continue;
-        }
-
-        if raw_value.is_empty() {
-            return Ok(None);
-        }
-
-        let mut decoded = percent_decode_str(raw_value)
-            .decode_utf8_lossy()
-            .into_owned();
-
-        for _ in 0..2 {
-            if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
-                if !value.is_object() {
-                    return Err("XHTTP extra must be a JSON object".to_string());
-                }
-
-                return Ok(Some(normalize_xhttp_extra(value)));
-            }
-
-            let encoded_object = decoded.trim_start().to_ascii_lowercase().starts_with("%7b")
-                && decoded.trim_end().to_ascii_lowercase().ends_with("%7d");
-
-            if !encoded_object {
-                break;
-            }
-
-            let next = percent_decode_str(&decoded)
-                .decode_utf8_lossy()
-                .into_owned();
-            if next == decoded {
-                break;
-            }
-            decoded = next;
-        }
-
-        return Err("invalid XHTTP extra JSON".to_string());
-    }
-
-    Ok(None)
-}
-
 fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
     if network == "tcp" {
@@ -550,8 +496,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
         }
-        // Xray only uses earlyDataHeaderName when maxEarlyData is non-zero.
-        // Keep the header harmlessly ignored when early data is not configured.
+        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            return Err("WebSocket early-data header is set without early data".to_string());
+        }
     }
 
     match network.as_str() {
@@ -597,7 +544,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
+            if !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
@@ -643,8 +590,14 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !host_header.is_empty() {
                 settings["host"] = json!(host_header);
             }
-            if let Some(value) = xhttp_extra_value(url)? {
-                settings["extra"] = value;
+            let extra = first_query(url, &["extra"], Some(""));
+            if !extra.is_empty() {
+                let value = serde_json::from_str::<Value>(&extra)
+                    .map_err(|_| "invalid XHTTP extra JSON".to_string())?;
+                if !value.is_object() {
+                    return Err("XHTTP extra must be a JSON object".to_string());
+                }
+                settings["extra"] = normalize_xhttp_extra(value);
             }
             out["xhttpSettings"] = settings;
         }
@@ -860,6 +813,13 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+    if url
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+    {
+        return Err("Shadowsocks plugins unsupported".to_string());
+    }
+
     let (host, port, method, password) = if let Some(password) = url.password() {
         let method = decode_component(url.username());
         let (host, port) = endpoint_from_url(&url, None)?;
@@ -2409,27 +2369,6 @@ mod tests {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=xhttp&extra=%5B1%2C2%5D";
         let error = parse_config(config).expect_err("non-object XHTTP extra should be rejected");
         assert!(error.contains("XHTTP extra must be a JSON object"));
-    }
-
-    #[test]
-    fn accepts_xhttp_extra_with_plus_and_double_encoding() {
-        let single_encoded =
-            "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%7B%22mode%22%3A%22auto%22%2C%22xPaddingKey%22%3A%22a%2Bb%22%7D";
-        let parsed = parse_config(single_encoded)
-            .expect("single-encoded XHTTP extra should parse");
-        assert_eq!(
-            parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
-            "a+b"
-        );
-
-        let double_encoded =
-            "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%257B%2522mode%2522%253A%2522auto%2522%252C%2522xPaddingKey%2522%253A%2522a%252Bb%2522%257D";
-        let parsed = parse_config(double_encoded)
-            .expect("double-encoded XHTTP extra should parse");
-        assert_eq!(
-            parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
-            "a+b"
-        );
     }
 
     #[test]
