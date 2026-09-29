@@ -415,7 +415,9 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
             return Ok(None);
         }
 
-        let mut decoded = percent_decode_str(raw_value).decode_utf8_lossy().into_owned();
+        let mut decoded = percent_decode_str(raw_value)
+            .decode_utf8_lossy()
+            .into_owned();
 
         for _ in 0..2 {
             if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
@@ -426,20 +428,16 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
                 return Ok(Some(normalize_xhttp_extra(value)));
             }
 
-            let encoded_object = decoded
-                .trim_start()
-                .to_ascii_lowercase()
-                .starts_with("%7b")
-                && decoded
-                    .trim_end()
-                    .to_ascii_lowercase()
-                    .ends_with("%7d");
+            let encoded_object = decoded.trim_start().to_ascii_lowercase().starts_with("%7b")
+                && decoded.trim_end().to_ascii_lowercase().ends_with("%7d");
 
             if !encoded_object {
                 break;
             }
 
-            let next = percent_decode_str(&decoded).decode_utf8_lossy().into_owned();
+            let next = percent_decode_str(&decoded)
+                .decode_utf8_lossy()
+                .into_owned();
             if next == decoded {
                 break;
             }
@@ -2433,8 +2431,7 @@ mod tests {
 
         let double_encoded =
             "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%257B%2522mode%2522%253A%2522auto%2522%252C%2522xPaddingKey%2522%253A%2522a%252Bb%2522%257D";
-        let parsed = parse_config(double_encoded)
-            .expect("double-encoded XHTTP extra should parse");
+        let parsed = parse_config(double_encoded).expect("double-encoded XHTTP extra should parse");
         assert_eq!(
             parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
             "a+b"
