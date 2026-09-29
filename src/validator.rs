@@ -2449,8 +2449,7 @@ mod tests {
     #[test]
     fn accepts_websocket_early_data_header_without_size() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
-        let parsed = parse_config(config)
-            .expect("unused WebSocket early-data header should parse");
+        let parsed = parse_config(config).expect("unused WebSocket early-data header should parse");
         let ws = &parsed["streamSettings"]["wsSettings"];
         assert_eq!(ws.get("maxEarlyData"), None);
         assert_eq!(ws.get("earlyDataHeaderName"), None);
