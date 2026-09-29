@@ -227,7 +227,6 @@ jobs:
             --selected-batch-size 500 \
             --primary-target https://www.google.com/generate_204 \
             --singbox "$HOME/.local/bin/sing-box" \
-            --selection-limit 100 \
             --max-per-endpoint 1 \
             --max-per-family 3
           status=$?
