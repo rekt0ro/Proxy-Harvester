@@ -13,12 +13,8 @@ permissions:
   contents: read
 
 env:
-  XRAY_VERSION: "26.3.27"
-  # SHA-256 of Xray-linux-64.zip for the version above (64 lowercase hex chars).
-  XRAY_SHA256: "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
-  SINGBOX_VERSION: "1.14.1"
-  # SHA-256 of sing-box-<version>-linux-amd64.tar.gz for the version above.
-  SINGBOX_SHA256: "12cb2816b52febb356f6a885b740cc8758c3f30b8ae0ca8edba80f0d2d35343f"
+  XRAY_REPOSITORY: "XTLS/Xray-core"
+  SINGBOX_REPOSITORY: "SagerNet/sing-box"
 
 jobs:
   # Job 1: does all the untrusted work (downloads, config testing) with a READ-ONLY token.
@@ -63,20 +59,71 @@ jobs:
       - name: Verify Rust dependency lock
         run: test -s Cargo.lock
 
+      - name: Resolve latest stable validation cores
+        id: validation-cores
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          resolve_release() {
+            local repository="$1"
+            local asset_pattern="$2"
+            local output_prefix="$3"
+            local releases stable tag version asset_name digest
+
+            releases="$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${repository}/releases?per_page=100")"
+
+            stable="$(jq -c '[.[] | select(.draft == false and .prerelease == false)] | first' <<< "$releases")"
+            test "$stable" != "null"
+
+            tag="$(jq -r '.tag_name' <<< "$stable")"
+            case "$tag" in
+              v*) version="${tag#v}" ;;
+              *) version="$tag" ;;
+            esac
+            test -n "$version"
+
+            asset_name="$(jq -r --arg pattern "$asset_pattern" '.assets[] | select(.name | test($pattern)) | .name' <<< "$stable" | head -n 1)"
+            test -n "$asset_name"
+
+            digest="$(jq -r --arg asset "$asset_name" '.assets[] | select(.name == $asset) | .digest' <<< "$stable")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            digest="${digest#sha256:}"
+
+            {
+              echo "${output_prefix}_version=$version"
+              echo "${output_prefix}_sha256=$digest"
+              echo "${output_prefix}_asset=$asset_name"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          resolve_release "${XRAY_REPOSITORY}" '^Xray-linux-64\.zip$' xray
+          resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
+
+          echo "Latest stable Xray: ${xray_version} (${xray_asset})"
+          echo "Latest stable sing-box: ${singbox_version} (${singbox_asset})"
       - name: Compute cache keys
         id: keys
         env:
           RUNNER_OS_NAME: ${{ runner.os }}
           LOCK_HASH: ${{ hashFiles('Cargo.lock') }}
           RUST_VERSION: ${{ steps.rust-version.outputs.version }}
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          XRAY_SHA256: ${{ steps.validation-cores.outputs.xray_sha256 }}
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+          SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
         run: |
           {
             echo "registry=${RUNNER_OS_NAME}-cargo-registry-${LOCK_HASH}"
             echo "build=${RUNNER_OS_NAME}-cargo-build-rust-${RUST_VERSION}-${LOCK_HASH}"
-            echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-verified"
-            echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-verified"
+            echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-${XRAY_SHA256}-verified"
+            echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-${SINGBOX_SHA256}-verified"
           } >> "$GITHUB_OUTPUT"
-
       - name: Restore Rust registry cache
         id: cargo-registry-restore
         uses: actions/cache/restore@v6
@@ -104,7 +151,11 @@ jobs:
           path: ~/.local/bin/xray
           key: ${{ steps.keys.outputs.xray }}
 
-      - name: Install Xray (checksum-verified)
+      - name: Install Xray (latest stable, checksum-verified)
+        env:
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          XRAY_SHA256: ${{ steps.validation-cores.outputs.xray_sha256 }}
+          XRAY_ASSET: ${{ steps.validation-cores.outputs.xray_asset }}
         run: |
           set -euo pipefail
 
@@ -112,11 +163,11 @@ jobs:
 
           if [ ! -x "$HOME/.local/bin/xray" ]; then
             if [[ ! "$XRAY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "XRAY_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              echo "XRAY_SHA256 is not a valid SHA-256 from the release metadata." >&2
               exit 1
             fi
 
-            asset_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip"
+            asset_url="https://github.com/${XRAY_REPOSITORY}/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}"
             curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
             echo "${XRAY_SHA256}  /tmp/xray-download/xray.zip" | sha256sum -c -
             unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
@@ -140,7 +191,11 @@ jobs:
           path: ~/.local/bin/sing-box
           key: ${{ steps.keys.outputs.singbox }}
 
-      - name: Install sing-box (checksum-verified)
+      - name: Install sing-box (latest stable, checksum-verified)
+        env:
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+          SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
+          SINGBOX_ASSET: ${{ steps.validation-cores.outputs.singbox_asset }}
         run: |
           set -euo pipefail
 
@@ -148,11 +203,11 @@ jobs:
 
           if [ ! -x "$HOME/.local/bin/sing-box" ]; then
             if [[ ! "$SINGBOX_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "SINGBOX_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              echo "SINGBOX_SHA256 is not a valid SHA-256 from the release metadata." >&2
               exit 1
             fi
 
-            asset_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+            asset_url="https://github.com/${SINGBOX_REPOSITORY}/releases/download/v${SINGBOX_VERSION}/${SINGBOX_ASSET}"
             curl -fsSL "$asset_url" -o /tmp/singbox-download/sing-box.tar.gz
             echo "${SINGBOX_SHA256}  /tmp/singbox-download/sing-box.tar.gz" | sha256sum -c -
             tar -xzf /tmp/singbox-download/sing-box.tar.gz -C /tmp/singbox-download
@@ -219,12 +274,12 @@ jobs:
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxyrift/light.next.txt \
-            --workers 32 \
+            --workers 48 \
             --batch-size 1000 \
             --timeout 3 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
-            --selected-workers 32 \
+            --selected-workers 48 \
             --selected-batch-size 500 \
             --primary-target https://www.google.com/generate_204 \
             --singbox "$HOME/.local/bin/sing-box" \

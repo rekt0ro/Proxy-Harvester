@@ -396,6 +396,60 @@ fn normalize_xhttp_extra(value: Value) -> Value {
     }
 }
 
+fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
+    let Some(query) = url.query() else {
+        return Ok(None);
+    };
+
+    for pair in query.split('&') {
+        let Some((raw_key, raw_value)) = pair.split_once('=') else {
+            continue;
+        };
+
+        let key = percent_decode_str(raw_key).decode_utf8_lossy();
+        if !key.eq_ignore_ascii_case("extra") {
+            continue;
+        }
+
+        if raw_value.is_empty() {
+            return Ok(None);
+        }
+
+        let mut decoded = percent_decode_str(raw_value)
+            .decode_utf8_lossy()
+            .into_owned();
+
+        for _ in 0..2 {
+            if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
+                if !value.is_object() {
+                    return Err("XHTTP extra must be a JSON object".to_string());
+                }
+
+                return Ok(Some(normalize_xhttp_extra(value)));
+            }
+
+            let encoded_object = decoded.trim_start().to_ascii_lowercase().starts_with("%7b")
+                && decoded.trim_end().to_ascii_lowercase().ends_with("%7d");
+
+            if !encoded_object {
+                break;
+            }
+
+            let next = percent_decode_str(&decoded)
+                .decode_utf8_lossy()
+                .into_owned();
+            if next == decoded {
+                break;
+            }
+            decoded = next;
+        }
+
+        return Err("invalid XHTTP extra JSON".to_string());
+    }
+
+    Ok(None)
+}
+
 fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     let mut network = first_query(url, &["type", "network"], Some("tcp")).to_ascii_lowercase();
     if network == "tcp" {
@@ -435,6 +489,18 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         if !fp.is_empty() {
             tls["fingerprint"] = json!(fp);
         }
+        let ech = first_query(url, &["ech"], Some("")).replace(' ', "+");
+        if !ech.is_empty() {
+            tls["echConfigList"] = json!(ech);
+        }
+        let pcs = first_query(url, &["pcs"], Some(""));
+        if !pcs.is_empty() {
+            tls["pinnedPeerCertSha256"] = json!(pcs);
+        }
+        let vcn = first_query(url, &["vcn"], Some(""));
+        if !vcn.is_empty() {
+            tls["verifyPeerCertByName"] = json!(vcn);
+        }
         out["tlsSettings"] = tls;
     } else if security == "reality" {
         let pbk = first_query(url, &["pbk", "publicKey"], Some(""));
@@ -457,6 +523,18 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         }
         if !spx.is_empty() {
             reality["spiderX"] = json!(spx);
+        }
+        let ech = first_query(url, &["ech"], Some("")).replace(' ', "+");
+        if !ech.is_empty() {
+            reality["echConfigList"] = json!(ech);
+        }
+        let pcs = first_query(url, &["pcs"], Some(""));
+        if !pcs.is_empty() {
+            reality["pinnedPeerCertSha256"] = json!(pcs);
+        }
+        let vcn = first_query(url, &["vcn"], Some(""));
+        if !vcn.is_empty() {
+            reality["verifyPeerCertByName"] = json!(vcn);
         }
         out["realitySettings"] = reality;
     }
@@ -495,9 +573,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if early_data > u32::MAX as u64 {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
             }
-        }
-        if ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
-            return Err("WebSocket early-data header is set without early data".to_string());
         }
     }
 
@@ -544,7 +619,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data_header.is_empty() {
+            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
@@ -590,14 +665,8 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
             if !host_header.is_empty() {
                 settings["host"] = json!(host_header);
             }
-            let extra = first_query(url, &["extra"], Some(""));
-            if !extra.is_empty() {
-                let value = serde_json::from_str::<Value>(&extra)
-                    .map_err(|_| "invalid XHTTP extra JSON".to_string())?;
-                if !value.is_object() {
-                    return Err("XHTTP extra must be a JSON object".to_string());
-                }
-                settings["extra"] = normalize_xhttp_extra(value);
+            if let Some(value) = xhttp_extra_value(url)? {
+                settings["extra"] = value;
             }
             out["xhttpSettings"] = settings;
         }
@@ -719,6 +788,9 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         ("sni", "sni"),
         ("alpn", "alpn"),
         ("fp", "fp"),
+        ("ech", "ech"),
+        ("pcs", "pcs"),
+        ("vcn", "vcn"),
         ("host", "host"),
         ("path", "path"),
         ("allowInsecure", "insecure"),
@@ -811,13 +883,24 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
     }))
 }
 
+fn supported_ss_plugin(key: &str, value: &str) -> bool {
+    if !key.eq_ignore_ascii_case("plugin") {
+        return true;
+    }
+
+    matches!(
+        value.split(';').next().unwrap_or("").trim(),
+        "obfs-local" | "v2ray-plugin"
+    )
+}
+
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     if url
         .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+        .any(|(key, value)| !supported_ss_plugin(&key, &value))
     {
-        return Err("Shadowsocks plugins unsupported".to_string());
+        return Err("unsupported Shadowsocks plugin".to_string());
     }
 
     let (host, port, method, password) = if let Some(password) = url.password() {
@@ -944,6 +1027,8 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
+    let mut pin_sha256 = None;
+    let mut ech = None;
     let mut obfs = None;
     let mut obfs_password = None;
 
@@ -964,6 +1049,13 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "pinsha256" => {
+                let value = value.into_owned();
+                if !value.trim().is_empty() {
+                    pin_sha256 = Some(value);
+                }
+            }
+            "ech" => ech = Some(value.into_owned().replace(' ', "+")),
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             _ => {}
@@ -978,6 +1070,12 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
+    }
+    if let Some(pin_sha256) = pin_sha256.filter(|value| !value.is_empty()) {
+        tls["pinnedPeerCertSha256"] = json!(pin_sha256);
+    }
+    if let Some(ech) = ech.filter(|value| !value.is_empty()) {
+        tls["echConfigList"] = json!(ech);
     }
 
     let mut stream_settings = json!({
@@ -2372,6 +2470,41 @@ mod tests {
     }
 
     #[test]
+    fn accepts_xhttp_extra_with_plus_and_double_encoding() {
+        let single_encoded =
+            "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%7B%22mode%22%3A%22auto%22%2C%22xPaddingKey%22%3A%22a%2Bb%22%7D";
+        let parsed = parse_config(single_encoded).expect("single-encoded XHTTP extra should parse");
+        assert_eq!(
+            parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
+            "a+b"
+        );
+
+        let double_encoded =
+            "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%257B%2522mode%2522%253A%2522auto%2522%252C%2522xPaddingKey%2522%253A%2522a%252Bb%2522%257D";
+        let parsed = parse_config(double_encoded).expect("double-encoded XHTTP extra should parse");
+        assert_eq!(
+            parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
+            "a+b"
+        );
+    }
+
+    #[test]
+    fn accepts_websocket_early_data_header_without_size() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
+        let parsed = parse_config(config).expect("unused WebSocket early-data header should parse");
+        let ws = &parsed["streamSettings"]["wsSettings"];
+        assert_eq!(ws.get("maxEarlyData"), None);
+        assert_eq!(ws.get("earlyDataHeaderName"), None);
+    }
+
+    #[test]
+    fn supports_shadowsocks_sip003_plugins() {
+        assert!(supported_ss_plugin("plugin", "obfs-local;obfs=http"));
+        assert!(supported_ss_plugin("plugin", "v2ray-plugin;tls"));
+        assert!(!supported_ss_plugin("plugin", "unsupported-plugin"));
+    }
+
+    #[test]
     fn vmess_tcp_http_preserves_path_and_host() {
         let payload = json!({
             "add": "example.com",
@@ -2702,6 +2835,49 @@ mod tests {
 
         let error = parse_config(config).expect_err("guna is unsupported by Xray");
         assert!(error.contains("unsupported gRPC mode guna"));
+    }
+
+    #[test]
+    fn preserves_xray_vless_tls_extensions() {
+        let pin = "00".repeat(32);
+        let config = format!(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=YWJj&pcs={pin}&vcn=example.com,alt.example.com"
+        );
+        let parsed = parse_config(&config).expect("Xray TLS extensions should parse");
+        let tls = &parsed["streamSettings"]["tlsSettings"];
+        assert_eq!(tls["echConfigList"], "YWJj");
+        assert_eq!(tls["pinnedPeerCertSha256"], pin);
+        assert_eq!(tls["verifyPeerCertByName"], "example.com,alt.example.com");
+    }
+
+    #[test]
+    fn preserves_literal_plus_in_xray_ech_values() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=QUJD+REVGRw==";
+        let parsed = parse_config(config).expect("ECH value should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["echConfigList"],
+            "QUJD+REVGRw=="
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_ech_values() {
+        let parsed = parse_hy2("hysteria2://password@example.com:443?ech=YWJj")
+            .expect("Hysteria2 ECH should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["echConfigList"],
+            "YWJj"
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_pin_sha256_for_xray() {
+        let parsed = parse_hy2("hysteria2://password@example.com:443?pinSHA256=AA:BB:CC:DD")
+            .expect("Hysteria2 certificate pin should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"],
+            "AA:BB:CC:DD"
+        );
     }
 
     #[test]

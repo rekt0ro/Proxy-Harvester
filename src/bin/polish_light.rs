@@ -527,6 +527,13 @@ fn has_query_key(url: &Url, names: &[&str]) -> bool {
         .any(|(key, _)| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
 }
 
+fn xray_only_tls_extensions(url: &Url) -> bool {
+    let pcs = query_value(url, &["pcs", "pinnedPeerCertSha256"]);
+    let vcn = query_value(url, &["vcn", "verifyPeerCertByName"]);
+    let ech = query_value(url, &["ech"]);
+    !pcs.is_empty() || !vcn.is_empty() || ech.contains("://")
+}
+
 fn light_backend(config: &str) -> LightBackend {
     let Ok(url) = Url::parse(config.split('#').next().unwrap_or(config)) else {
         return LightBackend::SingBox;
@@ -589,6 +596,21 @@ fn light_backend(config: &str) -> LightBackend {
                                 return LightBackend::Xray;
                             }
                         }
+
+                        let has_certificate_extension = ["pcs", "vcn"].iter().any(|key| {
+                            value
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|item| !item.is_empty())
+                        });
+                        let ech = value
+                            .get("ech")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .replace(' ', "+");
+                        if has_certificate_extension || ech.contains("://") {
+                            return LightBackend::Xray;
+                        }
                     }
                 }
             }
@@ -612,6 +634,14 @@ fn light_backend(config: &str) -> LightBackend {
         && (has_query_key(&url, &["authority", "host"])
             || query_value(&url, &["mode"]).eq_ignore_ascii_case("multi"))
     {
+        return LightBackend::Xray;
+    }
+
+    if xray_only_tls_extensions(&url) {
+        return LightBackend::Xray;
+    }
+
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") && has_query_key(&url, &["pinSHA256"]) {
         return LightBackend::Xray;
     }
 
@@ -1279,6 +1309,35 @@ mod tests {
     fn routes_vision_udp443_to_xray() {
         let config =
             "vless://uuid@example.com:443?security=tls&type=tcp&flow=xtls-rprx-vision-udp443";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vless_ech_dns_resolver_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=ws&ech=example.com%2Bhttps%3A%2F%2Fdns.example%2Fdns-query";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vless_certificate_pinning_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=ws&pcs=0000000000000000000000000000000000000000000000000000000000000000";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&vcn=example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn keeps_raw_vless_ech_on_singbox() {
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&ech=YWJj";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_hysteria2_pin_sha256_to_xray() {
+        let config = "hysteria2://password@example.com:443?pinSHA256=AA%3ABB%3ACC%3ADD";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 

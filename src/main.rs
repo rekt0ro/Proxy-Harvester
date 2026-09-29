@@ -33,7 +33,7 @@ const DOWNLOAD_CONCURRENCY: usize = 16;
 // Keep total endpoint probes bounded. The previous 8 x 64 nesting could create
 // roughly 512 simultaneous probes before address fan-out was even considered.
 const TEST_CONCURRENCY: usize = 2;
-const TEST_CONNECTION_CONCURRENCY: usize = 32;
+const TEST_CONNECTION_CONCURRENCY: usize = 64;
 
 const MAX_TCP_ADDRESS_CONCURRENCY: usize = 8;
 const MAX_QUIC_TARGET_CONCURRENCY: usize = 8;

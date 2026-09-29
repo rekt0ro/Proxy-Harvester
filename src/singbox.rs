@@ -119,6 +119,35 @@ fn first_user(value: &Value) -> Result<&Value, String> {
         .ok_or_else(|| "missing outbound user".to_string())
 }
 
+fn singbox_ech_settings(value: &str) -> Result<Value, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("empty ECH config".to_string());
+    }
+    if value.contains("://") {
+        return Err(
+            "Xray ECH DNS resolver form is unsupported by pinned sing-box 1.14.1".to_string(),
+        );
+    }
+
+    let decoded = STANDARD
+        .decode(value)
+        .map_err(|_| "invalid ECH config base64".to_string())?;
+    if decoded.is_empty() {
+        return Err("empty ECH config".to_string());
+    }
+
+    let pem = format!(
+        "-----BEGIN ECH CONFIGS-----\n{}\n-----END ECH CONFIGS-----",
+        STANDARD.encode(decoded)
+    );
+
+    Ok(json!({
+        "enabled": true,
+        "config": [pem],
+    }))
+}
+
 fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String> {
     let security = stream
         .get("security")
@@ -191,6 +220,20 @@ fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String>
             "public_key": public_key,
             "short_id": short_id,
         });
+    }
+
+    if let Some(ech) = xray_tls
+        .get("echConfigList")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        tls["ech"] = singbox_ech_settings(ech)?;
+    }
+
+    if xray_tls.get("pinnedPeerCertSha256").is_some()
+        || xray_tls.get("verifyPeerCertByName").is_some()
+    {
+        return Err("Xray TLS certificate pinning/name verification is unsupported by pinned sing-box 1.14.1".to_string());
     }
 
     Ok(Some(tls))
@@ -632,7 +675,7 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     let mut obfs = None;
     let mut obfs_password = None;
     let mut has_pin = false;
-    let mut has_ech = false;
+    let mut ech = None;
 
     for (key, value) in pairs.by_ref() {
         match key.to_ascii_lowercase().as_str() {
@@ -655,16 +698,13 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
             "pinsha256" => has_pin = true,
-            "ech" => has_ech = true,
+            "ech" => ech = Some(value.into_owned().replace(' ', "+")),
             _ => {}
         }
     }
 
     if has_pin {
         return Err("Hysteria2 pinSHA256 is unsupported by pinned sing-box 1.14.1".to_string());
-    }
-    if has_ech {
-        return Err("Hysteria2 ECH links are unsupported by the Light URI mapper".to_string());
     }
     if obfs_password.is_some() && obfs.is_none() {
         return Err("Hysteria2 obfs-password requires obfs".to_string());
@@ -706,6 +746,9 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     }
     if !alpns.is_empty() {
         outbound["tls"]["alpn"] = json!(alpns);
+    }
+    if let Some(ech) = ech.filter(|value| !value.is_empty()) {
+        outbound["tls"]["ech"] = singbox_ech_settings(&ech)?;
     }
 
     if let Some(obfs_type) = obfs.filter(|value| !value.is_empty()) {
@@ -881,13 +924,35 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
 
             Ok(outbound)
         }
-        "ss" => Ok(json!({
-            "type": "shadowsocks",
-            "server": string_at(&xray, &["settings", "servers", "0", "address"])?,
-            "server_port": u16_at(&xray, &["settings", "servers", "0", "port"])?,
-            "method": string_at(&xray, &["settings", "servers", "0", "method"])?,
-            "password": string_at(&xray, &["settings", "servers", "0", "password"])?,
-        })),
+        "ss" => {
+            let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+            let mut outbound = json!({
+                "type": "shadowsocks",
+                "server": string_at(&xray, &["settings", "servers", "0", "address"])?,
+                "server_port": u16_at(&xray, &["settings", "servers", "0", "port"])?,
+                "method": string_at(&xray, &["settings", "servers", "0", "method"])?,
+                "password": string_at(&xray, &["settings", "servers", "0", "password"])?,
+            });
+
+            if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
+                key.eq_ignore_ascii_case("plugin")
+                    .then_some(value.into_owned())
+            }) {
+                let mut parts = plugin.splitn(2, ';');
+                let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+                if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
+                    return Err(format!("unsupported Shadowsocks plugin {name}"));
+                }
+
+                let opts = parts.next().unwrap_or("").to_string();
+                outbound["plugin"] = json!(name);
+                if !opts.is_empty() {
+                    outbound["plugin_opts"] = json!(opts);
+                }
+            }
+
+            Ok(outbound)
+        }
         "hysteria2" | "hy2" => {
             let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
             let password = string_at(&xray, &["streamSettings", "hysteriaSettings", "auth"])?;
@@ -1904,6 +1969,15 @@ mod tests {
     }
 
     #[test]
+    fn maps_shadowsocks_sip003_plugin() {
+        let config =
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
+        assert_eq!(outbound["plugin"], "obfs-local");
+        assert_eq!(outbound["plugin_opts"], "obfs=http");
+    }
+
+    #[test]
     fn maps_socks4_variants_natively() {
         let socks4 = singbox_outbound("socks4://user:pass@example.com:1080")
             .expect("SOCKS4 should map natively");
@@ -1986,6 +2060,45 @@ mod tests {
         let outbound = singbox_outbound(config).expect("Hysteria2 multi-port should map");
         assert_eq!(outbound["server_ports"], json!(["1234", "5000:6000"]));
         assert_eq!(outbound["tls"]["server_name"], "example.com");
+    }
+
+    #[test]
+    fn maps_vless_ech_to_singbox_tls() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=YWJj";
+        let outbound = singbox_outbound(config).expect("raw ECH should map");
+        assert_eq!(outbound["tls"]["ech"]["enabled"], true);
+        assert_eq!(
+            outbound["tls"]["ech"]["config"][0],
+            "-----BEGIN ECH CONFIGS-----\nYWJj\n-----END ECH CONFIGS-----"
+        );
+    }
+
+    #[test]
+    fn rejects_xray_ech_dns_resolver_for_singbox() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=example.com%2Bhttps%3A%2F%2Fdns.example%2Fdns-query";
+        let error =
+            singbox_outbound(config).expect_err("custom Xray ECH resolver cannot be mapped");
+        assert!(error.contains("ECH DNS resolver form"));
+    }
+
+    #[test]
+    fn maps_hysteria2_ech_to_singbox_tls() {
+        let config = "hysteria2://password@example.com:443?ech=YWJj";
+        let outbound = singbox_outbound(config).expect("Hysteria2 ECH should map");
+        assert_eq!(outbound["tls"]["ech"]["enabled"], true);
+        assert_eq!(
+            outbound["tls"]["ech"]["config"][0],
+            "-----BEGIN ECH CONFIGS-----\nYWJj\n-----END ECH CONFIGS-----"
+        );
+    }
+
+    #[test]
+    fn rejects_vless_certificate_pinning_for_singbox() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&pcs=0000000000000000000000000000000000000000000000000000000000000000";
+        let error =
+            singbox_outbound(config).expect_err("Xray certificate pinning should route away");
+        assert!(error.contains("certificate pinning"));
     }
 
     #[test]
