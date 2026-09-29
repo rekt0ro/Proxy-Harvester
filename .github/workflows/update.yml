@@ -256,12 +256,12 @@ jobs:
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt; do
             test -s "$f"
-            tmp="${f}"
+            tmp="${f}.tmp"
             { 
               printf '%s\n' '#profile-update-interval: 1'
               cat "$f"
-            } > "${t}p"
-            mv -f "${t}p" "$f"
+            } > "$tmp"
+            mv -f "$tmp" "$f"
           done
 
       - name: Generate Base64 subscriptions
