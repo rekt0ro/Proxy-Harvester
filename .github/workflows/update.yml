@@ -220,12 +220,12 @@ jobs:
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxyrift/light.next.txt \
-            --workers 32 \
+            --workers 48 \
             --batch-size 1000 \
             --timeout 3 \
             --selected-recheck-limit 500 \
             --max-candidates "$LIGHT_MAX_CANDIDATES" \
-            --selected-workers 32 \
+            --selected-workers 48 \
             --selected-batch-size 500 \
             --primary-target https://www.google.com/generate_204 \
             --singbox "$HOME/.local/bin/sing-box" \
