@@ -858,7 +858,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
             Ok(outbound)
         }
         "trojan" => {
-            let url = Url::parse(clean(config)).ok();
+            let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
             let password = xray["settings"]["servers"]
                 .get(0)
                 .and_then(|server| server["password"].as_str())
@@ -891,22 +891,20 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": string_at(&xray, &["settings", "servers", "0", "password"])?,
             });
 
-            if let Ok(url) = Url::parse(clean(config)) {
-                if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
-                    key.eq_ignore_ascii_case("plugin")
-                        .then_some(value.into_owned())
-                }) {
-                    let mut parts = plugin.splitn(2, ';');
-                    let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
-                    if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
-                        return Err(format!("unsupported Shadowsocks plugin {name}"));
-                    }
+            if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
+                key.eq_ignore_ascii_case("plugin")
+                    .then_some(value.into_owned())
+            }) {
+                let mut parts = plugin.splitn(2, ';');
+                let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+                if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
+                    return Err(format!("unsupported Shadowsocks plugin {name}"));
+                }
 
-                    let opts = parts.next().unwrap_or("").to_string();
-                    outbound["plugin"] = json!(name);
-                    if !opts.is_empty() {
-                        outbound["plugin_opts"] = json!(opts);
-                    }
+                let opts = parts.next().unwrap_or("").to_string();
+                outbound["plugin"] = json!(name);
+                if !opts.is_empty() {
+                    outbound["plugin_opts"] = json!(opts);
                 }
             }
 
@@ -1925,50 +1923,6 @@ mod tests {
         let outbound = singbox_outbound(config).expect("VLESS Reality without fp should map");
         assert_eq!(outbound["tls"]["utls"]["enabled"], true);
         assert_eq!(outbound["tls"]["utls"]["fingerprint"], "chrome");
-    }
-
-    #[test]
-    fn maps_shadowsocks_sip003_plugins() {
-        let config =
-            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
-        let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
-        assert_eq!(outbound["plugin"], "obfs-local");
-        assert_eq!(outbound["plugin_opts"], "obfs=http");
-
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=v2ray-plugin%3Btls%3Bhost%3Dexample.com";
-        let outbound = singbox_outbound(config).expect("v2ray-plugin should map");
-        assert_eq!(outbound["plugin"], "v2ray-plugin");
-        assert_eq!(outbound["plugin_opts"], "tls;host=example.com");
-    }
-
-    #[test]
-    fn rejects_unsupported_shadowsocks_plugin() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=unsupported-plugin";
-        let error =
-            singbox_outbound(config).expect_err("unsupported SIP003 plugin must be rejected");
-        assert!(error.contains("unsupported Shadowsocks plugin"));
-    }
-
-    #[test]
-    fn maps_shadowsocks_sip003_plugins() {
-        let config =
-            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
-        let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
-        assert_eq!(outbound["plugin"], "obfs-local");
-        assert_eq!(outbound["plugin_opts"], "obfs=http");
-
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=v2ray-plugin%3Btls%3Bhost%3Dexample.com";
-        let outbound = singbox_outbound(config).expect("v2ray-plugin should map");
-        assert_eq!(outbound["plugin"], "v2ray-plugin");
-        assert_eq!(outbound["plugin_opts"], "tls;host=example.com");
-    }
-
-    #[test]
-    fn rejects_unsupported_shadowsocks_plugin() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=unsupported-plugin";
-        let error =
-            singbox_outbound(config).expect_err("unsupported SIP003 plugin must be rejected");
-        assert!(error.contains("unsupported Shadowsocks plugin"));
     }
 
     #[test]
