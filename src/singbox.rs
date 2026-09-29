@@ -858,7 +858,7 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
             Ok(outbound)
         }
         "trojan" => {
-            let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+            let url = Url::parse(clean(config)).ok();
             let password = xray["settings"]["servers"]
                 .get(0)
                 .and_then(|server| server["password"].as_str())
@@ -891,9 +891,11 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
                 "password": string_at(&xray, &["settings", "servers", "0", "password"])?,
             });
 
-            if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
+            if let Some(plugin) = url.and_then(|url| {
+                url.query_pairs().find_map(|(key, value)| {
                 key.eq_ignore_ascii_case("plugin")
                     .then_some(value.into_owned())
+                })
             }) {
                 let mut parts = plugin.splitn(2, ';');
                 let name = parts.next().unwrap_or("").trim().to_ascii_lowercase();
