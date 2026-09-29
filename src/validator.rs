@@ -2669,7 +2669,10 @@ mod tests {
         )
         .expect("oversized optional WebSocket early data should be ignored");
 
-        assert_eq!(config["streamSettings"]["wsSettings"].get("maxEarlyData"), None);
+        assert_eq!(
+            config["streamSettings"]["wsSettings"].get("maxEarlyData"),
+            None
+        );
     }
 
     #[test]
@@ -3221,5 +3224,4 @@ mod tests {
 
         assert_eq!(parsed["settings"]["vnext"][0]["users"][0].get("flow"), None);
     }
-
 }
