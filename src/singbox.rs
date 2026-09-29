@@ -2067,7 +2067,8 @@ mod tests {
     #[test]
     fn maps_hysteria2_trailing_slash_on_nondefault_port() {
         let config = "hysteria2://password@example.com:33333/?insecure=1";
-        let outbound = singbox_outbound(config).expect("trailing slash on explicit port should parse");
+        let outbound =
+            singbox_outbound(config).expect("trailing slash on explicit port should parse");
         assert_eq!(outbound["server_port"], 33333);
     }
 
