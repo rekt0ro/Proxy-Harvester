@@ -457,10 +457,11 @@ fn write_light_lines(output: &str, values: &[String]) -> Result<(), String> {
     write_lines(output, &normalized)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn benchmark_finalists(
     xray: &str,
     singbox: &str,
-    final_verified: &mut Vec<String>,
+    final_verified: &mut [String],
     final_metadata: &mut HashMap<String, ProxyMetrics>,
     global_positions: &HashMap<String, usize>,
     history: &HashMap<String, HistoryEntry>,
@@ -1074,12 +1075,6 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let mut selected = select_verified_configs(
-                &final_verified,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            );
             benchmark_finalists(
                 &xray,
                 &singbox,
@@ -1094,7 +1089,7 @@ async fn main() -> Result<(), String> {
                 max_per_family,
             )
             .await?;
-            selected = select_verified_configs(
+            let selected = select_verified_configs(
                 &final_verified,
                 selection_limit,
                 max_per_endpoint,
