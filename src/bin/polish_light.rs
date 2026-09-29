@@ -641,6 +641,12 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::Xray;
     }
 
+    if matches!(scheme.as_str(), "hysteria2" | "hy2")
+        && has_query_key(&url, &["pinSHA256"])
+    {
+        return LightBackend::Xray;
+    }
+
     if url.scheme().eq_ignore_ascii_case("vless") {
         let flow = query_value(&url, &["flow"]).to_ascii_lowercase();
         if !flow.is_empty() && flow != "xtls-rprx-vision" {
@@ -1329,6 +1335,13 @@ mod tests {
     fn keeps_raw_vless_ech_on_singbox() {
         let config = "vless://uuid@example.com:443?security=tls&type=ws&ech=YWJj";
         assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_hysteria2_pin_sha256_to_xray() {
+        let config =
+            "hysteria2://password@example.com:443?pinSHA256=AA%3ABB%3ACC%3ADD";
+        assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
     #[test]
