@@ -81,7 +81,7 @@ Light also uses a safety threshold when publishing updates. If a new run produce
 
 ## Automatic Updates
 
-ProxyRift regenerates the subscription lists automatically every **30 minutes** through GitHub Actions.
+ProxyRift regenerates the subscription lists automatically through GitHub Actions.
 
 Each update collects fresh public configurations, screens them, builds the All and Light pools, generates the subscription formats, and publishes the results.
 
