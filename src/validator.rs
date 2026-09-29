@@ -864,12 +864,10 @@ fn parse_ss(config: &str) -> Result<Value, String> {
     if url
         .query_pairs()
         .any(|(key, value)| {
-        key.eq_ignore_ascii_case("plugin")
-            && !matches!(
-                value.split(';').next().unwrap_or("").trim(),
-                "obfs-local" | "v2ray-plugin"
-            )
-    }) {
+            key.eq_ignore_ascii_case("plugin")
+                && !(value.starts_with("obfs-local") || value.starts_with("v2ray-plugin"))
+        })
+    {
         return Err("unsupported Shadowsocks plugin".to_string());
     }
 
