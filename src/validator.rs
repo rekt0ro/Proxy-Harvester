@@ -204,28 +204,11 @@ fn first_query(url: &Url, names: &[&str], default: Option<&str>) -> String {
 }
 
 fn repair_websocket_early_data(value: &str) -> Option<String> {
-    let value = value.trim();
-
-    if value.is_empty() {
+    let mut normalized = value.trim().to_string();
+    if normalized.is_empty() {
         return None;
     }
 
-    if value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Some(value.to_string());
-    }
-
-    let digits_len = value
-        .bytes()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digits_len == 0 {
-        return None;
-    }
-
-    let digits = &value[..digits_len];
-    let suffix = value[digits_len..].trim_start_matches(|ch: char| {
-        matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
-    });
     const COMMON_QUERY_KEYS: &[&str] = &[
         "security=",
         "sni=",
@@ -244,16 +227,46 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
         "eh=",
         "earlyDataHeaderName=",
         "early_data_header_name=",
+        "maxEarlyData=",
+        "max_early_data=",
+        "ed=",
     ];
 
-    COMMON_QUERY_KEYS
-        .iter()
-        .any(|key| {
-            suffix
-                .get(..key.len())
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
-        })
-        .then(|| digits.to_string())
+    for _ in 0..5 {
+        normalized = normalized.trim().to_string();
+        if normalized.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Some(normalized);
+        }
+
+        let digits_len = normalized
+            .bytes()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits_len > 0 {
+            let digits = &normalized[..digits_len];
+            let suffix = normalized[digits_len..].trim_start_matches(|ch: char| {
+                matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
+            });
+
+            if COMMON_QUERY_KEYS.iter().any(|key| {
+                suffix
+                    .get(..key.len())
+                    .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
+            }) {
+                return Some(digits.to_string());
+            }
+        }
+
+        let decoded = percent_decode_str(&normalized)
+            .decode_utf8_lossy()
+            .into_owned();
+        if decoded == normalized {
+            break;
+        }
+        normalized = decoded;
+    }
+
+    None
 }
 
 fn websocket_early_data_query_value(url: &Url) -> String {
@@ -502,11 +515,14 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
 
         for _ in 0..5 {
             if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
-                if !value.is_object() {
-                    return Err("XHTTP extra must be a JSON object".to_string());
+                match value {
+                    Value::Object(_) => return Ok(Some(normalize_xhttp_extra(value))),
+                    Value::String(inner) if inner != decoded => {
+                        decoded = inner;
+                        continue;
+                    }
+                    _ => return Err("XHTTP extra must be a JSON object".to_string()),
                 }
-
-                return Ok(Some(normalize_xhttp_extra(value)));
             }
 
             if decoded.contains('+') {
@@ -2690,6 +2706,13 @@ mod tests {
     }
 
     #[test]
+    fn accepts_string_wrapped_xhttp_extra() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=xhttp&extra=%22%7B%5C%22mode%5C%22%3A%5C%22auto%5C%22%7D%22";
+        parse_config(config).expect("JSON-string-wrapped XHTTP extra should parse");
+    }
+
+    #[test]
     fn accepts_xhttp_extra_with_plus_and_double_encoding() {
         let single_encoded =
             "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%7B%22mode%22%3A%22auto%22%2C%22xPaddingKey%22%3A%22a%2Bb%22%7D";
@@ -2706,6 +2729,25 @@ mod tests {
             parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
             "a+b"
         );
+    }
+
+    #[test]
+    fn repairs_double_encoded_websocket_early_data_suffix() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=none&type=ws&path=%2F%3Fed%3D2560%2526security%253Dtls",
+        )
+        .expect("double-encoded WebSocket early-data suffix should be repaired");
+
+        assert_eq!(config["streamSettings"]["wsSettings"]["maxEarlyData"], 2560);
+    }
+
+    #[test]
+    fn explicit_tcp_transport_is_normalized_to_raw() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=tcp",
+        )
+        .expect("explicit TCP transport should parse");
+        assert_eq!(config["streamSettings"]["network"], "raw");
     }
 
     #[test]
