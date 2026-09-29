@@ -209,7 +209,10 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
         return Some(value.to_string());
     }
 
-    let digits_len = value.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    let digits_len = value
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
     if digits_len == 0 {
         return None;
     }
@@ -238,7 +241,11 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
 
     COMMON_QUERY_KEYS
         .iter()
-        .any(|key| suffix.get(..key.len()).is_some_and(|tail| tail.eq_ignore_ascii_case(key)))
+        .any(|key| {
+            suffix
+                .get(..key.len())
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(key))
+        })
         .then(|| digits.to_string())
 }
 
@@ -246,13 +253,9 @@ fn websocket_early_data_query_value(url: &Url) -> String {
     let mut invalid = None;
 
     for (key, value) in url.query_pairs() {
-        if ![
-            "ed",
-            "maxEarlyData",
-            "max_early_data",
-        ]
-        .iter()
-        .any(|name| key.eq_ignore_ascii_case(name))
+        if !["ed", "maxEarlyData", "max_early_data"]
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
         {
             continue;
         }
@@ -623,10 +626,15 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
 
         if let Some((base_path, encoded_early_data)) = path.split_once("?ed=") {
             if ws_early_data.is_empty() || ws_early_data.parse::<u64>().is_err() {
-                ws_early_data = repair_websocket_early_data(
-                    encoded_early_data.split('&').next().unwrap_or("")
-                )
-                .unwrap_or_else(|| encoded_early_data.split('&').next().unwrap_or("").to_string());
+                ws_early_data =
+                    repair_websocket_early_data(encoded_early_data.split('&').next().unwrap_or(""))
+                        .unwrap_or_else(|| {
+                            encoded_early_data
+                                .split('&')
+                                .next()
+                                .unwrap_or("")
+                                .to_string()
+                        });
             }
             if ws_early_data_header.is_empty() {
                 ws_early_data_header = "Sec-WebSocket-Protocol".to_string();
@@ -635,7 +643,9 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         }
 
         if !ws_early_data.is_empty() {
-            let early_data = ws_early_data.trim().parse::<u64>()
+            let early_data = ws_early_data
+                .trim()
+                .parse::<u64>()
                 .map_err(|_| "invalid WebSocket early-data size".to_string())?;
             if early_data > u32::MAX as u64 {
                 return Err("WebSocket early-data size exceeds Xray limit".to_string());
