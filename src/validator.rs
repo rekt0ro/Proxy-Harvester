@@ -861,7 +861,9 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-    if url.query_pairs().any(|(key, value)| {
+    if url
+        .query_pairs()
+        .any(|(key, value)| {
         key.eq_ignore_ascii_case("plugin")
             && !matches!(
                 value.split(';').next().unwrap_or("").trim(),
