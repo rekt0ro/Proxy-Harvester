@@ -859,13 +859,24 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
     }))
 }
 
+fn supported_ss_plugin(key: &str, value: &str) -> bool {
+    if !key.eq_ignore_ascii_case("plugin") {
+        return true;
+    }
+
+    matches!(
+        value.split(';').next().unwrap_or("").trim(),
+        "obfs-local" | "v2ray-plugin"
+    )
+}
+
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     if url
         .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+        .any(|(key, value)| !supported_ss_plugin(&key, &value))
     {
-        return Err("Shadowsocks plugins unsupported".to_string());
+        return Err("unsupported Shadowsocks plugin".to_string());
     }
 
     let (host, port, method, password) = if let Some(password) = url.password() {
