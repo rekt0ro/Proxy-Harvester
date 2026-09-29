@@ -1,6 +1,8 @@
 name: Update Configs
 
 on:
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -33,7 +35,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           persist-credentials: false
 
       - name: Load sources
@@ -227,6 +228,7 @@ jobs:
             --selected-batch-size 500 \
             --primary-target https://www.google.com/generate_204 \
             --singbox "$HOME/.local/bin/sing-box" \
+            --selection-limit 200 \
             --max-per-endpoint 1 \
             --max-per-family 3
           status=$?
@@ -285,9 +287,8 @@ jobs:
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
           rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
-  # Job 2: the ONLY job with a write token. Main publishes all subscriptions; the temporary test branch publishes only Light.
+  # Job 2: the ONLY job with a write token. It just copies four files and pushes.
   publish:
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/test/light-100')
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -297,8 +298,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
 
       - name: Download subscriptions
         uses: actions/download-artifact@v8
@@ -311,12 +310,7 @@ jobs:
           set -euo pipefail
 
           src="${RUNNER_TEMP}/subscriptions"
-          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if [ "$branch" = "test/light-100" ]; then
-            files="light.txt"
-          else
-            files="all.txt light.txt all-base64.txt light-base64.txt"
-          fi
+          files="all.txt light.txt all-base64.txt light-base64.txt"
 
           for f in $files; do
             test -s "${src}/${f}"
@@ -341,17 +335,12 @@ jobs:
           fi
 
           git commit -m "Update subscriptions"
-          if [ "$branch" = "main" ]; then
-            git fetch origin main
-            git rebase --autostash origin/main
-            git push origin HEAD:main
-          else
-            git push origin HEAD:"$branch"
-          fi
+          git fetch origin main
+          git rebase --autostash origin/main
+          git push origin HEAD:main
 
   # Job 3: deletes old caches; needs only the actions:write permission.
   cleanup:
-    if: github.ref == 'refs/heads/main'
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
