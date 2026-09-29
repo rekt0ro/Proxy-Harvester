@@ -1643,7 +1643,11 @@ fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     }
 }
 
-fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    append_limited_response_chunk_to(body, chunk, MAX_RESPONSE_BYTES)
+}
+
+fn append_limited_response_chunk_to(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
     if chunk.len() > limit.saturating_sub(body.len()) {
         return false;
     }
@@ -1658,7 +1662,7 @@ pub(crate) async fn read_response_body_limited_to(
     let mut body = Vec::with_capacity(limit.min(16_384));
 
     while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-        if !append_limited_response_chunk(&mut body, &chunk, limit) {
+        if !append_limited_response_chunk_to(&mut body, &chunk, limit) {
             return Err(());
         }
     }
@@ -1691,7 +1695,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > response_limit as u64)
+        .is_some_and(|length| length as usize > response_limit)
     {
         return Err(ProbeError::Failed);
     }
