@@ -14,10 +14,8 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
-pub const EARLY_THROUGHPUT_TARGET: &str =
-    "https://speed.cloudflare.com/__down?bytes=1048576";
-pub const STRICT_THROUGHPUT_TARGET: &str =
-    "https://speed.cloudflare.com/__down?bytes=10485760";
+pub const EARLY_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=1048576";
+pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=10485760";
 pub const THROUGHPUT_TARGET: &str = EARLY_THROUGHPUT_TARGET;
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const LIGHT_TARGETS: &[&str] = &[
@@ -1668,9 +1666,7 @@ pub(crate) async fn read_response_body_limited_to(
     Ok(body)
 }
 
-pub(crate) async fn read_response_body_limited(
-    response: reqwest::Response,
-) -> Result<Vec<u8>, ()> {
+pub(crate) async fn read_response_body_limited(response: reqwest::Response) -> Result<Vec<u8>, ()> {
     read_response_body_limited_to(response, MAX_RESPONSE_BYTES).await
 }
 
