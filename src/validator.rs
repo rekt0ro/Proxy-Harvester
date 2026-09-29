@@ -1027,6 +1027,7 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     let mut sni = host.clone();
     let mut alpn = Vec::new();
     let mut fingerprint = String::new();
+    let mut pin_sha256 = None;
     let mut ech = None;
     let mut obfs = None;
     let mut obfs_password = None;
@@ -1048,6 +1049,12 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
                 );
             }
             "fp" | "fingerprint" => fingerprint = value.into_owned(),
+            "pinsha256" => {
+                let value = value.into_owned();
+                if !value.trim().is_empty() {
+                    pin_sha256 = Some(value);
+                }
+            }
             "ech" => ech = Some(value.into_owned().replace(' ', "+")),
             "obfs" => obfs = Some(value.into_owned()),
             "obfs-password" => obfs_password = Some(value.into_owned()),
@@ -1063,6 +1070,9 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }
     if !fingerprint.is_empty() {
         tls["fingerprint"] = json!(fingerprint);
+    }
+    if let Some(pin_sha256) = pin_sha256.filter(|value| !value.is_empty()) {
+        tls["pinnedPeerCertSha256"] = json!(pin_sha256);
     }
     if let Some(ech) = ech.filter(|value| !value.is_empty()) {
         tls["echConfigList"] = json!(ech);
@@ -2857,6 +2867,18 @@ mod tests {
         assert_eq!(
             parsed["streamSettings"]["tlsSettings"]["echConfigList"],
             "YWJj"
+        );
+    }
+
+    #[test]
+    fn preserves_hysteria2_pin_sha256_for_xray() {
+        let parsed = parse_hy2(
+            "hysteria2://password@example.com:443?pinSHA256=AA:BB:CC:DD",
+        )
+        .expect("Hysteria2 certificate pin should parse");
+        assert_eq!(
+            parsed["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"],
+            "AA:BB:CC:DD"
         );
     }
 
