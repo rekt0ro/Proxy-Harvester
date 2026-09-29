@@ -849,9 +849,10 @@ async fn validate_light_batch(
     }
 
     println!(
-        "[INFO] Multi-target Light validation: {}/{} candidates verified.",
+        "[INFO] Multi-target Light validation: {}/{} candidates verified using {} throughput target.",
         verified.len(),
-        candidates.len()
+        candidates.len(),
+        if settings.strict { "10 MiB" } else { "1 MiB" }
     );
 
     Ok(verified)
@@ -904,7 +905,12 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
+    let early_targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
+    let strict_targets = [
+        primary_target.as_str(),
+        proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+        LIGHT_TARGETS[2],
+    ];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -966,7 +972,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             chunk,
-            &targets,
+            &early_targets,
             ValidationSettings {
                 workers,
                 batch_size,
@@ -1071,7 +1077,7 @@ async fn main() -> Result<(), String> {
             &xray,
             &singbox,
             &final_candidates,
-            &targets,
+            &strict_targets,
             ValidationSettings {
                 workers: final_workers,
                 batch_size: final_batch_size,
