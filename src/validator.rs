@@ -2456,6 +2456,13 @@ mod tests {
     }
 
     #[test]
+    fn supports_shadowsocks_sip003_plugins() {
+        assert!(supported_ss_plugin("plugin", "obfs-local;obfs=http"));
+        assert!(supported_ss_plugin("plugin", "v2ray-plugin;tls"));
+        assert!(!supported_ss_plugin("plugin", "unsupported-plugin"));
+    }
+
+    #[test]
     fn vmess_tcp_http_preserves_path_and_host() {
         let payload = json!({
             "add": "example.com",
