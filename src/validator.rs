@@ -2451,16 +2451,9 @@ mod tests {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
         let parsed = parse_config(config)
             .expect("unused WebSocket early-data header should parse");
-        assert!(
-            parsed["streamSettings"]["wsSettings"]
-                .get("maxEarlyData")
-                .is_none()
-        );
-        assert!(
-            parsed["streamSettings"]["wsSettings"]
-                .get("earlyDataHeaderName")
-                .is_none()
-        );
+        let ws = &parsed["streamSettings"]["wsSettings"];
+        assert_eq!(ws.get("maxEarlyData"), None);
+        assert_eq!(ws.get("earlyDataHeaderName"), None);
     }
 
     #[test]
