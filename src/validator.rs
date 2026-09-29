@@ -865,7 +865,12 @@ fn parse_ss(config: &str) -> Result<Value, String> {
         key.eq_ignore_ascii_case("plugin")
             .then_some(value.into_owned())
     }) {
-        let name = plugin.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let name = plugin
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         if !matches!(name.as_str(), "obfs-local" | "v2ray-plugin") {
             return Err(format!("unsupported Shadowsocks plugin {name}"));
         }
