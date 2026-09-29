@@ -892,7 +892,8 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
             });
 
             if let Some(plugin) = url.query_pairs().find_map(|(key, value)| {
-                key.eq_ignore_ascii_case("plugin").then_some(value.into_owned())
+                key.eq_ignore_ascii_case("plugin")
+                    .then_some(value.into_owned())
             }) {
                 let mut parts = plugin.splitn(2, ';');
                 let name = parts
