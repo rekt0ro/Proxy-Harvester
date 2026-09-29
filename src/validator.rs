@@ -2449,9 +2449,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_shadowsocks_sip003_plugin_url() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=";
-        parse_config(config).expect("plugin URI remains syntactically parseable");
+    fn accepts_shadowsocks_sip003_plugin_url_without_options() {
+        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local";
+        parse_config(config).expect("SIP003 plugin URI without options should parse");
     }
 
     #[test]
