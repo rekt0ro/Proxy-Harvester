@@ -895,12 +895,15 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
     let network =
         normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
 
+    let vmess_tls = match value.get("tls") {
+        Some(Value::Bool(true)) => "tls".to_string(),
+        Some(Value::Bool(false)) | None => String::new(),
+        Some(value) => json_text(Some(value)).unwrap_or_default(),
+    };
+
     let mut q = vec![
         ("type".to_string(), network.clone()),
-        (
-            "security".to_string(),
-            json_text(value.get("tls")).unwrap_or_default(),
-        ),
+        ("security".to_string(), vmess_tls),
     ];
     if value
         .get("type")
@@ -2837,6 +2840,25 @@ mod tests {
         assert!(supported_ss_plugin("plugin", "obfs-local;obfs=http"));
         assert!(supported_ss_plugin("plugin", "v2ray-plugin;tls"));
         assert!(!supported_ss_plugin("plugin", "unsupported-plugin"));
+    }
+
+    #[test]
+    fn maps_vmess_boolean_tls_to_transport_security() {
+        for (tls, expected) in [(true, "tls"), (false, "none")] {
+            let payload = json!({
+                "add": "example.com",
+                "port": 443,
+                "id": "00000000-0000-0000-0000-000000000001",
+                "aid": 0,
+                "scy": "auto",
+                "net": "tcp",
+                "tls": tls,
+            });
+            let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+            let parsed = parse_config(&config).expect("VMess boolean TLS should parse");
+
+            assert_eq!(parsed["streamSettings"]["security"], expected);
+        }
     }
 
     #[test]
