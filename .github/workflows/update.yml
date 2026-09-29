@@ -293,7 +293,7 @@ jobs:
 
   # Job 2: the ONLY job with a write token. Main publishes all subscriptions; the temporary test branch publishes only Light.
   publish:
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.head_ref == 'test/light-100')
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/test/light-100')
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
