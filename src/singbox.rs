@@ -1,7 +1,7 @@
 use crate::validator::{
     config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
     read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
-    ValidationPolicy, MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
+    ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS,
     MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY,
     STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS,
     STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS, SUSTAINED_THROUGHPUT_TIMEOUT,
@@ -1168,7 +1168,7 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > response_limit as u64)
+        .is_some_and(|length| length as usize > response_limit)
     {
         return Err("response body exceeds validation limit".to_string());
     }
