@@ -1926,6 +1926,15 @@ mod tests {
     }
 
     #[test]
+    fn maps_shadowsocks_sip003_plugin() {
+        let config =
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
+        assert_eq!(outbound["plugin"], "obfs-local");
+        assert_eq!(outbound["plugin_opts"], "obfs=http");
+    }
+
+    #[test]
     fn maps_socks4_variants_natively() {
         let socks4 = singbox_outbound("socks4://user:pass@example.com:1080")
             .expect("SOCKS4 should map natively");
