@@ -274,9 +274,9 @@ jobs:
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
           rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
-  # Job 2: the ONLY job with a write token. It just copies four files and pushes.
+  # Job 2: the ONLY job with a write token. Main publishes all subscriptions; the temporary test branch publishes only Light.
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test/light-100'
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -298,7 +298,11 @@ jobs:
           set -euo pipefail
 
           src="${RUNNER_TEMP}/subscriptions"
-          files="all.txt light.txt all-base64.txt light-base64.txt"
+          if [ "${GITHUB_REF}" = "refs/heads/test/light-100" ]; then
+            files="light.txt"
+          else
+            files="all.txt light.txt all-base64.txt light-base64.txt"
+          fi
 
           for f in $files; do
             test -s "${src}/${f}"
@@ -323,9 +327,13 @@ jobs:
           fi
 
           git commit -m "Update subscriptions"
-          git fetch origin main
-          git rebase --autostash origin/main
-          git push origin HEAD:main
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            git fetch origin main
+            git rebase --autostash origin/main
+            git push origin HEAD:main
+          else
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+          fi
 
   # Job 3: deletes old caches; needs only the actions:write permission.
   cleanup:
