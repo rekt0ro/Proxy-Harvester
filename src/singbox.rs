@@ -1149,8 +1149,12 @@ fn valid_probe_body(url: &str, body: &[u8]) -> bool {
 async fn request_url(client: &Client, url: &str) -> Result<crate::validator::ProbeSample, String> {
     wait_for_rate_limit().await;
     let started = std::time::Instant::now();
-    let response = client
-        .get(url)
+    let response_limit = response_limit_for_target(url);
+    let mut request = client.get(url);
+    if is_throughput_target(url) {
+        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -1166,16 +1170,16 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     if response
         .content_length()
-        .is_some_and(|length| length as usize > MAX_RESPONSE_BYTES)
+        .is_some_and(|length| length as usize > response_limit as u64)
     {
         return Err("response body exceeds validation limit".to_string());
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = crate::validator::read_response_body_limited(response)
+    let body = read_response_body_limited_to(response, response_limit)
         .await
         .map_err(|_| "response body exceeds validation limit".to_string())?;
-    if body.len() > MAX_RESPONSE_BYTES
+    if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(url, &body)
     {
@@ -1375,8 +1379,7 @@ async fn check_batch_targets(
                         if sample.latency_ms <= policy.max_latency_ms {
                             secondary_success[entry_index] = true;
                         }
-                        if target == crate::validator::THROUGHPUT_TARGET && sample.latency_ms > 0.0
-                        {
+                        if is_throughput_target(target) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
