@@ -2494,14 +2494,16 @@ mod tests {
         assert!(valid_probe_body(&primary, b""));
 
         let speed = Url::parse(EARLY_THROUGHPUT_TARGET).expect("speed target");
-        assert!(valid_probe_body(&speed, &vec![0_u8; EARLY_THROUGHPUT_BYTES]));
+        assert!(valid_probe_body(
+            &speed,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
+        ));
         assert!(!valid_probe_body(
             &speed,
             &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
         ));
 
-        let strict_speed =
-            Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
+        let strict_speed = Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
         assert!(valid_probe_body(
             &strict_speed,
             &vec![0_u8; STRICT_THROUGHPUT_BYTES]
