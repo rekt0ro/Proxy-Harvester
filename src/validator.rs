@@ -861,6 +861,7 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
+
     let (host, port, method, password) = if let Some(password) = url.password() {
         let method = decode_component(url.username());
         let (host, port) = endpoint_from_url(&url, None)?;
