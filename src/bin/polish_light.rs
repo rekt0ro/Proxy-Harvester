@@ -1272,6 +1272,19 @@ mod tests {
     }
 
     #[test]
+    fn routes_vmess_splithttp_to_xray_only() {
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"splithttp"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_url_splithttp_to_xray_only() {
+        let config = "vless://uuid@example.com:443?security=tls&type=splithttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
     fn routes_vmess_grpc_host_to_xray() {
         let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"grpc","type":"gun","host":"grpc.example.com"}"#;
         let config = format!("vmess://{}", STANDARD.encode(payload));
