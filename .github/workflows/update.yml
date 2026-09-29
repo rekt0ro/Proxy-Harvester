@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  Xray_REPOSITORY: "XTLS/Xray-core"
+  XRAY_REPOSITORY: "XTLS/Xray-core"
   SINGBOX_REPOSITORY: "SagerNet/sing-box"
 
 jobs:
@@ -71,7 +71,12 @@ jobs:
             local asset_pattern="$2"
             local output_prefix="$3"
             local releases stable tag version asset_name digest
-            releases="$(curl -fsSL               -H "Accept: application/vnd.github+json"               -H "Authorization: Bearer $GH_TOKEN"               -H "X-GitHub-Api-Version: 2022-11-28"               "https://api.github.com/repos/${repository}/releases?per_page=100")"
+
+            releases="$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${repository}/releases?per_page=100")"
 
             stable="$(jq -c '[.[] | select(.draft == false and .prerelease == false)] | first' <<< "$releases")"
             test "$stable" != "null"
@@ -83,10 +88,10 @@ jobs:
             esac
             test -n "$version"
 
-            asset_name="$(jq -r --arg pattern "$asset_pattern"               '.assets[] | select(.name | test($pattern)) | .name' <<< "$stable" | head -n 1)"
+            asset_name="$(jq -r --arg pattern "$asset_pattern" '.assets[] | select(.name | test($pattern)) | .name' <<< "$stable" | head -n 1)"
             test -n "$asset_name"
 
-            digest="$(jq -r --arg asset "$asset_name"               '.assets[] | select(.name == $asset) | .digest' <<< "$stable")"
+            digest="$(jq -r --arg asset "$asset_name" '.assets[] | select(.name == $asset) | .digest' <<< "$stable")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             digest="${digest#sha256:}"
 
@@ -97,7 +102,27 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          resolve_release "${Xray_REPOSITORY}" '^Xray-linux-64\\.zip
+          resolve_release "${XRAY_REPOSITORY}" '^Xray-linux-64\.zip$' xray
+          resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
+
+          echo "Latest stable Xray: ${xray_version} (${xray_asset})"
+          echo "Latest stable sing-box: ${singbox_version} (${singbox_asset})"
+
+      - name: Compute cache keys
+        id: keys
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+          LOCK_HASH: ${{ hashFiles('Cargo.lock') }}
+          RUST_VERSION: ${{ steps.rust-version.outputs.version }}
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+        run: |
+          {
+            echo "registry=${RUNNER_OS_NAME}-cargo-registry-${LOCK_HASH}"
+            echo "build=${RUNNER_OS_NAME}-cargo-build-rust-${RUST_VERSION}-${LOCK_HASH}"
+            echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-verified"
+            echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-verified"
+          } >> "$GITHUB_OUTPUT"
       - name: Restore Rust registry cache
         id: cargo-registry-restore
         uses: actions/cache/restore@v6
@@ -137,11 +162,11 @@ jobs:
 
           if [ ! -x "$HOME/.local/bin/xray" ]; then
             if [[ ! "$XRAY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "XRAY_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              echo "XRAY_SHA256 is not a valid SHA-256 from the release metadata." >&2
               exit 1
             fi
 
-            asset_url="https://github.com/${Xray_REPOSITORY}/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}"
+            asset_url="https://github.com/${XRAY_REPOSITORY}/releases/download/v${XRAY_VERSION}/${XRAY_ASSET}"
             curl -fsSL "$asset_url" -o /tmp/xray-download/xray.zip
             echo "${XRAY_SHA256}  /tmp/xray-download/xray.zip" | sha256sum -c -
             unzip -q /tmp/xray-download/xray.zip -d /tmp/xray-download/extracted
@@ -177,7 +202,7 @@ jobs:
 
           if [ ! -x "$HOME/.local/bin/sing-box" ]; then
             if [[ ! "$SINGBOX_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "SINGBOX_SHA256 is not a valid SHA-256. Fill it in at the top of this file." >&2
+              echo "SINGBOX_SHA256 is not a valid SHA-256 from the release metadata." >&2
               exit 1
             fi
 
