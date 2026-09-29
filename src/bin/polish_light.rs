@@ -641,9 +641,7 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::Xray;
     }
 
-    if matches!(scheme.as_str(), "hysteria2" | "hy2")
-        && has_query_key(&url, &["pinSHA256"])
-    {
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") && has_query_key(&url, &["pinSHA256"]) {
         return LightBackend::Xray;
     }
 
@@ -1339,8 +1337,7 @@ mod tests {
 
     #[test]
     fn routes_hysteria2_pin_sha256_to_xray() {
-        let config =
-            "hysteria2://password@example.com:443?pinSHA256=AA%3ABB%3ACC%3ADD";
+        let config = "hysteria2://password@example.com:443?pinSHA256=AA%3ABB%3ACC%3ADD";
         assert_eq!(light_backend(config), LightBackend::Xray);
     }
 
