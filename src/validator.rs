@@ -1670,10 +1670,6 @@ pub(crate) async fn read_response_body_limited_to(
     Ok(body)
 }
 
-pub(crate) async fn read_response_body_limited(response: reqwest::Response) -> Result<Vec<u8>, ()> {
-    read_response_body_limited_to(response, MAX_RESPONSE_BYTES).await
-}
-
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
@@ -2497,10 +2493,23 @@ mod tests {
         let primary = Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
 
-        let speed =
-            Url::parse("https://speed.cloudflare.com/__down?bytes=16384").expect("speed target");
-        assert!(valid_probe_body(&speed, &vec![0_u8; 16_384]));
-        assert!(!valid_probe_body(&speed, &vec![0_u8; 16_383]));
+        let speed = Url::parse(EARLY_THROUGHPUT_TARGET).expect("speed target");
+        assert!(valid_probe_body(&speed, &vec![0_u8; EARLY_THROUGHPUT_BYTES]));
+        assert!(!valid_probe_body(
+            &speed,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
+        ));
+
+        let strict_speed =
+            Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
+        assert!(valid_probe_body(
+            &strict_speed,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES]
+        ));
+        assert!(!valid_probe_body(
+            &strict_speed,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
+        ));
 
         let example = Url::parse("https://example.com/").expect("example.com");
         assert!(valid_probe_body(&example, b"<html>"));
