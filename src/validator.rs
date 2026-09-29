@@ -2372,6 +2372,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_real_world_xhttp_extra_objects() {
+        let configs = [
+            "vless://00000000-0000-0000-0000-000000000001@xnforo.ir:8443?security=tls&type=xhttp&extra={\"mode\":\"auto\",\"xPaddingBytes\":\"1-1\",\"xPaddingObfsMode\":true,\"xPaddingKey\":\"ctx\",\"xPaddingHeader\":\"x-grpc-context\",\"xPaddingMethod\":\"tokenish\",\"sessionIDPlacement\":\"header\",\"sessionIDKey\":\"Idempotency-Key\",\"seqPlacement\":\"header\",\"seqKey\":\"Upload-Offset\",\"sessionPlacement\":\"header\",\"sessionKey\":\"Idempotency-Key\"}",
+            "vless://00000000-0000-0000-0000-000000000001@66.33.22.234:58826?security=reality&type=xhttp&extra={\"mode\":\"auto\",\"xPaddingBytes\":\"100-1000\"}",
+        ];
+
+        for config in configs {
+            let parsed = parse_config(config).expect("valid XHTTP extra object should parse");
+            assert!(parsed["streamSettings"]["xhttpSettings"]["extra"].is_object());
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_xhttp_extra_from_public_sources() {
+        let configs = [
+            "trojan://00000000-0000-0000-0000-000000000001@grok.com:443?security=tls&type=xhttp&extra={",
+            "vless://00000000-0000-0000-0000-000000000001@live2.topstream.sbs:443?security=tls&type=xhttp&extra=%7B%22scMaxEachPostBytes%22%3A%2B%221000000%22%2C%2B%22scMaxConcurrentPosts%22%3A%2B100%2C%2B%22scMinPostsIntervalMs%22%3A%2B30%2C%2B%22xPaddingBytes%22%3A%2B%22100-1000%22%2C%2B%22noGRPCHeader%22%3A%2Bfalse%7D",
+        ];
+
+        for config in configs {
+            let error = parse_config(config).expect_err("malformed XHTTP extra should be rejected");
+            assert!(error.contains("invalid XHTTP extra JSON"));
+        }
+    }
+
+    #[test]
     fn vmess_tcp_http_preserves_path_and_host() {
         let payload = json!({
             "add": "example.com",
