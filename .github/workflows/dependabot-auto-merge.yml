@@ -1,8 +1,14 @@
 name: Auto-merge Dependabot Actions
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  check_suite:
+    types:
+      - completed
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Merge ready Dependabot action updates
+      - name: Merge ready Dependabot dependency updates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -34,7 +40,7 @@ jobs:
           )
 
           if [ "${#prs[@]}" -eq 0 ]; then
-            echo "No open Dependabot action-update PRs."
+            echo "No open Dependabot dependency-update PRs."
             exit 0
           fi
 
