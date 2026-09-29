@@ -2064,7 +2064,8 @@ mod tests {
 
     #[test]
     fn maps_vless_ech_to_singbox_tls() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=YWJj";
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=YWJj";
         let outbound = singbox_outbound(config).expect("raw ECH should map");
         assert_eq!(outbound["tls"]["ech"]["enabled"], true);
         assert_eq!(
@@ -2076,7 +2077,8 @@ mod tests {
     #[test]
     fn rejects_xray_ech_dns_resolver_for_singbox() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&ech=example.com%2Bhttps%3A%2F%2Fdns.example%2Fdns-query";
-        let error = singbox_outbound(config).expect_err("custom Xray ECH resolver cannot be mapped");
+        let error =
+            singbox_outbound(config).expect_err("custom Xray ECH resolver cannot be mapped");
         assert!(error.contains("ECH DNS resolver form"));
     }
 
@@ -2094,7 +2096,8 @@ mod tests {
     #[test]
     fn rejects_vless_certificate_pinning_for_singbox() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&pcs=0000000000000000000000000000000000000000000000000000000000000000";
-        let error = singbox_outbound(config).expect_err("Xray certificate pinning should route away");
+        let error =
+            singbox_outbound(config).expect_err("Xray certificate pinning should route away");
         assert!(error.contains("certificate pinning"));
     }
 
