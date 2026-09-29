@@ -597,7 +597,7 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     .parse::<u32>()
                     .expect("validated WebSocket early-data size"));
             }
-            if !ws_early_data_header.is_empty() {
+            if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
             }
             out["wsSettings"] = settings;
@@ -2415,7 +2415,8 @@ mod tests {
     fn accepts_xhttp_extra_with_plus_and_double_encoding() {
         let single_encoded =
             "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%7B%22mode%22%3A%22auto%22%2C%22xPaddingKey%22%3A%22a%2Bb%22%7D";
-        let parsed = parse_config(single_encoded).expect("single-encoded XHTTP extra should parse");
+        let parsed = parse_config(single_encoded)
+            .expect("single-encoded XHTTP extra should parse");
         assert_eq!(
             parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
             "a+b"
@@ -2423,7 +2424,8 @@ mod tests {
 
         let double_encoded =
             "vless://00000000-0000-0000-0000-000000000001@darsadgir.ir:2087?security=tls&type=xhttp&extra=%257B%2522mode%2522%253A%2522auto%2522%252C%2522xPaddingKey%2522%253A%2522a%252Bb%2522%257D";
-        let parsed = parse_config(double_encoded).expect("double-encoded XHTTP extra should parse");
+        let parsed = parse_config(double_encoded)
+            .expect("double-encoded XHTTP extra should parse");
         assert_eq!(
             parsed["streamSettings"]["xhttpSettings"]["extra"]["xPaddingKey"],
             "a+b"
@@ -2432,8 +2434,12 @@ mod tests {
 
     #[test]
     fn accepts_websocket_early_data_header_without_size() {
-        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
-        let parsed = parse_config(config).expect("unused WebSocket early-data header should parse");
+        let config = concat!(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?",
+            "security=tls&type=ws&eh=Sec-WebSocket-Protocol"
+        );
+        let parsed = parse_config(config)
+            .expect("unused WebSocket early-data header should parse");
         assert!(parsed["streamSettings"]["wsSettings"]
             .get("maxEarlyData")
             .is_none());
