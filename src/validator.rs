@@ -2375,7 +2375,7 @@ mod tests {
     fn accepts_real_world_xhttp_extra_objects() {
         let configs = [
             "vless://00000000-0000-0000-0000-000000000001@xnforo.ir:8443?security=tls&type=xhttp&extra={\"mode\":\"auto\",\"xPaddingBytes\":\"1-1\",\"xPaddingObfsMode\":true,\"xPaddingKey\":\"ctx\",\"xPaddingHeader\":\"x-grpc-context\",\"xPaddingMethod\":\"tokenish\",\"sessionIDPlacement\":\"header\",\"sessionIDKey\":\"Idempotency-Key\",\"seqPlacement\":\"header\",\"seqKey\":\"Upload-Offset\",\"sessionPlacement\":\"header\",\"sessionKey\":\"Idempotency-Key\"}",
-            "vless://00000000-0000-0000-0000-000000000001@66.33.22.234:58826?security=reality&type=xhttp&extra={\"mode\":\"auto\",\"xPaddingBytes\":\"100-1000\"}",
+            "vless://00000000-0000-0000-0000-000000000001@66.33.22.234:58826?security=reality&type=xhttp&pbk=O7GwAjykdK6PhkVhl60U_Bttz9fm-6xkvMXb_-ems&extra={\"mode\":\"auto\",\"xPaddingBytes\":\"100-1000\"}",
         ];
 
         for config in configs {
