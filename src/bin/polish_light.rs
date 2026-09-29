@@ -18,6 +18,7 @@ use url::Url;
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
 const MAX_DISCOVERY_CANDIDATES: usize = 10000;
 const FINAL_RECHECK_LIMIT: usize = 500;
+const FINAL_THROUGHPUT_BENCHMARK_LIMIT: usize = 12;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
@@ -454,6 +455,66 @@ fn write_light_lines(output: &str, values: &[String]) -> Result<(), String> {
         .map(|config| normalize_light_config(config))
         .collect::<Vec<_>>();
     write_lines(output, &normalized)
+}
+
+async fn benchmark_finalists(
+    xray: &str,
+    singbox: &str,
+    final_verified: &mut Vec<String>,
+    final_metadata: &mut HashMap<String, ProxyMetrics>,
+    global_positions: &HashMap<String, usize>,
+    history: &HashMap<String, HistoryEntry>,
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> Result<(), String> {
+    let finalists = select_verified_configs(
+        final_verified,
+        FINAL_THROUGHPUT_BENCHMARK_LIMIT,
+        max_per_endpoint,
+        max_per_family,
+    );
+
+    if finalists.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "[INFO] Final throughput benchmark: {} finalists using 10 MiB target.",
+        finalists.len()
+    );
+
+    let benchmark_targets = [
+        proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+        PRIMARY_TARGET,
+        LIGHT_TARGETS[2],
+    ];
+    let benchmark_metadata = validate_light_batch(
+        xray,
+        singbox,
+        &finalists,
+        &benchmark_targets,
+        ValidationSettings {
+            workers: workers.max(1),
+            batch_size: batch_size.max(1),
+            timeout_seconds,
+            strict: false,
+        },
+    )
+    .await?;
+
+    for (config, benchmark) in benchmark_metadata {
+        if let Some(existing) = final_metadata.get_mut(&config) {
+            if benchmark.throughput_kbps > 0.0 {
+                existing.throughput_kbps = benchmark.throughput_kbps;
+            }
+        }
+    }
+
+    sort_ranked(final_verified, final_metadata, global_positions, history);
+    Ok(())
 }
 
 fn select_verified_configs(
@@ -906,11 +967,9 @@ async fn main() -> Result<(), String> {
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
     let early_targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
-    let strict_targets = [
-        primary_target.as_str(),
-        proxyrift::validator::STRICT_THROUGHPUT_TARGET,
-        LIGHT_TARGETS[2],
-    ];
+    // Keep the broad strict funnel cheap. The full 10 MiB throughput benchmark
+    // is reserved for a small finalist pool after quality selection.
+    let strict_targets = [primary_target.as_str(), LIGHT_TARGETS[2], LIGHT_TARGETS[1]];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
@@ -1015,7 +1074,27 @@ async fn main() -> Result<(), String> {
         );
 
         if remaining == 0 {
-            let selected = select_verified_configs(
+            let mut selected = select_verified_configs(
+                &final_verified,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            );
+            benchmark_finalists(
+                &xray,
+                &singbox,
+                &mut final_verified,
+                &mut final_metadata,
+                &global_positions,
+                &history,
+                final_workers,
+                final_batch_size,
+                timeout,
+                max_per_endpoint,
+                max_per_family,
+            )
+            .await?;
+            selected = select_verified_configs(
                 &final_verified,
                 selection_limit,
                 max_per_endpoint,
@@ -1087,7 +1166,12 @@ async fn main() -> Result<(), String> {
         )
         .await?;
 
-        for (config, metrics) in primary_metadata {
+        for (config, mut metrics) in primary_metadata {
+            if metrics.throughput_kbps <= 0.0 {
+                if let Some(early) = global_metadata.get(&config) {
+                    metrics.throughput_kbps = early.throughput_kbps;
+                }
+            }
             if !final_metadata.contains_key(&config) {
                 final_verified.push(config.clone());
             }
@@ -1152,7 +1236,28 @@ async fn main() -> Result<(), String> {
         &global_positions,
         &history,
     );
-    let selected = select_verified_configs(
+    let mut selected = select_verified_configs(
+        &final_verified,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    );
+
+    benchmark_finalists(
+        &xray,
+        &singbox,
+        &mut final_verified,
+        &mut final_metadata,
+        &global_positions,
+        &history,
+        final_workers,
+        final_batch_size,
+        timeout,
+        max_per_endpoint,
+        max_per_family,
+    )
+    .await?;
+    selected = select_verified_configs(
         &final_verified,
         selection_limit,
         max_per_endpoint,
@@ -1376,6 +1481,13 @@ mod tests {
             light_backend("socks4a://127.0.0.1:1080"),
             LightBackend::SingBox
         );
+    }
+
+    #[test]
+    fn explicit_tcp_transport_is_supported_by_light_parser() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=tcp";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
     }
 
     #[test]
