@@ -254,6 +254,20 @@ jobs:
             echo "Light validation produced no configs; preserving the previous Light subscription."
           fi
 
+      # GitHub Raw cannot set subscription response headers, so publish client-facing update metadata in the first line.
+      # Hiddify currently parses this value as an integer number of hours, so 1 is the safest value.
+      - name: Add subscription update metadata
+        run: |
+          for f in subscriptions/all.txt subscriptions/light.txt; do
+            test -s "$f"
+            tmp="${f}.tmp"
+            { 
+              printf '%s\n' '#profile-update-interval: 1'
+              cat "$f"
+            } > "$tmp"
+            mv -f "$tmp" "$f"
+          done
+
       - name: Generate Base64 subscriptions
         run: ./target/release/encode_subscriptions
 
