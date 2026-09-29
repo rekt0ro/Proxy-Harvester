@@ -262,7 +262,7 @@ fn repair_websocket_early_data(value: &str) -> Option<String> {
         if digits_len > 0 {
             let digits = &normalized[..digits_len];
             let suffix = normalized[digits_len..].trim_start_matches(|ch: char| {
-                matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\\t')
+                matches!(ch, '&' | '?' | '#' | ',' | ';' | '/' | ' ' | '\t')
             });
 
             if COMMON_QUERY_KEYS.iter().any(|key| {
