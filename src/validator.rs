@@ -858,16 +858,13 @@ fn parse_trojan(config: &str) -> Result<Value, String> {
 
 fn parse_ss(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
-    if url
-        .query_pairs()
-        .any(|(key, value)| {
-            key.eq_ignore_ascii_case("plugin")
-                && !matches!(
-                    value.split(';').next().unwrap_or("").trim(),
-                    "obfs-local" | "v2ray-plugin"
-                )
-        })
-    {
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("plugin")
+            && !matches!(
+                value.split(';').next().unwrap_or("").trim(),
+                "obfs-local" | "v2ray-plugin"
+            )
+    }) {
         return Err("unsupported Shadowsocks plugin".to_string());
     }
 
@@ -2444,15 +2441,19 @@ mod tests {
     #[test]
     fn accepts_websocket_early_data_header_without_size() {
         let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&eh=Sec-WebSocket-Protocol";
-        let parsed = parse_config(config)
-            .expect("unused WebSocket early-data header should parse");
-        assert!(parsed["streamSettings"]["wsSettings"].get("maxEarlyData").is_none());
-        assert!(parsed["streamSettings"]["wsSettings"].get("earlyDataHeaderName").is_none());
+        let parsed = parse_config(config).expect("unused WebSocket early-data header should parse");
+        assert!(parsed["streamSettings"]["wsSettings"]
+            .get("maxEarlyData")
+            .is_none());
+        assert!(parsed["streamSettings"]["wsSettings"]
+            .get("earlyDataHeaderName")
+            .is_none());
     }
 
     #[test]
     fn accepts_shadowsocks_sip003_plugin_url() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        let config =
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
         parse_config(config).expect("SIP003 plugin URL should parse");
     }
 

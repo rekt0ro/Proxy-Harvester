@@ -1927,7 +1927,8 @@ mod tests {
 
     #[test]
     fn maps_shadowsocks_sip003_plugins() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        let config =
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
         let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
         assert_eq!(outbound["plugin"], "obfs-local");
         assert_eq!(outbound["plugin_opts"], "obfs=http");
@@ -1941,14 +1942,15 @@ mod tests {
     #[test]
     fn rejects_unsupported_shadowsocks_plugin() {
         let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=unsupported-plugin";
-        let error = singbox_outbound(config)
-            .expect_err("unsupported SIP003 plugin must be rejected");
+        let error =
+            singbox_outbound(config).expect_err("unsupported SIP003 plugin must be rejected");
         assert!(error.contains("unsupported Shadowsocks plugin"));
     }
 
     #[test]
     fn maps_shadowsocks_sip003_plugins() {
-        let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
+        let config =
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=obfs-local%3Bobfs%3Dhttp";
         let outbound = singbox_outbound(config).expect("SIP003 plugin should map");
         assert_eq!(outbound["plugin"], "obfs-local");
         assert_eq!(outbound["plugin_opts"], "obfs=http");
@@ -1962,8 +1964,8 @@ mod tests {
     #[test]
     fn rejects_unsupported_shadowsocks_plugin() {
         let config = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443/?plugin=unsupported-plugin";
-        let error = singbox_outbound(config)
-            .expect_err("unsupported SIP003 plugin must be rejected");
+        let error =
+            singbox_outbound(config).expect_err("unsupported SIP003 plugin must be rejected");
         assert!(error.contains("unsupported Shadowsocks plugin"));
     }
 
