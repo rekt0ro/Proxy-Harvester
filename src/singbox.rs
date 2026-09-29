@@ -918,7 +918,6 @@ fn singbox_outbound(config: &str) -> Result<Value, String> {
 
             Ok(outbound)
         }
-
         "hysteria2" | "hy2" => {
             let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
             let password = string_at(&xray, &["streamSettings", "hysteriaSettings", "auth"])?;
