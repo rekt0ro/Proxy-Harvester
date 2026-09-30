@@ -38,6 +38,7 @@ pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
 pub const MAX_LATENCY_MS: f64 = 800.0;
+const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
@@ -331,6 +332,121 @@ fn normalize_transport(value: &str) -> String {
             _ => None,
         })
         .unwrap_or(normalized)
+}
+
+fn is_public_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || v4.octets()[0] == 0
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+                || (v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
+                || v4.octets()[0] >= 240)
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_ip(&std::net::IpAddr::V4(mapped));
+            }
+
+            let segments = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+        }
+    }
+}
+
+pub(crate) async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAddr> {
+    let addresses = timeout(PUBLIC_DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
+        .await
+        .ok()?
+        .ok()?;
+
+    let mut seen = HashSet::new();
+    for address in addresses {
+        if is_public_ip(&address.ip()) && seen.insert(address.ip()) {
+            return Some(address.ip());
+        }
+    }
+
+    None
+}
+
+fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> bool {
+    if value
+        .get("settings")
+        .and_then(|settings| settings.get("vnext"))
+        .and_then(|vnext| vnext.get(0))
+        .and_then(|entry| entry.get("address"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        value["settings"]["vnext"][0]["address"] = Value::String(ip.to_string());
+        return true;
+    }
+
+    if value
+        .get("settings")
+        .and_then(|settings| settings.get("servers"))
+        .and_then(|servers| servers.get(0))
+        .and_then(|entry| entry.get("address"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        value["settings"]["servers"][0]["address"] = Value::String(ip.to_string());
+        return true;
+    }
+
+    if value
+        .get("settings")
+        .and_then(|settings| settings.get("address"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        value["settings"]["address"] = Value::String(ip.to_string());
+        return true;
+    }
+
+    if value
+        .get("settings")
+        .and_then(|settings| settings.get("peers"))
+        .and_then(|peers| peers.get(0))
+        .and_then(|peer| peer.get("endpoint"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        let endpoint = match ip {
+            std::net::IpAddr::V6(_) => format!("[{ip}]:{port}"),
+            std::net::IpAddr::V4(_) => format!("{ip}:{port}"),
+        };
+        value["settings"]["peers"][0]["endpoint"] = Value::String(endpoint);
+        return true;
+    }
+
+    false
+}
+
+async fn pin_xray_entries(entries: &[(String, Value)]) -> Vec<(String, Value)> {
+    stream::iter(entries.iter().cloned())
+        .map(|(config, mut value)| async move {
+            let (host, port) = endpoint(&config)?;
+            let ip = resolve_public_host(&host, port).await?;
+            pin_xray_endpoint(&mut value, &ip, port).then_some((config, value))
+        })
+        .buffer_unordered(64)
+        .filter_map(|result| async move { result })
+        .collect()
+        .await
 }
 
 fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u16), String> {
@@ -812,10 +928,7 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
-    if matches!(
-        flow.as_str(),
-        "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
-    ) {
+    if !flow.is_empty() {
         user["flow"] = json!(flow);
     }
     Ok(json!({
@@ -1761,6 +1874,11 @@ async fn check_batch(
     let mut combined = HashMap::new();
 
     while let Some(batch_entries) = pending_batches.pop() {
+        let batch_entries = pin_xray_entries(&batch_entries).await;
+        if batch_entries.is_empty() {
+            continue;
+        }
+
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
         let log_path = work.join("xray.log");
@@ -3200,12 +3318,15 @@ mod tests {
     }
 
     #[test]
-    fn drops_unsupported_vless_flow() {
+    fn preserves_vless_flow_for_core_validation() {
         let parsed = parse_vless(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-direct-udp443",
         )
-        .expect("unsupported VLESS flow should be ignored");
+        .expect("VLESS flow should be preserved for core validation");
 
-        assert_eq!(parsed["settings"]["vnext"][0]["users"][0].get("flow"), None);
+        assert_eq!(
+            parsed["settings"]["vnext"][0]["users"][0]["flow"],
+            "xtls-rprx-direct-udp443"
+        );
     }
 }
