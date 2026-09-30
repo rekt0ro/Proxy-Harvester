@@ -29,9 +29,6 @@ use wireguard_sans_io::{
 const DOWNLOAD_CONCURRENCY: usize = 16;
 
 
-
-
-
 const TEST_CONCURRENCY: usize = 2;
 const TEST_CONNECTION_CONCURRENCY: usize = 64;
 
@@ -75,8 +72,6 @@ async fn test_chunk(
 
     Ok((index, working))
 }
-
-
 
 async fn write_atomic(
     path: &Path,
@@ -146,8 +141,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                         match read_source_body(response).await {
                             Ok(bytes) => {
-                                
-                                
                                 let text = String::from_utf8_lossy(&bytes);
                                 let configs = extract_configs(&text);
 
@@ -192,8 +185,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut configs: Vec<String> = unique.into_iter().collect();
     configs.sort_unstable();
 
-    
-    
     let mut seen_keys = HashSet::new();
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
 
@@ -236,10 +227,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    
-    
-    
-    
     let special_hysteria_candidates = configs
         .iter()
         .filter(|config| needs_core_validation_only(config))
@@ -453,7 +440,7 @@ fn config_pattern() -> &'static Regex {
 
 fn split_concatenated_configs(config: &str) -> Vec<&str> {
     const SCHEMES: &[&str] = &[
-        "vmess:
+        "vmess://",
         "vless://",
         "trojan://",
         "ss://",
@@ -540,16 +527,12 @@ fn extract_configs(text: &str) -> Vec<String> {
     found
 }
 
-
-
 fn lowercase_scheme(config: &str) -> String {
     match config.split_once("://") {
         Some((scheme, rest)) => format!("{}://{}", scheme.to_ascii_lowercase(), rest),
         None => config.to_string(),
     }
 }
-
-
 
 fn has_explicit_port(config: &str) -> bool {
     let Some(rest) = config.split_once("://").map(|(_, rest)| rest) else {
@@ -613,9 +596,6 @@ fn normalize_config(config: &str) -> Option<String> {
         return normalize_vmess(&config);
     }
 
-    
-    
-    
     if matches!(scheme.as_str(), "hysteria2" | "hy2") {
         return normalize_hysteria2(&config);
     }
@@ -624,9 +604,6 @@ fn normalize_config(config: &str) -> Option<String> {
         return None;
     };
 
-    
-    
-    
     let needs_port = scheme != "ss" || !url.username().is_empty();
 
     if needs_port && !has_explicit_port(&config) {
@@ -638,8 +615,6 @@ fn normalize_config(config: &str) -> Option<String> {
     }
 
     if let Some(host) = url.host_str() {
-        
-        
         let bare = host.trim_start_matches('[').trim_end_matches(']');
 
         if bare.contains(':') && bare.parse::<Ipv6Addr>().is_err() {
@@ -660,7 +635,6 @@ fn normalize_config(config: &str) -> Option<String> {
 
     Some(config)
 }
-
 
 fn dedup_key(config: &str) -> String {
     if config_scheme(config) == "vmess" {
@@ -861,8 +835,6 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
         return None;
     }
 
-    
-    
     if is_invalid_vless_reality_public_key(url) {
         return None;
     }
@@ -879,7 +851,6 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
         return false;
     }
 
-    
     let Some(public_key) = url
         .query_pairs()
         .find_map(|(key, value)| key.eq_ignore_ascii_case("pbk").then(|| value.into_owned()))
@@ -922,9 +893,6 @@ fn normalize_hysteria2(config: &str) -> Option<String> {
 fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
     let rest = config.split_once("://")?.1;
 
-    
-    
-    
     let authority = rest.split(['/', '?', '#']).next()?;
 
     let (auth_raw, host_port) = authority.rsplit_once('@')?;
@@ -1076,8 +1044,6 @@ fn is_uuid(value: &str) -> bool {
     true
 }
 
-
-
 fn is_valid_vmess_id(value: &str) -> bool {
     is_uuid(value)
         || (!value.is_empty() && value.len() <= 30 && !value.chars().any(|c| c.is_control()))
@@ -1119,8 +1085,6 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
 }
 
 fn decode_html_entities(text: &str) -> String {
-    
-    
     text.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
@@ -1132,9 +1096,6 @@ fn decode_html_entities(text: &str) -> String {
 fn trim_config(config: &str) -> String {
     let config = config.trim();
 
-    
-    
-    
     if let Ok(url) = Url::parse(config) {
         let scheme = url.scheme().to_ascii_lowercase();
         if matches!(scheme.as_str(), "hysteria2" | "hy2") {
@@ -1212,8 +1173,6 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
             }
         }
 
-        
-        
         named.push(set_config_fragment(&config, &name));
     }
 
@@ -1683,7 +1642,6 @@ mod tests {
         assert!(normalize_config("http://example.com/some/page").is_none());
         assert!(normalize_config("http://example.com").is_none());
 
-        
         assert!(normalize_config("http://203.0.113.10:80").is_some());
     }
 
@@ -1793,8 +1751,6 @@ mod tests {
     }
 }
 
-
-
 fn needs_core_validation_only(config: &str) -> bool {
     match config_scheme(config).as_str() {
         "hysteria2" | "hy2" => !hysteria2_query_values(config, "obfs").is_empty(),
@@ -1860,10 +1816,6 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-
-
-
-
 fn is_public_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_ipv4(v4),
@@ -1878,11 +1830,8 @@ fn is_public_ip(ip: &IpAddr) -> bool {
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                
                 || (segments[0] & 0xfe00) == 0xfc00
-                
                 || (segments[0] & 0xffc0) == 0xfe80
-                
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8))
         }
     }
@@ -1898,15 +1847,10 @@ fn is_public_ipv4(ip: &Ipv4Addr) -> bool {
         || ip.is_broadcast()
         || ip.is_multicast()
         || ip.is_documentation()
-        
         || octets[0] == 0
-        
         || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
-        
         || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        
         || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
-        
         || octets[0] >= 240)
 }
 
@@ -2067,8 +2011,6 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
     working
 }
 
-
-
 #[derive(Debug)]
 struct ProbeCertVerifier;
 
@@ -2168,11 +2110,8 @@ fn quic_params(config: &str) -> Option<(String, u16, String, Vec<String>)> {
         return None;
     }
 
-    // Hysteria v1 names the SNI parameter `peer`.
     let sni = query_value(config, &["sni", "peer", "server_name"]).unwrap_or_else(|| host.clone());
 
-    // Hysteria v1 negotiates ALPN "hysteria" by default; probing it with "h3"
-    // fails the handshake and produced false negatives.
     let default_alpn = if config_scheme(config) == "hysteria" {
         "hysteria"
     } else {
@@ -2378,9 +2317,6 @@ async fn quic_latency_for_targets(
 async fn hysteria2_quic_latency(config: &str) -> Option<u64> {
     let (host, _) = endpoint(config)?;
 
-    // Generic QUIC cannot emulate Hysteria2 Salamander obfuscation.
-    // The candidate is still retained for the later core validation pass, but we
-    // skip the generic transport preflight here to avoid false negatives.
     if hysteria2_query_values(config, "obfs")
         .into_iter()
         .any(|value| !value.is_empty())
