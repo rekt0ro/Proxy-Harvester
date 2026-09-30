@@ -2,7 +2,7 @@
 
 ProxyRift builds refreshed proxy subscription lists by collecting public configurations, removing duplicates, testing reachability, and applying additional connectivity and quality checks to a smaller quality-focused pool.
 
-**Supported:** VLESS · VMess · Trojan · Shadowsocks · Hysteria/Hysteria2 · SOCKS
+**Supported:** VLESS · VMess · Trojan · Shadowsocks · Hysteria/Hysteria2 · HTTP · SOCKS
 
 ## Subscription
 
@@ -28,11 +28,13 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light-bas
 ```text
 https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt
 ```
+
 **All · Base64**
 
 ```text
 https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base64.txt
 ```
+
 ## How it works
 
 ```text
@@ -63,7 +65,7 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base6
 
 The **All** list uses the transport-reachable pool directly, then ranks and limits the results to a maximum of 2,000 configurations. It does not go through the more expensive Light validation stage.
 
-The **Light** list starts from the same screened candidates but goes through deeper validation using multiple targets, endpoint diversity, reliability, latency, jitter, transfer performance, and protocol-specific checks.
+The **Light** list starts from transport-screened candidates and also retains Hysteria/Hysteria2 candidates for protocol-specific validation. It then goes through deeper validation using multiple targets, endpoint diversity, reliability, latency, jitter, transfer performance, and protocol-specific checks.
 
 **Xray** and **sing-box** are used for protocol-specific validation where appropriate before the final quality and diversity selection.
 
