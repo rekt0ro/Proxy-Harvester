@@ -40,6 +40,7 @@ const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
+const MAX_COLLECTED_CONFIGS: usize = 20_000;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
@@ -188,6 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
 
     configs = assign_config_names(configs);
+
+    configs.truncate(MAX_COLLECTED_CONFIGS);
 
     println!("[INFO] Collected {} unique configs.", configs.len());
 
