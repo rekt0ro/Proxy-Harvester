@@ -28,10 +28,10 @@ use wireguard_sans_io::{
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 
-// Validation pipeline constants are kept explicit for CI readability.
 
-// Keep total endpoint probes bounded. The previous 8 x 64 nesting could create
-// roughly 512 simultaneous probes before address fan-out was even considered.
+
+
+
 const TEST_CONCURRENCY: usize = 2;
 const TEST_CONNECTION_CONCURRENCY: usize = 64;
 
@@ -76,8 +76,8 @@ async fn test_chunk(
     Ok((index, working))
 }
 
-/// Write a file through a temporary sibling so readers never observe a
-/// half-written subscription.
+
+
 async fn write_atomic(
     path: &Path,
     contents: String,
@@ -146,8 +146,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                         match read_source_body(response).await {
                             Ok(bytes) => {
-                                // Lossy decoding: one stray invalid byte must not
-                                // throw away an otherwise valid source.
+                                
+                                
                                 let text = String::from_utf8_lossy(&bytes);
                                 let configs = extract_configs(&text);
 
@@ -192,8 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut configs: Vec<String> = unique.into_iter().collect();
     configs.sort_unstable();
 
-    // The same server frequently appears with different remarks/fragments.
-    // Deduplicate on the identity of the config, not on its label.
+    
+    
     let mut seen_keys = HashSet::new();
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
 
@@ -236,10 +236,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    // Hysteria configs that passed the generic QUIC probe are already in
-    // `ranked_working_configs`. Only those the probe cannot evaluate at all
-    // (obfuscated ones) are force-retained for the core validation pass, so
-    // unreachable Hysteria links no longer crowd out the published pools.
+    
+    
+    
+    
     let special_hysteria_candidates = configs
         .iter()
         .filter(|config| needs_core_validation_only(config))
@@ -453,7 +453,7 @@ fn config_pattern() -> &'static Regex {
 
 fn split_concatenated_configs(config: &str) -> Vec<&str> {
     const SCHEMES: &[&str] = &[
-        "vmess://",
+        "vmess:
         "vless://",
         "trojan://",
         "ss://",
@@ -540,8 +540,8 @@ fn extract_configs(text: &str) -> Vec<String> {
     found
 }
 
-/// Lower-case only the scheme so `VLESS://` and `vless://` dedupe together and
-/// every later `config_scheme` comparison sees a canonical value.
+
+
 fn lowercase_scheme(config: &str) -> String {
     match config.split_once("://") {
         Some((scheme, rest)) => format!("{}://{}", scheme.to_ascii_lowercase(), rest),
@@ -549,8 +549,8 @@ fn lowercase_scheme(config: &str) -> String {
     }
 }
 
-/// True when the authority section carries an explicit numeric port.
-/// `Url::port()` cannot be used for this: it hides default ports (`http://x:80`).
+
+
 fn has_explicit_port(config: &str) -> bool {
     let Some(rest) = config.split_once("://").map(|(_, rest)| rest) else {
         return false;
@@ -613,9 +613,9 @@ fn normalize_config(config: &str) -> Option<String> {
         return normalize_vmess(&config);
     }
 
-    // Hysteria2 supports port-hopping syntax such as:
-    // host:1234,5000-5002
-    // which Url::parse rejects because the authority is not a single u16 port.
+    
+    
+    
     if matches!(scheme.as_str(), "hysteria2" | "hy2") {
         return normalize_hysteria2(&config);
     }
@@ -624,9 +624,9 @@ fn normalize_config(config: &str) -> Option<String> {
         return None;
     };
 
-    // Without an explicit port this is almost certainly an ordinary web link
-    // (`http://example.com/page`), not a proxy endpoint. Legacy fully-base64
-    // Shadowsocks links have no authority and are exempt.
+    
+    
+    
     let needs_port = scheme != "ss" || !url.username().is_empty();
 
     if needs_port && !has_explicit_port(&config) {
@@ -638,8 +638,8 @@ fn normalize_config(config: &str) -> Option<String> {
     }
 
     if let Some(host) = url.host_str() {
-        // `host_str` keeps the brackets of IPv6 literals, so strip them before
-        // validating; otherwise every IPv6 endpoint is wrongly rejected.
+        
+        
         let bare = host.trim_start_matches('[').trim_end_matches(']');
 
         if bare.contains(':') && bare.parse::<Ipv6Addr>().is_err() {
@@ -661,7 +661,7 @@ fn normalize_config(config: &str) -> Option<String> {
     Some(config)
 }
 
-/// Identity of a config independent of its remark/label, used for dedup.
+
 fn dedup_key(config: &str) -> String {
     if config_scheme(config) == "vmess" {
         let encoded = config
@@ -861,8 +861,8 @@ fn normalize_vless(config: &str, url: &Url) -> Option<String> {
         return None;
     }
 
-    // Do not reject a valid path merely because its literal path text happens
-    // to contain "security=tls". The path is not re-parsed as a query.
+    
+    
     if is_invalid_vless_reality_public_key(url) {
         return None;
     }
@@ -879,7 +879,7 @@ fn is_invalid_vless_reality_public_key(url: &Url) -> bool {
         return false;
     }
 
-    // Reality cannot work without a public key, so a missing/empty one is invalid.
+    
     let Some(public_key) = url
         .query_pairs()
         .find_map(|(key, value)| key.eq_ignore_ascii_case("pbk").then(|| value.into_owned()))
@@ -922,9 +922,9 @@ fn normalize_hysteria2(config: &str) -> Option<String> {
 fn hysteria2_parts(config: &str) -> Option<(String, String, String)> {
     let rest = config.split_once("://")?.1;
 
-    // The official form is `hysteria2://auth@host:port/?query`, so the
-    // authority must also end at the first `/`. Without this, `host:443/` was
-    // parsed as port "443/" and every such link was rejected.
+    
+    
+    
     let authority = rest.split(['/', '?', '#']).next()?;
 
     let (auth_raw, host_port) = authority.rsplit_once('@')?;
@@ -1076,8 +1076,8 @@ fn is_uuid(value: &str) -> bool {
     true
 }
 
-/// V2Ray/Xray accept either a UUID or any custom string of up to 30 bytes
-/// (hashed into a UUID), so a strict UUID check drops valid configs.
+
+
 fn is_valid_vmess_id(value: &str) -> bool {
     is_uuid(value)
         || (!value.is_empty() && value.len() <= 30 && !value.chars().any(|c| c.is_control()))
@@ -1119,8 +1119,8 @@ fn decode_vmess_payload(encoded: &str) -> Option<String> {
 }
 
 fn decode_html_entities(text: &str) -> String {
-    // `&amp;` must be decoded last, otherwise `&amp;quot;` would be decoded
-    // twice and turn into a literal `"`.
+    
+    
     text.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
@@ -1132,9 +1132,9 @@ fn decode_html_entities(text: &str) -> String {
 fn trim_config(config: &str) -> String {
     let config = config.trim();
 
-    // Preserve meaningful fragments for standard URL schemes.
-    // Hysteria2 port-hopping syntax cannot be parsed by Url::parse when the port
-    // list is present, so we strip the fragment only for that scheme before parse.
+    
+    
+    
     if let Ok(url) = Url::parse(config) {
         let scheme = url.scheme().to_ascii_lowercase();
         if matches!(scheme.as_str(), "hysteria2" | "hy2") {
@@ -1212,8 +1212,8 @@ fn assign_config_names(configs: Vec<String>) -> Vec<String> {
             }
         }
 
-        // Rewrite only the fragment as text. Round-tripping through `Url`
-        // would silently re-serialize (and possibly alter) the rest of the link.
+        
+        
         named.push(set_config_fragment(&config, &name));
     }
 
@@ -1683,7 +1683,7 @@ mod tests {
         assert!(normalize_config("http://example.com/some/page").is_none());
         assert!(normalize_config("http://example.com").is_none());
 
-        // An explicit default port is a legitimate proxy endpoint.
+        
         assert!(normalize_config("http://203.0.113.10:80").is_some());
     }
 
@@ -1793,8 +1793,8 @@ mod tests {
     }
 }
 
-/// Hysteria/Hysteria2 links with obfuscation cannot be checked by the generic
-/// QUIC probe, so they are kept for the real core validation stage instead.
+
+
 fn needs_core_validation_only(config: &str) -> bool {
     match config_scheme(config).as_str() {
         "hysteria2" | "hy2" => !hysteria2_query_values(config, "obfs").is_empty(),
@@ -1860,10 +1860,10 @@ fn config_scheme(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Whether an address is safe to probe from the runner. Source lists are
-/// untrusted, so without this a malicious entry (or a hostname resolving to a
-/// private address) turns the harvester into a port scanner for the CI network
-/// and cloud metadata endpoints (169.254.169.254).
+
+
+
+
 fn is_public_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_ipv4(v4),
@@ -1878,11 +1878,11 @@ fn is_public_ip(ip: &IpAddr) -> bool {
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                // Unique local fc00::/7
+                
                 || (segments[0] & 0xfe00) == 0xfc00
-                // Link-local fe80::/10
+                
                 || (segments[0] & 0xffc0) == 0xfe80
-                // Documentation 2001:db8::/32
+                
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8))
         }
     }
@@ -1898,15 +1898,15 @@ fn is_public_ipv4(ip: &Ipv4Addr) -> bool {
         || ip.is_broadcast()
         || ip.is_multicast()
         || ip.is_documentation()
-        // 0.0.0.0/8
+        
         || octets[0] == 0
-        // Carrier-grade NAT 100.64.0.0/10
+        
         || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
-        // IETF protocol assignments 192.0.0.0/24
+        
         || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        // Benchmarking 198.18.0.0/15
+        
         || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
-        // Reserved 240.0.0.0/4
+        
         || octets[0] >= 240)
 }
 
@@ -2067,8 +2067,8 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
     working
 }
 
-// This verifier is only for transport reachability. The actual proxy validation
-// later in the pipeline performs normal certificate handling.
+
+
 #[derive(Debug)]
 struct ProbeCertVerifier;
 
