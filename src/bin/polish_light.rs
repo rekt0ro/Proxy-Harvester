@@ -1237,7 +1237,7 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, history_fingerprint, light_backend, merge_light_metadata,
-        normalize_light_config, select_verified_configs, LightBackend,
+        normalize_light_config, select_verified_configs, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
