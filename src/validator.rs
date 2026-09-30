@@ -2684,8 +2684,8 @@ mod tests {
         assert_eq!(pinned[1].1["settings"]["vnext"][0]["address"], ip.to_string());
     }
 
-    #[test]
-    fn rejects_private_literal_xray_endpoint() {
+    #[tokio::test]
+    async fn rejects_private_literal_xray_endpoint() {
         let config =
             parse_config("vless://00000000-0000-0000-0000-000000000001@127.0.0.1:443").unwrap();
         let entries = vec![(
@@ -2694,7 +2694,7 @@ mod tests {
         )];
 
         let mut cache = XrayEndpointCache::new();
-        let pinned = futures::executor::block_on(pin_xray_entries(&entries, &mut cache));
+        let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
     }
