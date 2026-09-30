@@ -289,6 +289,11 @@ jobs:
           status=$?
           set -e
 
+          if [ "$status" -ne 0 ]; then
+            echo "Light validation failed; preserving the previous Light subscription." >&2
+            exit "$status"
+          fi
+
           if [ -s /tmp/proxyrift/light.next.txt ]; then
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
             echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
@@ -299,8 +304,6 @@ jobs:
             else
               echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
             fi
-          elif [ "$status" -ne 0 ]; then
-            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
           else
             echo "Light validation produced no configs; preserving the previous Light subscription."
           fi
@@ -474,7 +477,6 @@ jobs:
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     permissions:
       actions: write
 
