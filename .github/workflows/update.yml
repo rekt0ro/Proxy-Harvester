@@ -2,7 +2,6 @@ name: "🔄 ProxyRift Update"
 run-name: "🔄 ProxyRift Update #${{ github.run_number }}"
 
 on:
-  # Triggered every 30 minutes by an external scheduler via GitHub's workflow_dispatch API.
   workflow_dispatch:
 
 concurrency:
@@ -17,7 +16,6 @@ env:
   SINGBOX_REPOSITORY: "SagerNet/sing-box"
 
 jobs:
-  # Job 1: does all the untrusted work (downloads, config testing) with a READ-ONLY token.
   collect:
     name: "🔎 Collect & Validate"
     runs-on: ubuntu-latest
@@ -29,7 +27,7 @@ jobs:
       singbox_key: ${{ steps.keys.outputs.singbox }}
 
     steps:
-      - name: "📥 Checkout source"
+      - name: "Checkout source"
         uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -39,7 +37,6 @@ jobs:
           PROXY_SOURCES: ${{ secrets.PROXY_SOURCES }}
         run: |
           test -n "$PROXY_SOURCES"
-          # Mask every line individually so no single source can appear in logs.
           while IFS= read -r line; do
             if [ -n "$line" ]; then
               echo "::add-mask::$line"
@@ -47,7 +44,6 @@ jobs:
           done <<< "$PROXY_SOURCES"
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
-      # rustup is preinstalled on GitHub runners, so no third-party action is needed.
       - name: "🦀 Set up Rust"
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
@@ -309,8 +305,6 @@ jobs:
             echo "Light validation produced no configs; preserving the previous Light subscription."
           fi
 
-      # GitHub Raw cannot set subscription response headers, so publish client-facing update metadata in the first line.
-      # Hiddify currently parses this value as an integer number of hours, so 1 is the safest value.
       - name: "🏷️ Add subscription update metadata"
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt; do
@@ -326,7 +320,6 @@ jobs:
       - name: "🧬 Generate Base64 subscriptions"
         run: ./target/release/encode_subscriptions
 
-      # Only the published subscriptions and bounded Light history leave this job.
       - name: "📤 Upload subscriptions"
         uses: actions/upload-artifact@v7
         with:
@@ -403,7 +396,6 @@ jobs:
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
           rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
-  # Job 2: the ONLY job with a write token. It just copies four files and pushes.
   publish:
     name: "🚀 Publish Subscriptions"
     needs: collect
@@ -413,7 +405,7 @@ jobs:
       contents: write
 
     steps:
-      - name: "📥 Checkout source"
+      - name: "Checkout source"
         uses: actions/checkout@v7
 
       - name: "📦 Download subscriptions"
@@ -456,7 +448,6 @@ jobs:
           git rebase --autostash origin/main
           git push origin HEAD:main
 
-  # Job 3: deletes old caches; needs only the actions:write permission.
   cleanup:
     name: "🧹 Cleanup Caches"
     needs: collect
