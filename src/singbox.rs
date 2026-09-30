@@ -1690,6 +1690,25 @@ pub async fn validate_candidates_with_targets(
     .await
 }
 
+pub async fn validate_candidates_with_target_once(
+    binary: &str,
+    candidates: &[String],
+    target: &str,
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        &[target],
+        workers,
+        request_timeout,
+        ValidationPolicy::new(max_latency_ms, 1, 1, 1),
+    )
+    .await
+}
+
 pub async fn validate_candidates_with_targets_strict(
     binary: &str,
     candidates: &[String],

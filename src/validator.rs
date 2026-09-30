@@ -38,7 +38,7 @@ pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
-pub const MAX_LATENCY_MS: f64 = 800.0;
+pub const MAX_LATENCY_MS: f64 = 1200.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -2122,6 +2122,27 @@ pub async fn validate_candidates_with_targets(
             MIN_SUCCESSFUL_ATTEMPTS,
             MIN_SUCCESSFUL_TARGETS,
         ),
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_target_once(
+    binary: &str,
+    candidates: &[String],
+    target: &str,
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        &[target],
+        workers,
+        batch_size,
+        timeout_seconds,
+        ValidationPolicy::new(max_latency_ms, 1, 1, 1),
     )
     .await
 }
