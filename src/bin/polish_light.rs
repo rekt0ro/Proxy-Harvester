@@ -679,10 +679,6 @@ fn light_backend(config: &str) -> LightBackend {
         }
     }
 
-    
-    
-    
-    
     let legacy_raw_http = (transport.is_empty() || transport == "tcp" || transport == "raw")
         && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http");
 
@@ -690,9 +686,6 @@ fn light_backend(config: &str) -> LightBackend {
         return LightBackend::SingBox;
     }
 
-    
-    
-    
     if matches!(transport.as_str(), "xhttp" | "splithttp") {
         return LightBackend::Xray;
     }
@@ -729,8 +722,6 @@ fn light_backend(config: &str) -> LightBackend {
         }
     }
 
-    
-    
     if security == "reality" {
         return LightBackend::Dual;
     }
@@ -973,8 +964,6 @@ async fn main() -> Result<(), String> {
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
     let early_targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
-    
-    
     let strict_targets = [primary_target.as_str(), LIGHT_TARGETS[2], LIGHT_TARGETS[1]];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
