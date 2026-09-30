@@ -1393,12 +1393,12 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, safe_source_redirect, select_all_candidates,
-        split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
+        normalize_config, safe_source_redirect, select_all_candidates, split_concatenated_configs,
+        trim_config, MAX_SOURCE_BYTES,
     };
-    use url::Url;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use url::Url;
 
     #[test]
     fn accepts_http_to_https_source_redirect_on_same_host() {
