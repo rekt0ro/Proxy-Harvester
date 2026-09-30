@@ -377,6 +377,7 @@ pub fn is_public_ip(ip: &std::net::IpAddr) -> bool {
                 || (segments[0] == 0x2001 && segments[1] == 0x0002)
                 || (segments[0] == 0x2001 && segments[1] == 0x0010)
                 || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80)
         }
