@@ -1193,6 +1193,20 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     })
 }
 
+async fn pin_singbox_entries(entries: &[(String, Value)]) -> Vec<(String, Value)> {
+    stream::iter(entries.iter().cloned())
+        .map(|(config, mut outbound)| async move {
+            let (host, port) = crate::validator::endpoint(&config)?;
+            let ip = crate::validator::resolve_public_host(&host, port).await?;
+            outbound["server"] = Value::String(ip.to_string());
+            Some((config, outbound))
+        })
+        .buffer_unordered(64)
+        .filter_map(|result| async move { result })
+        .collect()
+        .await
+}
+
 async fn check_batch_targets(
     binary: &str,
     entries: &[(String, Value)],
@@ -1209,6 +1223,11 @@ async fn check_batch_targets(
     let mut verified = HashMap::new();
 
     while let Some(batch_entries) = pending.pop() {
+        let batch_entries = pin_singbox_entries(&batch_entries).await;
+        if batch_entries.is_empty() {
+            continue;
+        }
+
         let work = make_temp_dir()?;
         let config_path = work.join("sing-box.json");
         let log_path = work.join("sing-box.log");
@@ -1443,6 +1462,11 @@ async fn check_batch(
     let mut verified = HashMap::new();
 
     while let Some(batch_entries) = pending.pop() {
+        let batch_entries = pin_singbox_entries(&batch_entries).await;
+        if batch_entries.is_empty() {
+            continue;
+        }
+
         let work = make_temp_dir()?;
         let config_path = work.join("sing-box.json");
         let log_path = work.join("sing-box.log");
