@@ -1573,7 +1573,10 @@ async fn check_batch(
                 .chars()
                 .rev()
                 .collect::<String>();
-            println!("[WARN] sing-box failed to start: {}", batch_entries[0].0);
+            println!(
+                "[WARN] sing-box failed to start: {}",
+                config_label(&batch_entries[0].0)
+            );
             if !tail.is_empty() {
                 println!("[WARN] sing-box log: {tail}");
             }
