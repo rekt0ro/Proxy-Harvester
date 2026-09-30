@@ -2658,20 +2658,14 @@ mod tests {
     async fn reuses_cached_xray_endpoint() {
         let entries = vec![
             (
-                "vless://00000000-0000-0000-0000-000000000001@example.com:443"
-                    .to_string(),
-                parse_config(
-                    "vless://00000000-0000-0000-0000-000000000001@example.com:443",
-                )
-                .unwrap(),
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
+                parse_config("vless://00000000-0000-0000-0000-000000000001@example.com:443")
+                    .unwrap(),
             ),
             (
-                "vless://00000000-0000-0000-0000-000000000002@example.com:443"
-                    .to_string(),
-                parse_config(
-                    "vless://00000000-0000-0000-0000-000000000002@example.com:443",
-                )
-                .unwrap(),
+                "vless://00000000-0000-0000-0000-000000000002@example.com:443".to_string(),
+                parse_config("vless://00000000-0000-0000-0000-000000000002@example.com:443")
+                    .unwrap(),
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
