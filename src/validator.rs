@@ -339,7 +339,7 @@ fn normalize_transport(value: &str) -> String {
         .unwrap_or(normalized)
 }
 
-fn is_public_ip(ip: &std::net::IpAddr) -> bool {
+pub fn is_public_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             !(v4.is_private()
@@ -361,12 +361,25 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
             }
 
             let segments = v6.segments();
+
+            // Only 2000::/3 is currently assigned as IPv6 global-unicast space.
+            if (segments[0] & 0xe000) != 0x2000 {
+                return false;
+            }
+
+            // Exclude IPv6 special-purpose ranges inside 2000::/3 that are not
+            // globally reachable: Teredo, benchmarking, deprecated ORCHID,
+            // and documentation.
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
+                || (segments[0] == 0x2001 && segments[1] == 0x0000)
+                || (segments[0] == 0x2001 && segments[1] == 0x0002)
+                || (segments[0] == 0x2001 && segments[1] == 0x0010)
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
                 || (segments[0] & 0xfe00) == 0xfc00
-                || (segments[0] & 0xffc0) == 0xfe80
-                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+                || (segments[0] & 0xffc0) == 0xfe80)
         }
     }
 }
@@ -3241,6 +3254,31 @@ mod tests {
 
         let parsed = parse_config(&config).expect("percent-encoded credentials should parse");
         assert_eq!(parsed["settings"]["servers"][0]["password"], "pw");
+    }
+
+    #[test]
+    fn ipv6_public_filter_rejects_reserved_and_special_purpose_ranges() {
+        for address in [
+            "100::1",
+            "100:0:0:1::1",
+            "2001:0::1",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:db8::1",
+            "3fff::1",
+            "4000::1",
+            "5f00::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            let ip: IpAddr = address.parse().expect("valid IPv6 address");
+            assert!(!is_public_ip(&ip), "{address}");
+        }
+
+        for address in ["2001:4860:4860::8888", "2606:4700:4700::1111"] {
+            let ip: IpAddr = address.parse().expect("valid IPv6 address");
+            assert!(is_public_ip(&ip), "{address}");
+        }
     }
 
     #[test]

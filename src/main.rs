@@ -2,7 +2,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
-use proxyrift::validator::{config_label, endpoint};
+use proxyrift::validator::{config_label, endpoint, is_public_ip};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
@@ -1844,44 +1844,6 @@ fn config_scheme(config: &str) -> String {
         .split_once("://")
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn is_public_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_public_ipv4(v4),
-
-        IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_public_ipv4(&mapped);
-            }
-
-            let segments = v6.segments();
-
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (segments[0] & 0xfe00) == 0xfc00
-                || (segments[0] & 0xffc0) == 0xfe80
-                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
-        }
-    }
-}
-
-fn is_public_ipv4(ip: &Ipv4Addr) -> bool {
-    let octets = ip.octets();
-
-    !(ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        || ip.is_multicast()
-        || ip.is_documentation()
-        || octets[0] == 0
-        || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
-        || octets[0] >= 240)
 }
 
 async fn resolve_host_addresses(host: &str, port: u16) -> Option<Vec<SocketAddr>> {
