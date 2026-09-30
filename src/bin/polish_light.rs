@@ -18,12 +18,15 @@ use url::Url;
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
 const MAX_DISCOVERY_CANDIDATES: usize = 10000;
 const FINAL_RECHECK_LIMIT: usize = 500;
-const FINAL_THROUGHPUT_BENCHMARK_LIMIT: usize = 12;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
+const FINAL_TRANSFER_BATCH_LIMIT: usize = 400;
+const FINAL_TRANSFER_WORKERS: usize = 16;
+const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
+const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
 const HISTORY_RETENTION_SECS: u64 = 45 * 24 * 60 * 60;
 
@@ -51,6 +54,31 @@ fn adaptive_recheck_limit(
     };
 
     estimated.max(exploration_floor).min(configured_limit)
+}
+
+fn write_light_stats(
+    path: &str,
+    input_candidates: usize,
+    security_rejected: usize,
+    strict_verified: usize,
+    transfer_tested: usize,
+    transfer_passed: usize,
+    published: usize,
+) -> Result<(), String> {
+    if path.is_empty() {
+        return Ok(());
+    }
+
+    let stats = serde_json::json!({
+        "input_candidates": input_candidates,
+        "security_rejected": security_rejected,
+        "strict_verified": strict_verified,
+        "transfer_tested": transfer_tested,
+        "transfer_passed": transfer_passed,
+        "published": published,
+    });
+    let body = serde_json::to_vec_pretty(&stats).map_err(|error| error.to_string())?;
+    std::fs::write(path, body).map_err(|error| error.to_string())
 }
 
 fn persist_light_result(
@@ -462,64 +490,148 @@ fn write_light_lines(output: &str, values: &[String]) -> Result<(), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn benchmark_finalists(
+async fn validate_light_transfer_batch(
     xray: &str,
     singbox: &str,
-    final_verified: &mut [String],
-    final_metadata: &mut HashMap<String, ProxyMetrics>,
-    global_positions: &HashMap<String, usize>,
-    history: &HashMap<String, HistoryEntry>,
+    candidates: &[String],
     workers: usize,
-    batch_size: usize,
-    timeout_seconds: f64,
-    max_per_endpoint: usize,
-    max_per_family: usize,
-) -> Result<(), String> {
-    let finalists = select_verified_configs(
-        final_verified,
-        FINAL_THROUGHPUT_BENCHMARK_LIMIT,
-        max_per_endpoint,
-        max_per_family,
-    );
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let mut singbox_candidates = Vec::new();
+    let mut xray_candidates = Vec::new();
+    let mut dual_candidates = Vec::new();
 
-    if finalists.is_empty() {
-        return Ok(());
-    }
-
-    println!(
-        "[INFO] Final throughput benchmark: {} finalists using 10 MiB target.",
-        finalists.len()
-    );
-
-    let benchmark_targets = [
-        proxyrift::validator::STRICT_THROUGHPUT_TARGET,
-        PRIMARY_TARGET,
-        LIGHT_TARGETS[2],
-    ];
-    let benchmark_metadata = validate_light_batch(
-        xray,
-        singbox,
-        &finalists,
-        &benchmark_targets,
-        ValidationSettings {
-            workers: workers.max(1),
-            batch_size: batch_size.max(1),
-            timeout_seconds,
-            strict: false,
-        },
-    )
-    .await?;
-
-    for (config, benchmark) in benchmark_metadata {
-        if let Some(existing) = final_metadata.get_mut(&config) {
-            if benchmark.throughput_kbps > 0.0 {
-                existing.throughput_kbps = benchmark.throughput_kbps;
-            }
+    for config in candidates {
+        match light_backend(config) {
+            LightBackend::SingBox => singbox_candidates.push(config.clone()),
+            LightBackend::Xray => xray_candidates.push(config.clone()),
+            LightBackend::Dual => dual_candidates.push(config.clone()),
         }
     }
 
-    sort_ranked(final_verified, final_metadata, global_positions, history);
-    Ok(())
+    let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS)
+        .map_err(|_| "invalid final transfer timeout".to_string())?;
+
+    let mut singbox_validation_candidates = singbox_candidates;
+    singbox_validation_candidates.extend(dual_candidates.iter().cloned());
+    let mut xray_validation_candidates = xray_candidates;
+    xray_validation_candidates.extend(dual_candidates.iter().cloned());
+
+    let singbox_future = async {
+        if singbox_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            proxyrift::singbox::validate_candidates_with_target_once(
+                singbox,
+                &singbox_validation_candidates,
+                proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+                workers,
+                request_timeout,
+                FINAL_TRANSFER_LATENCY_LIMIT_MS,
+            )
+            .await
+        }
+    };
+
+    let xray_future = async {
+        if xray_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            proxyrift::validator::validate_candidates_with_target_once(
+                xray,
+                &xray_validation_candidates,
+                proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+                workers,
+                1000,
+                FINAL_TRANSFER_TIMEOUT_SECS,
+                FINAL_TRANSFER_LATENCY_LIMIT_MS,
+            )
+            .await
+        }
+    };
+
+    let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+
+    Ok(merge_light_metadata(
+        xray_result?,
+        singbox_result?,
+        &dual_candidates,
+    ))
+}
+
+async fn fill_transfer_gate(
+    xray: &str,
+    singbox: &str,
+    final_verified: &[String],
+    transfer_verified: &mut HashMap<String, ProxyMetrics>,
+    transfer_tested: &mut HashSet<String>,
+    global_positions: &HashMap<String, usize>,
+    history: &HashMap<String, HistoryEntry>,
+    selection_limit: usize,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> Result<usize, String> {
+    loop {
+        let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked,
+            transfer_verified,
+            global_positions,
+            history,
+        );
+
+        let selected = select_verified_configs(
+            &transfer_ranked,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
+
+        if selected.len() >= selection_limit {
+            return Ok(selected.len());
+        }
+
+        let untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if untested.is_empty() {
+            return Ok(selected.len());
+        }
+
+        let remaining = selection_limit.saturating_sub(selected.len());
+        let tested = transfer_tested.len();
+        let observed_rate = if tested < 20 {
+            0.60
+        } else {
+            ((transfer_verified.len() as f64 + 2.0) / (tested as f64 + 4.0)).clamp(0.05, 1.0)
+        };
+        let estimated = ((remaining as f64 / observed_rate) * 1.25).ceil() as usize;
+        let exploration_floor = remaining.saturating_mul(2).saturating_add(20);
+        let batch_limit = estimated
+            .max(exploration_floor)
+            .min(FINAL_TRANSFER_BATCH_LIMIT)
+            .max(1);
+
+        let batch = diversify_recheck_candidates(&untested, batch_limit, 1);
+        if batch.is_empty() {
+            return Ok(selected.len());
+        }
+
+        transfer_tested.extend(batch.iter().cloned());
+
+        println!(
+            "[INFO] Light 10 MiB gate: testing {} candidates for {} remaining slots.",
+            batch.len(),
+            remaining
+        );
+
+        let metadata =
+            validate_light_transfer_batch(xray, singbox, &batch, FINAL_TRANSFER_WORKERS).await?;
+
+        transfer_verified.extend(metadata);
+    }
 }
 
 fn select_verified_configs(
@@ -591,6 +703,69 @@ fn query_value(url: &Url, names: &[&str]) -> String {
 fn has_query_key(url: &Url, names: &[&str]) -> bool {
     url.query_pairs()
         .any(|(key, _)| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
+}
+
+fn value_boolish(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_u64().unwrap_or(0) != 0,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        _ => false,
+    }
+}
+
+fn has_disabled_tls_verification(config: &str) -> bool {
+    let cleaned = config.split('#').next().unwrap_or(config);
+    let Ok(url) = Url::parse(cleaned) else {
+        return true;
+    };
+
+    let scheme = url.scheme().to_ascii_lowercase();
+
+    if scheme == "vmess" {
+        let Some(encoded) = cleaned.split_once("://").map(|(_, rest)| rest) else {
+            return true;
+        };
+        let payload = encoded.trim();
+        let mut padded = payload.to_string();
+        while !padded.len().is_multiple_of(4) {
+            padded.push('=');
+        }
+
+        for candidate in [payload, padded.as_str()] {
+            for bytes in [
+                STANDARD.decode(candidate),
+                URL_SAFE.decode(candidate),
+                URL_SAFE_NO_PAD.decode(candidate),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                    let tls_enabled = value.get("tls").is_some_and(value_boolish);
+                    let insecure = value.get("allowInsecure").is_some_and(value_boolish);
+                    if tls_enabled && insecure {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    url.query_pairs().any(|(key, value)| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "insecure" | "allowinsecure"
+        ) && matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn xray_only_tls_extensions(url: &Url) -> bool {
@@ -873,6 +1048,7 @@ async fn main() -> Result<(), String> {
 
     let candidates_path = required(&args, "--candidates")?;
     let output = required(&args, "--output")?;
+    let stats_path = value(&args, "--stats", "");
     let workers = value(&args, "--workers", "32")
         .parse::<usize>()
         .map_err(|_| "invalid --workers".to_string())?;
@@ -936,11 +1112,14 @@ async fn main() -> Result<(), String> {
     .max(1);
     let singbox = value(&args, "--singbox", "sing-box");
 
-    let candidates = read_lines(&candidates_path)?;
-    let candidates = candidates
+    let raw_candidates = read_lines(&candidates_path)?;
+    let input_candidate_count = raw_candidates.len().min(max_candidates);
+    let candidates = raw_candidates
         .into_iter()
         .take(max_candidates)
+        .filter(|config| !has_disabled_tls_verification(config))
         .collect::<Vec<_>>();
+    let security_rejected = input_candidate_count.saturating_sub(candidates.len());
     let history_path = "subscriptions/light-history.json";
     let history = load_history(history_path)?;
 
@@ -954,6 +1133,8 @@ async fn main() -> Result<(), String> {
     let mut final_verified = Vec::<String>::new();
     let mut final_attempts = HashMap::<String, usize>::new();
     let mut final_metadata = HashMap::<String, ProxyMetrics>::new();
+    let mut transfer_verified = HashMap::<String, ProxyMetrics>::new();
+    let mut transfer_tested = HashSet::<String>::new();
 
     let chunk_count = candidates.len().div_ceil(DISCOVERY_CHUNK_SIZE);
 
@@ -1002,37 +1183,35 @@ async fn main() -> Result<(), String> {
             &history,
         );
 
-        let remaining = selection_limit.saturating_sub(
-            select_verified_configs(
-                &final_verified,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            )
-            .len(),
-        );
+        let transfer_selected = fill_transfer_gate(
+            &xray,
+            &singbox,
+            &final_verified,
+            &mut transfer_verified,
+            &mut transfer_tested,
+            &global_positions,
+            &history,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        )
+        .await?;
 
-        if remaining == 0 {
-            benchmark_finalists(
-                &xray,
-                &singbox,
-                &mut final_verified,
-                &mut final_metadata,
+        if transfer_selected >= selection_limit {
+            let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+            sort_ranked(
+                &mut transfer_ranked,
+                &transfer_verified,
                 &global_positions,
                 &history,
-                final_workers,
-                final_batch_size,
-                timeout,
-                max_per_endpoint,
-                max_per_family,
-            )
-            .await?;
+            );
             let selected = select_verified_configs(
-                &final_verified,
+                &transfer_ranked,
                 selection_limit,
                 max_per_endpoint,
                 max_per_family,
             );
+
             persist_light_result(
                 &output,
                 &selected,
@@ -1041,14 +1220,23 @@ async fn main() -> Result<(), String> {
                 &final_attempts,
                 &final_metadata,
             )?;
-            println!(
-                "[INFO] Light quality-first selection: {} configs ready; discovery pool {} verified; strict checks {}.",
+            write_light_stats(
+                &stats_path,
+                input_candidate_count,
+                security_rejected,
+                final_metadata.len(),
+                transfer_tested.len(),
+                transfer_verified.len(),
                 selected.len(),
-                global_verified.len(),
-                final_attempts.values().copied().sum::<usize>()
+            )?;
+            println!(
+                "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation.",
+                selected.len()
             );
             return Ok(());
         }
+
+        let remaining = selection_limit.saturating_sub(transfer_selected);
 
         let strict_attempts = final_attempts.values().copied().sum::<usize>();
         let dynamic_limit = adaptive_recheck_limit(
@@ -1169,22 +1357,29 @@ async fn main() -> Result<(), String> {
         &global_positions,
         &history,
     );
-    benchmark_finalists(
+    let _ = fill_transfer_gate(
         &xray,
         &singbox,
-        &mut final_verified,
-        &mut final_metadata,
+        &final_verified,
+        &mut transfer_verified,
+        &mut transfer_tested,
         &global_positions,
         &history,
-        final_workers,
-        final_batch_size,
-        timeout,
+        selection_limit,
         max_per_endpoint,
         max_per_family,
     )
     .await?;
+
+    let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+    sort_ranked(
+        &mut transfer_ranked,
+        &transfer_verified,
+        &global_positions,
+        &history,
+    );
     let selected = select_verified_configs(
-        &final_verified,
+        &transfer_ranked,
         selection_limit,
         max_per_endpoint,
         max_per_family,
@@ -1192,8 +1387,27 @@ async fn main() -> Result<(), String> {
 
     if selected.is_empty() {
         persist_history(history_path, &history, &final_attempts, &final_metadata)?;
-        return Err("selected Light validation produced zero verified configs".to_string());
+        write_light_stats(
+            &stats_path,
+            input_candidate_count,
+            security_rejected,
+            final_metadata.len(),
+            transfer_tested.len(),
+            transfer_verified.len(),
+            0,
+        )?;
+        return Err("selected Light validation produced zero configs after the 10 MiB gate".to_string());
     }
+
+    write_light_stats(
+        &stats_path,
+        input_candidate_count,
+        security_rejected,
+        final_metadata.len(),
+        transfer_tested.len(),
+        transfer_verified.len(),
+        selected.len(),
+    )?;
 
     let mut protocol_counts = BTreeMap::<String, usize>::new();
     let mut backend_counts = BTreeMap::<&str, usize>::new();
@@ -1225,10 +1439,11 @@ async fn main() -> Result<(), String> {
         &final_metadata,
     )?;
     println!(
-        "[INFO] Published {} Light configs after exhausting {} discovery candidates; strict checks {}.",
+        "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; discovery candidates {}; strict checks {}; 10 MiB passes {}.",
         selected.len(),
         candidates.len(),
-        final_attempts.values().copied().sum::<usize>()
+        final_attempts.values().copied().sum::<usize>(),
+        transfer_verified.len()
     );
     Ok(())
 }
@@ -1242,6 +1457,35 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use std::collections::HashMap;
+
+    #[test]
+    fn rejects_explicit_tls_verification_bypass() {
+        assert!(has_disabled_tls_verification(
+            "trojan://password@example.com:443?security=tls&allowInsecure=1"
+        ));
+        assert!(has_disabled_tls_verification(
+            "hysteria2://password@example.com:443?insecure=true"
+        ));
+        assert!(!has_disabled_tls_verification(
+            "vless://uuid@example.com:443?security=tls&allowInsecure=0"
+        ));
+        assert!(!has_disabled_tls_verification(
+            "vless://uuid@example.com:443?security=none"
+        ));
+    }
+
+    #[test]
+    fn rejects_vmess_tls_verification_bypass() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "tls": "tls",
+            "allowInsecure": true
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(has_disabled_tls_verification(&format!("vmess://{encoded}")));
+    }
 
     #[test]
     fn adaptive_recheck_expands_when_yield_is_low() {
