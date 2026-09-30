@@ -3270,9 +3270,7 @@ mod tests {
             "fc00::1",
             "fe80::1",
         ] {
-            let ip = address
-                .parse::<std::net::IpAddr>()
-                .expect("valid IPv6 address");
+            let ip: IpAddr = address.parse().expect("valid IPv6 address");
             assert!(!is_public_ip(&ip), "{address}");
         }
 
@@ -3280,9 +3278,7 @@ mod tests {
             "2001:4860:4860::8888",
             "2606:4700:4700::1111",
         ] {
-            let ip = address
-                .parse::<std::net::IpAddr>()
-                .expect("valid IPv6 address");
+            let ip: IpAddr = address.parse().expect("valid IPv6 address");
             assert!(is_public_ip(&ip), "{address}");
         }
     }
