@@ -190,6 +190,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     configs = assign_config_names(configs);
 
+    let special_hysteria_candidates = configs
+        .iter()
+        .filter(|config| needs_core_validation_only(config))
+        .cloned()
+        .collect::<Vec<_>>();
+
     configs.truncate(MAX_COLLECTED_CONFIGS);
 
     println!("[INFO] Collected {} unique configs.", configs.len());
@@ -228,12 +234,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         reachable_probes += working.len();
         ranked_working_configs.extend(working);
     }
-
-    let special_hysteria_candidates = configs
-        .iter()
-        .filter(|config| needs_core_validation_only(config))
-        .cloned()
-        .collect::<Vec<_>>();
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
