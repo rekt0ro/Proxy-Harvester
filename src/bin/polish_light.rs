@@ -1239,9 +1239,9 @@ mod tests {
         adaptive_recheck_limit, history_fingerprint, light_backend, merge_light_metadata,
         normalize_light_config, select_verified_configs, LightBackend,
     };
-    use std::collections::HashMap;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use std::collections::HashMap;
 
     #[test]
     fn adaptive_recheck_expands_when_yield_is_low() {
