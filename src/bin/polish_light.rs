@@ -17,14 +17,15 @@ use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
 const MAX_DISCOVERY_CANDIDATES: usize = 10000;
-const FINAL_RECHECK_LIMIT: usize = 500;
+const FINAL_RECHECK_LIMIT: usize = 350;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
-const FINAL_TRANSFER_BATCH_LIMIT: usize = 400;
-const FINAL_TRANSFER_WORKERS: usize = 16;
+const TRANSFER_SELECTION_HEADROOM: usize = 80;
+const FINAL_TRANSFER_BATCH_LIMIT: usize = 300;
+const FINAL_TRANSFER_TEST_LIMIT: usize = 600;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
@@ -569,6 +570,7 @@ async fn fill_transfer_gate(
     selection_limit: usize,
     max_per_endpoint: usize,
     max_per_family: usize,
+    workers: usize,
 ) -> Result<usize, String> {
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
@@ -596,7 +598,7 @@ async fn fill_transfer_gate(
             .cloned()
             .collect::<Vec<_>>();
 
-        if untested.is_empty() {
+        if untested.is_empty() || transfer_tested.len() >= FINAL_TRANSFER_TEST_LIMIT {
             return Ok(selected.len());
         }
 
@@ -611,7 +613,9 @@ async fn fill_transfer_gate(
         let exploration_floor = remaining.saturating_mul(2).saturating_add(20);
         let batch_limit = estimated
             .max(exploration_floor)
-            .clamp(1, FINAL_TRANSFER_BATCH_LIMIT);
+            .min(FINAL_TRANSFER_BATCH_LIMIT)
+            .min(FINAL_TRANSFER_TEST_LIMIT.saturating_sub(transfer_tested.len()))
+            .max(1);
 
         let batch = diversify_recheck_candidates(&untested, batch_limit, 1);
         if batch.is_empty() {
@@ -627,7 +631,7 @@ async fn fill_transfer_gate(
         );
 
         let metadata =
-            validate_light_transfer_batch(xray, singbox, &batch, FINAL_TRANSFER_WORKERS).await?;
+            validate_light_transfer_batch(xray, singbox, &batch, workers).await?;
 
         transfer_verified.extend(metadata);
     }
@@ -1190,19 +1194,37 @@ async fn main() -> Result<(), String> {
             &history,
         );
 
-        let transfer_selected = fill_transfer_gate(
-            &xray,
-            &singbox,
-            &final_verified,
-            &mut transfer_verified,
-            &mut transfer_tested,
-            &global_positions,
-            &history,
-            selection_limit,
-            max_per_endpoint,
-            max_per_family,
-        )
-        .await?;
+        let transfer_selected = if final_verified.len() >= selection_limit + TRANSFER_SELECTION_HEADROOM {
+            fill_transfer_gate(
+                &xray,
+                &singbox,
+                &final_verified,
+                &mut transfer_verified,
+                &mut transfer_tested,
+                &global_positions,
+                &history,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+                final_workers,
+            )
+            .await?
+        } else {
+            let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+            sort_ranked(
+                &mut transfer_ranked,
+                &transfer_verified,
+                &global_positions,
+                &history,
+            );
+            select_verified_configs(
+                &transfer_ranked,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            )
+            .len()
+        };
 
         if transfer_selected >= selection_limit {
             let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
@@ -1375,6 +1397,7 @@ async fn main() -> Result<(), String> {
         selection_limit,
         max_per_endpoint,
         max_per_family,
+        final_workers,
     )
     .await?;
 
@@ -1392,7 +1415,7 @@ async fn main() -> Result<(), String> {
         max_per_family,
     );
 
-    if selected.is_empty() {
+    if selected.len() < selection_limit {
         persist_history(history_path, &history, &final_attempts, &final_metadata)?;
         write_light_stats(
             &stats_path,
@@ -1401,11 +1424,13 @@ async fn main() -> Result<(), String> {
             final_metadata.len(),
             transfer_tested.len(),
             transfer_verified.len(),
-            0,
+            selected.len(),
         )?;
-        return Err(
-            "selected Light validation produced zero configs after the 10 MiB gate".to_string(),
-        );
+        return Err(format!(
+            "selected Light validation produced {} configs after the 10 MiB gate; required {}",
+            selected.len(),
+            selection_limit
+        ));
     }
 
     write_light_stats(
