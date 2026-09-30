@@ -24,7 +24,7 @@ const TARGET: &str = PRIMARY_TARGET;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
-const BATCH_SIZE: usize = 250;
+const BATCH_SIZE: usize = 500;
 
 fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
