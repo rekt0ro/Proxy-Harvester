@@ -40,6 +40,7 @@ const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
+const MAX_COLLECTED_CONFIGS: usize = 20_000;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
@@ -189,6 +190,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     configs = assign_config_names(configs);
 
+    let special_hysteria_candidates = configs
+        .iter()
+        .filter(|config| needs_core_validation_only(config))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    configs.truncate(MAX_COLLECTED_CONFIGS);
+
     println!("[INFO] Collected {} unique configs.", configs.len());
 
     if configs.is_empty() {
@@ -225,12 +234,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         reachable_probes += working.len();
         ranked_working_configs.extend(working);
     }
-
-    let special_hysteria_candidates = configs
-        .iter()
-        .filter(|config| needs_core_validation_only(config))
-        .cloned()
-        .collect::<Vec<_>>();
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!("[WARN] No usable configs remained after transport-aware reachability screening.");
