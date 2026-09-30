@@ -6,7 +6,7 @@ use proxyrift::validator::{config_label, endpoint, is_public_ip};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{header::LOCATION, Client};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -39,6 +39,7 @@ const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SOURCE_REDIRECTS: usize = 2;
 
 const MAX_COLLECTED_CONFIGS: usize = 20_000;
 const MAX_ALL_CONFIGS: usize = 2000;
@@ -49,6 +50,36 @@ const MAX_LIGHT_CANDIDATES: usize = 10000;
 enum SourceBodyError {
     TooLarge,
     Read,
+}
+
+fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
+    let target_url = current_url
+        .join(location)
+        .map_err(|_| "redirect location is not a valid URL")?;
+
+    if target_url.scheme() != "https" {
+        return Err("redirect destination must use HTTPS");
+    }
+
+    if target_url.host() != current_url.host() {
+        return Err("redirect destination must keep the same host");
+    }
+
+    if !target_url.username().is_empty() || target_url.password().is_some() {
+        return Err("redirect destination must not contain credentials");
+    }
+
+    let current_port = current_url.port_or_known_default();
+    let target_port = target_url.port_or_known_default();
+
+    let http_to_https_default_ports =
+        current_url.scheme() == "http" && current_port == Some(80) && target_port == Some(443);
+
+    if current_port != target_port && !http_to_https_default_ports {
+        return Err("redirect destination must keep the same port");
+    }
+
+    Ok(target_url)
 }
 
 async fn test_chunk(
@@ -121,63 +152,125 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let source_number = source_index + 1;
                 println!("[INFO] Downloading source #{source_number}");
 
-                match client.get(&url).send().await {
-                    Ok(response) => {
-                        let status = response.status();
+                let mut current_url = match Url::parse(&url) {
+                    Ok(url) if matches!(url.scheme(), "http" | "https") => url,
 
-                        if !status.is_success() {
-                            println!(
-                                "[WARN] Source #{source_number} returned HTTP status {status}"
-                            );
-                            return Vec::new();
-                        }
+                    _ => {
+                        println!(
+                            "[WARN] Source #{source_number} has an invalid or unsupported URL."
+                        );
+                        return Vec::new();
+                    }
+                };
 
-                        if response
-                            .content_length()
-                            .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
-                        {
-                            println!(
-                                "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
-                                MAX_SOURCE_BYTES
-                            );
-                            return Vec::new();
-                        }
+                for redirect_count in 0..=MAX_SOURCE_REDIRECTS {
+                    match client.get(current_url.clone()).send().await {
+                        Ok(response) => {
+                            let status = response.status();
 
-                        match read_source_body(response).await {
-                            Ok(bytes) => {
-                                let text = String::from_utf8_lossy(&bytes);
-                                let configs = extract_configs(&text);
+                            if status.is_redirection() {
+                                if redirect_count == MAX_SOURCE_REDIRECTS {
+                                    println!(
+                                        "[WARN] Source #{source_number} exceeded the {}-redirect limit.",
+                                        MAX_SOURCE_REDIRECTS
+                                    );
+                                    return Vec::new();
+                                }
 
-                                println!(
-                                    "[INFO] Found {} configs from source #{source_number}.",
-                                    configs.len()
-                                );
+                                let Some(location) = response.headers().get(LOCATION) else {
+                                    println!(
+                                        "[WARN] Source #{source_number} returned HTTP status {status} without a Location header."
+                                    );
+                                    return Vec::new();
+                                };
 
-                                configs
+                                let location = match location.to_str() {
+                                    Ok(location) => location,
+
+                                    Err(_) => {
+                                        println!(
+                                            "[WARN] Source #{source_number} returned an invalid redirect Location header."
+                                        );
+                                        return Vec::new();
+                                    }
+                                };
+
+                                match safe_source_redirect(&current_url, location) {
+                                    Ok(next_url) => {
+                                        println!(
+                                            "[INFO] Source #{source_number} following validated redirect {}/{}.",
+                                            redirect_count + 1,
+                                            MAX_SOURCE_REDIRECTS
+                                        );
+                                        current_url = next_url;
+                                        continue;
+                                    }
+
+                                    Err(reason) => {
+                                        println!(
+                                            "[WARN] Source #{source_number} redirect rejected by safety policy: {reason}."
+                                        );
+                                        return Vec::new();
+                                    }
+                                }
                             }
 
-                            Err(SourceBodyError::TooLarge) => {
+                            if !status.is_success() {
+                                println!(
+                                    "[WARN] Source #{source_number} returned HTTP status {status}"
+                                );
+                                return Vec::new();
+                            }
+
+                            if response
+                                .content_length()
+                                .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
+                            {
                                 println!(
                                     "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
                                     MAX_SOURCE_BYTES
                                 );
-                                Vec::new()
+                                return Vec::new();
                             }
 
-                            Err(SourceBodyError::Read) => {
-                                println!("[WARN] Failed to read source #{source_number}.");
-                                Vec::new()
+                            match read_source_body(response).await {
+                                Ok(bytes) => {
+                                    let text = String::from_utf8_lossy(&bytes);
+                                    let configs = extract_configs(&text);
+
+                                    println!(
+                                        "[INFO] Found {} configs from source #{source_number}.",
+                                        configs.len()
+                                    );
+
+                                    return configs;
+                                }
+
+                                Err(SourceBodyError::TooLarge) => {
+                                    println!(
+                                        "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
+                                        MAX_SOURCE_BYTES
+                                    );
+                                    return Vec::new();
+                                }
+
+                                Err(SourceBodyError::Read) => {
+                                    println!("[WARN] Failed to read source #{source_number}.");
+                                    return Vec::new();
+                                }
                             }
                         }
-                    }
 
-                    Err(error) => {
-                        println!(
-                            "[WARN] Failed to download source #{source_number}: {error}"
-                        );
-                        Vec::new()
+                        Err(error) => {
+                            println!(
+                                "[WARN] Failed to download source #{source_number}: {error}"
+                            );
+                            return Vec::new();
+                        }
                     }
                 }
+
+                Vec::new()
             }
         })
         .buffer_unordered(DOWNLOAD_CONCURRENCY);
@@ -1300,11 +1393,60 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, select_all_candidates, split_concatenated_configs, trim_config,
-        MAX_SOURCE_BYTES,
+        normalize_config, safe_source_redirect, select_all_candidates,
+        split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
     };
+    use url::Url;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+
+    #[test]
+    fn accepts_http_to_https_source_redirect_on_same_host() {
+        let current = Url::parse("http://example.com/source").unwrap();
+
+        assert_eq!(
+            safe_source_redirect(&current, "https://example.com/source"),
+            Ok(Url::parse("https://example.com/source").unwrap())
+        );
+    }
+
+    #[test]
+    fn accepts_relative_https_source_redirect() {
+        let current = Url::parse("https://example.com/old").unwrap();
+
+        assert_eq!(
+            safe_source_redirect(&current, "/new"),
+            Ok(Url::parse("https://example.com/new").unwrap())
+        );
+    }
+
+    #[test]
+    fn rejects_source_redirect_to_another_host() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert!(safe_source_redirect(&current, "https://evil.example/source").is_err());
+    }
+
+    #[test]
+    fn rejects_source_redirect_to_non_https() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert!(safe_source_redirect(&current, "http://example.com/source").is_err());
+    }
+
+    #[test]
+    fn rejects_source_redirect_with_changed_port() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert!(safe_source_redirect(&current, "https://example.com:8443/source").is_err());
+    }
+
+    #[test]
+    fn rejects_source_redirect_with_credentials() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert!(safe_source_redirect(&current, "https://user:pass@example.com/source").is_err());
+    }
 
     #[test]
     fn bounded_source_chunk_stops_at_limit() {
