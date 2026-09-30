@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
+use std::net::IpAddr;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -436,17 +437,57 @@ fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> boo
     false
 }
 
-async fn pin_xray_entries(entries: &[(String, Value)]) -> Vec<(String, Value)> {
-    stream::iter(entries.iter().cloned())
-        .map(|(config, mut value)| async move {
-            let (host, port) = endpoint(&config)?;
-            let ip = resolve_public_host(&host, port).await?;
-            pin_xray_endpoint(&mut value, &ip, port).then_some((config, value))
+type XrayEndpointCache = HashMap<(String, u16), Option<IpAddr>>;
+
+fn xray_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
+    (host.to_ascii_lowercase(), port)
+}
+
+async fn pin_xray_entries(
+    entries: &[(String, Value)],
+    cache: &mut XrayEndpointCache,
+) -> Vec<(String, Value)> {
+    let missing = entries
+        .iter()
+        .filter_map(|(config, _)| {
+            let (host, port) = endpoint(config)?;
+            if host.parse::<IpAddr>().is_ok() {
+                return None;
+            }
+
+            let key = xray_endpoint_cache_key(&host, port);
+            (!cache.contains_key(&key)).then_some(key)
+        })
+        .collect::<HashSet<_>>();
+
+    let resolved = stream::iter(missing)
+        .map(|(host, port)| async move {
+            let ip = resolve_public_host(&host, port).await;
+            ((host, port), ip)
         })
         .buffer_unordered(64)
-        .filter_map(|result| async move { result })
+        .collect::<Vec<_>>()
+        .await;
+
+    cache.extend(resolved);
+
+    entries
+        .iter()
+        .filter_map(|(config, value)| {
+            let (host, port) = endpoint(config)?;
+
+            let ip = match host.parse::<IpAddr>() {
+                Ok(ip) if is_public_ip(&ip) => Some(ip),
+                Ok(_) => None,
+                Err(_) => cache
+                    .get(&xray_endpoint_cache_key(&host, port))
+                    .and_then(|ip| *ip),
+            }?;
+
+            let mut value = value.clone();
+            pin_xray_endpoint(&mut value, &ip, port).then_some((config.clone(), value))
+        })
         .collect()
-        .await
 }
 
 fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u16), String> {
@@ -1865,6 +1906,7 @@ async fn check_batch(
     compatibility_target: Option<&Url>,
     workers: usize,
     timeout_seconds: f64,
+    xray_cache: &mut XrayEndpointCache,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() {
         return Ok(HashMap::new());
@@ -1874,7 +1916,7 @@ async fn check_batch(
     let mut combined = HashMap::new();
 
     while let Some(batch_entries) = pending_batches.pop() {
-        let batch_entries = pin_xray_entries(&batch_entries).await;
+        let batch_entries = pin_xray_entries(&batch_entries, xray_cache).await;
         if batch_entries.is_empty() {
             continue;
         }
@@ -2186,6 +2228,7 @@ async fn validate_candidates_targets_inner(
     let batch_size = batch_size.max(1);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
+    let mut xray_cache = XrayEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
@@ -2206,6 +2249,7 @@ async fn validate_candidates_targets_inner(
             workers.max(1),
             timeout_seconds,
             policy,
+            &mut xray_cache,
         )
         .await?;
         metadata.extend(batch_metadata);
@@ -2231,6 +2275,7 @@ async fn check_batch_targets(
     workers: usize,
     timeout_seconds: f64,
     policy: ValidationPolicy,
+    xray_cache: &mut XrayEndpointCache,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -2520,6 +2565,7 @@ async fn validate_candidates_inner(
     let batch_size = batch_size.max(1);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
+    let mut xray_cache = XrayEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         if let Some(compatibility_target) = compatibility_target.as_ref() {
@@ -2549,6 +2595,7 @@ async fn validate_candidates_inner(
             compatibility_target.as_ref(),
             workers.max(1),
             timeout_seconds,
+            &mut xray_cache,
         )
         .await?;
         metadata.extend(batch_metadata);
@@ -2606,6 +2653,51 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[tokio::test]
+    async fn reuses_cached_xray_endpoint() {
+        let entries = vec![
+            (
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443"
+                    .to_string(),
+                parse_config(
+                    "vless://00000000-0000-0000-0000-000000000001@example.com:443",
+                )
+                .unwrap(),
+            ),
+            (
+                "vless://00000000-0000-0000-0000-000000000002@example.com:443"
+                    .to_string(),
+                parse_config(
+                    "vless://00000000-0000-0000-0000-000000000002@example.com:443",
+                )
+                .unwrap(),
+            ),
+        ];
+        let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
+        let mut cache = HashMap::from([(("example.com".to_string(), 443), Some(ip))]);
+
+        let pinned = pin_xray_entries(&entries, &mut cache).await;
+
+        assert_eq!(pinned.len(), entries.len());
+        assert_eq!(pinned[0].1["settings"]["vnext"][0]["address"], ip.to_string());
+        assert_eq!(pinned[1].1["settings"]["vnext"][0]["address"], ip.to_string());
+    }
+
+    #[test]
+    fn rejects_private_literal_xray_endpoint() {
+        let config =
+            parse_config("vless://00000000-0000-0000-0000-000000000001@127.0.0.1:443").unwrap();
+        let entries = vec![(
+            "vless://00000000-0000-0000-0000-000000000001@127.0.0.1:443".to_string(),
+            config,
+        )];
+
+        let mut cache = XrayEndpointCache::new();
+        let pinned = futures::executor::block_on(pin_xray_entries(&entries, &mut cache));
+
+        assert!(pinned.is_empty());
+    }
 
     #[test]
     fn primary_probe_requires_http_204() {
