@@ -770,7 +770,7 @@ async fn merge_dual(
                 singbox,
                 candidates,
                 targets,
-                settings.workers.clamp(1, 32),
+                settings.workers.clamp(1, 40),
                 request_timeout,
                 settings.timeout_seconds * 1000.0,
             )
@@ -780,7 +780,7 @@ async fn merge_dual(
                 singbox,
                 candidates,
                 targets,
-                settings.workers.clamp(1, 32),
+                settings.workers.clamp(1, 40),
                 request_timeout,
                 settings.timeout_seconds * 1000.0,
             )
@@ -850,7 +850,7 @@ async fn validate_light_batch(
                 singbox,
                 &singbox_candidates,
                 targets,
-                settings.workers.clamp(1, 32),
+                settings.workers.clamp(1, 40),
                 request_timeout,
                 settings.timeout_seconds * 1000.0,
             )
@@ -860,7 +860,7 @@ async fn validate_light_batch(
                 singbox,
                 &singbox_candidates,
                 targets,
-                settings.workers.clamp(1, 32),
+                settings.workers.clamp(1, 40),
                 request_timeout,
                 settings.timeout_seconds * 1000.0,
             )
