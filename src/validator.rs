@@ -3274,10 +3274,7 @@ mod tests {
             assert!(!is_public_ip(&ip), "{address}");
         }
 
-        for address in [
-            "2001:4860:4860::8888",
-            "2606:4700:4700::1111",
-        ] {
+        for address in ["2001:4860:4860::8888", "2606:4700:4700::1111"] {
             let ip: IpAddr = address.parse().expect("valid IPv6 address");
             assert!(is_public_ip(&ip), "{address}");
         }
