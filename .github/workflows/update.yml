@@ -29,7 +29,7 @@ jobs:
       singbox_key: ${{ steps.keys.outputs.singbox }}
 
     steps:
-      - name: "📥 Checkout source"
+      - name: "Checkout source"
         uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -413,7 +413,7 @@ jobs:
       contents: write
 
     steps:
-      - name: "📥 Checkout source"
+      - name: "Checkout source"
         uses: actions/checkout@v7
 
       - name: "📦 Download subscriptions"
