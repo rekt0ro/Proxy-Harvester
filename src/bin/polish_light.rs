@@ -748,12 +748,10 @@ fn has_disabled_tls_verification(config: &str) -> bool {
                     let tls_enabled = match value.get("tls") {
                         Some(Value::Bool(value)) => *value,
                         Some(Value::Number(value)) => value.as_u64().unwrap_or(0) != 0,
-                        Some(Value::String(value)) => {
-                            !matches!(
-                                value.trim().to_ascii_lowercase().as_str(),
-                                "" | "0" | "false" | "none" | "off"
-                            )
-                        }
+                        Some(Value::String(value)) => !matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "" | "0" | "false" | "none" | "off"
+                        ),
                         _ => false,
                     };
                     let insecure = value.get("allowInsecure").is_some_and(value_boolish);
@@ -1406,7 +1404,9 @@ async fn main() -> Result<(), String> {
             transfer_verified.len(),
             0,
         )?;
-        return Err("selected Light validation produced zero configs after the 10 MiB gate".to_string());
+        return Err(
+            "selected Light validation produced zero configs after the 10 MiB gate".to_string(),
+        );
     }
 
     write_light_stats(
@@ -1507,7 +1507,9 @@ mod tests {
             "allowInsecure": false
         });
         let encoded = STANDARD.encode(payload.to_string());
-        assert!(!has_disabled_tls_verification(&format!("vmess://{encoded}")));
+        assert!(!has_disabled_tls_verification(&format!(
+            "vmess://{encoded}"
+        )));
     }
 
     #[test]
