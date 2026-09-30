@@ -2680,8 +2680,14 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert_eq!(pinned.len(), entries.len());
-        assert_eq!(pinned[0].1["settings"]["vnext"][0]["address"], ip.to_string());
-        assert_eq!(pinned[1].1["settings"]["vnext"][0]["address"], ip.to_string());
+        assert_eq!(
+            pinned[0].1["settings"]["vnext"][0]["address"],
+            ip.to_string()
+        );
+        assert_eq!(
+            pinned[1].1["settings"]["vnext"][0]["address"],
+            ip.to_string()
+        );
     }
 
     #[tokio::test]
