@@ -48,7 +48,11 @@ const MAX_LIGHT_CANDIDATES: usize = 10000;
 
 #[derive(Debug)]
 enum SourceBodyError {
-    Tofn parse_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
+    TooLarge,
+    Read,
+}
+
+fn parse_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
     let target_url = current_url
         .join(location)
         .map_err(|_| "redirect location is not a valid URL")?;
@@ -100,7 +104,6 @@ async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, 
     }
 
     Ok(target_url)
-}    Ok(target_url)
 }
 
 async fn test_chunk(
