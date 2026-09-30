@@ -232,7 +232,11 @@ fn persist_history(
     let body = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
     let temporary = format!("{path}.tmp");
     std::fs::write(&temporary, body).map_err(|error| error.to_string())?;
-    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn historical_score(config: &str, history: &HashMap<String, HistoryEntry>) -> (f64, u64) {
@@ -740,7 +744,7 @@ async fn merge_dual(
         return Ok(HashMap::new());
     }
 
-    let request_timeout = std::time::Duration::from_secs_f64(settings.timeout_seconds);
+    let request_timeout = proxyrift::validator::timeout_duration(settings.timeout_seconds)?;
     let xray_future = async {
         if settings.strict {
             validate_candidates_with_targets_strict(
@@ -840,7 +844,7 @@ async fn validate_light_batch(
         dual_candidates.len()
     );
 
-    let request_timeout = std::time::Duration::from_secs_f64(settings.timeout_seconds);
+    let request_timeout = proxyrift::validator::timeout_duration(settings.timeout_seconds)?;
 
     let singbox_future = async {
         if singbox_candidates.is_empty() {
