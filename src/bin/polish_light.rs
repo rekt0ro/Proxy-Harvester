@@ -508,8 +508,7 @@ async fn validate_light_transfer_batch(
         }
     }
 
-    let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS)
-        .map_err(|_| "invalid final transfer timeout".to_string())?;
+    let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS);
 
     let mut singbox_validation_candidates = singbox_candidates;
     singbox_validation_candidates.extend(dual_candidates.iter().cloned());
@@ -1461,8 +1460,9 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_recheck_limit, history_fingerprint, light_backend, merge_light_metadata,
-        normalize_light_config, select_verified_configs, LightBackend, ProxyMetrics,
+        adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
+        merge_light_metadata, normalize_light_config, select_verified_configs, LightBackend,
+        ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
