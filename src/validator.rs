@@ -1811,7 +1811,11 @@ async fn check_batch(
                     "[WARN] Validation skipped: {}",
                     config_label(&batch_entries[0].0)
                 );
-                if !tail.is_empty() {
+                if !tail.is_empty()
+                    && !tail.contains(
+                        "The feature HTTP transport (without header padding, etc.) has been removed"
+                    )
+                {
                     println!("[WARN] Xray core failed to start: {tail}");
                 }
             }
@@ -2168,7 +2172,11 @@ async fn check_batch_targets(
                     "[WARN] Validation skipped: {}",
                     config_label(&batch_entries[0].0)
                 );
-                if !tail.is_empty() {
+                if !tail.is_empty()
+                    && !tail.contains(
+                        "The feature HTTP transport (without header padding, etc.) has been removed"
+                    )
+                {
                     println!("[WARN] Xray core failed to start: {tail}");
                 }
             }
