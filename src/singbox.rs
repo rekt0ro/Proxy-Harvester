@@ -1227,12 +1227,13 @@ async fn pin_singbox_entries(
 
     entries
         .iter()
-        .filter_map(|(config, mut outbound)| {
+        .filter_map(|(config, outbound)| {
             let (host, port) = crate::validator::endpoint(config)?;
             let ip = cache
                 .get(&singbox_endpoint_cache_key(&host, port))
                 .copied()?;
 
+            let mut outbound = outbound.clone();
             outbound["server"] = Value::String(ip.to_string());
             Some((config.clone(), outbound))
         })
@@ -1830,6 +1831,7 @@ pub async fn validate_candidates_with_target(
     let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
+    let mut endpoint_cache = SingBoxEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
