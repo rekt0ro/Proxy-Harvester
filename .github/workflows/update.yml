@@ -1,4 +1,5 @@
-name: Update Configs
+name: "🔄 ProxyRift Update"
+run-name: "🔄 ProxyRift Update #${{ github.run_number }}"
 
 on:
   # Triggered every 30 minutes by an external scheduler via GitHub's workflow_dispatch API.
@@ -18,6 +19,7 @@ env:
 jobs:
   # Job 1: does all the untrusted work (downloads, config testing) with a READ-ONLY token.
   collect:
+    name: "🔎 Collect & Validate"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -27,12 +29,12 @@ jobs:
       singbox_key: ${{ steps.keys.outputs.singbox }}
 
     steps:
-      - name: Checkout
+      - name: "📥 Checkout source"
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Load sources
+      - name: "🔐 Load proxy sources"
         env:
           PROXY_SOURCES: ${{ secrets.PROXY_SOURCES }}
         run: |
@@ -46,19 +48,19 @@ jobs:
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
       # rustup is preinstalled on GitHub runners, so no third-party action is needed.
-      - name: Set up Rust
+      - name: "🦀 Set up Rust"
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
           rustup default stable
 
-      - name: Record Rust version
+      - name: "📌 Record Rust version"
         id: rust-version
         run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Rust dependency lock
+      - name: "🔒 Verify dependency lock"
         run: test -s Cargo.lock
 
-      - name: Resolve latest stable validation cores
+      - name: "🌐 Resolve latest stable validation cores"
         id: validation-cores
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,7 +111,7 @@ jobs:
           resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
 
           echo "Validation core resolution complete."
-      - name: Compute cache keys
+      - name: "⚡ Compute cache keys"
         id: keys
         env:
           RUNNER_OS_NAME: ${{ runner.os }}
@@ -126,7 +128,7 @@ jobs:
             echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-${XRAY_SHA256}-verified"
             echo "singbox=${RUNNER_OS_NAME}-sing-box-${SINGBOX_VERSION}-${SINGBOX_SHA256}-verified"
           } >> "$GITHUB_OUTPUT"
-      - name: Restore Rust registry cache
+      - name: "💾 Restore Rust registry cache"
         id: cargo-registry-restore
         uses: actions/cache/restore@v6
         with:
@@ -137,7 +139,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Restore Rust build cache
+      - name: "💾 Restore Rust build cache"
         id: cargo-build-restore
         uses: actions/cache/restore@v6
         with:
@@ -146,14 +148,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-rust-${{ steps.rust-version.outputs.version }}-
 
-      - name: Restore Xray binary cache
+      - name: "📦 Restore Xray binary cache"
         id: xray-cache-restore
         uses: actions/cache/restore@v6
         with:
           path: ~/.local/bin/xray
           key: ${{ steps.keys.outputs.xray }}
 
-      - name: Install Xray (latest stable, checksum-verified)
+      - name: "🛡️ Install Xray (latest stable, checksum-verified)"
         env:
           XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
           XRAY_SHA256: ${{ steps.validation-cores.outputs.xray_sha256 }}
@@ -179,21 +181,21 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/xray" version
 
-      - name: Save Xray binary cache
+      - name: "💾 Save Xray binary cache"
         if: steps.xray-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ~/.local/bin/xray
           key: ${{ steps.keys.outputs.xray }}
 
-      - name: Restore sing-box binary cache
+      - name: "📦 Restore sing-box binary cache"
         id: singbox-cache-restore
         uses: actions/cache/restore@v6
         with:
           path: ~/.local/bin/sing-box
           key: ${{ steps.keys.outputs.singbox }}
 
-      - name: Install sing-box (latest stable, checksum-verified)
+      - name: "🛡️ Install sing-box (latest stable, checksum-verified)"
         env:
           SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
           SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
@@ -221,22 +223,22 @@ jobs:
           echo "$singbox_version"
           grep -F "$SINGBOX_VERSION" <<< "$singbox_version" >/dev/null
 
-      - name: Save sing-box binary cache
+      - name: "💾 Save sing-box binary cache"
         if: steps.singbox-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ~/.local/bin/sing-box
           key: ${{ steps.keys.outputs.singbox }}
 
-      - name: Validate Rust formatting
+      - name: "✨ Validate Rust formatting"
         run: cargo fmt --all
 
-      - name: Check runner network
+      - name: "🌍 Check runner network"
         run: |
           curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
           curl -fsS --max-time 10 "https://api.ipify.org?format=json" -o /dev/null
 
-      - name: Build Rust binaries
+      - name: "🔨 Build Rust binaries"
         run: |
           cargo build --release --locked --bins
           test -x ./target/release/ProxyRift
@@ -244,7 +246,7 @@ jobs:
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
 
-      - name: Save Rust registry cache
+      - name: "💾 Save Rust registry cache"
         if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         continue-on-error: true
@@ -254,7 +256,7 @@ jobs:
             ~/.cargo/git
           key: ${{ steps.keys.outputs.registry }}
 
-      - name: Save Rust build cache
+      - name: "💾 Save Rust build cache"
         if: steps.cargo-build-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         continue-on-error: true
@@ -262,10 +264,10 @@ jobs:
           path: target
           key: ${{ steps.keys.outputs.build }}
 
-      - name: Collect and transport-test configs
+      - name: "🔎 Collect & transport-test configs"
         run: ./target/release/ProxyRift
 
-      - name: Build Light subscription
+      - name: "💡 Build Light subscription"
         env:
           LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_MIN_PUBLISH: "50"
@@ -309,7 +311,7 @@ jobs:
 
       # GitHub Raw cannot set subscription response headers, so publish client-facing update metadata in the first line.
       # Hiddify currently parses this value as an integer number of hours, so 1 is the safest value.
-      - name: Add subscription update metadata
+      - name: "🏷️ Add subscription update metadata"
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt; do
             test -s "$f"
@@ -321,11 +323,11 @@ jobs:
             mv -f "$tmp" "$f"
           done
 
-      - name: Generate Base64 subscriptions
+      - name: "🧬 Generate Base64 subscriptions"
         run: ./target/release/encode_subscriptions
 
       # Only the published subscriptions and bounded Light history leave this job.
-      - name: Upload subscriptions
+      - name: "📤 Upload subscriptions"
         uses: actions/upload-artifact@v7
         with:
           name: subscriptions
@@ -338,7 +340,64 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Clean generated temporary files
+      - name: "📊 Write run summary"
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
+          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
+        run: |
+          status_icon="✅"
+          status_text="Complete"
+          case "${JOB_STATUS}" in
+            failure) status_icon="❌"; status_text="Failed" ;;
+            cancelled) status_icon="⏹️"; status_text="Cancelled" ;;
+          esac
+
+          count_lines() {
+            if [ -s "$1" ]; then
+              awk 'NF { count++ } END { print count + 0 }' "$1"
+            else
+              printf '0'
+            fi
+          }
+
+          all_count="$(count_lines subscriptions/all.txt)"
+          light_count="$(count_lines subscriptions/light.txt)"
+          all_b64_count="$(count_lines subscriptions/all-base64.txt)"
+          light_b64_count="$(count_lines subscriptions/light-base64.txt)"
+
+          xray_version="${XRAY_VERSION:-unavailable}"
+          singbox_version="${SINGBOX_VERSION:-unavailable}"
+
+          {
+            echo "## 🔄 ProxyRift Update"
+            echo
+            echo "| Stage | Status |"
+            echo "|---|---|"
+            echo "| Collection & validation | ${status_icon} ${status_text} |"
+            echo "| Subscription generation | ${status_icon} ${status_text} |"
+            echo
+            echo "### 📦 Published outputs"
+            echo
+            echo "| Output | Entries |"
+            echo "|---|---:|"
+            echo "| All | ${all_count} |"
+            echo "| Light | ${light_count} |"
+            echo "| All Base64 | ${all_b64_count} |"
+            echo "| Light Base64 | ${light_b64_count} |"
+            echo
+            echo "### 🛡️ Validation cores"
+            echo
+            echo "| Core | Version |"
+            echo "|---|---|"
+            echo "| Xray | ${xray_version} |"
+            echo "| sing-box | ${singbox_version} |"
+            echo
+            echo "_Generated by the ProxyRift update workflow._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🧹 Clean generated temporary files"
         if: always()
         run: |
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
@@ -346,6 +405,7 @@ jobs:
 
   # Job 2: the ONLY job with a write token. It just copies four files and pushes.
   publish:
+    name: "🚀 Publish Subscriptions"
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -353,16 +413,16 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: "📥 Checkout source"
         uses: actions/checkout@v7
 
-      - name: Download subscriptions
+      - name: "📦 Download subscriptions"
         uses: actions/download-artifact@v8
         with:
           name: subscriptions
           path: ${{ runner.temp }}/subscriptions
 
-      - name: Commit changes
+      - name: "🚀 Commit & publish changes"
         run: |
           set -euo pipefail
 
@@ -398,6 +458,7 @@ jobs:
 
   # Job 3: deletes old caches; needs only the actions:write permission.
   cleanup:
+    name: "🧹 Cleanup Caches"
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -406,7 +467,7 @@ jobs:
       actions: write
 
     steps:
-      - name: Clean obsolete caches
+      - name: "🧹 Clean obsolete caches"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
