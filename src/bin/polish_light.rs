@@ -745,7 +745,17 @@ fn has_disabled_tls_verification(config: &str) -> bool {
             .flatten()
             {
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                    let tls_enabled = value.get("tls").is_some_and(value_boolish);
+                    let tls_enabled = match value.get("tls") {
+                        Some(Value::Bool(value)) => *value,
+                        Some(Value::Number(value)) => value.as_u64().unwrap_or(0) != 0,
+                        Some(Value::String(value)) => {
+                            !matches!(
+                                value.trim().to_ascii_lowercase().as_str(),
+                                "" | "0" | "false" | "none" | "off"
+                            )
+                        }
+                        _ => false,
+                    };
                     let insecure = value.get("allowInsecure").is_some_and(value_boolish);
                     if tls_enabled && insecure {
                         return true;
@@ -1230,7 +1240,7 @@ async fn main() -> Result<(), String> {
                 selected.len(),
             )?;
             println!(
-                "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation.",
+                "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; all published entries passed the 10 MiB gate.",
                 selected.len()
             );
             return Ok(());
@@ -1486,6 +1496,20 @@ mod tests {
         let encoded = STANDARD.encode(payload.to_string());
         assert!(has_disabled_tls_verification(&format!("vmess://{encoded}")));
     }
+    #[test]
+    fn allows_vmess_tls_with_certificate_verification() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "tls": "tls",
+            "allowInsecure": false
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(!has_disabled_tls_verification(&format!("vmess://{encoded}")));
+    }
+
+
 
     #[test]
     fn adaptive_recheck_expands_when_yield_is_low() {
