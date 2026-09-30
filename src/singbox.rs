@@ -4,7 +4,8 @@ use crate::validator::{
     ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
     PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, SUSTAINED_THROUGHPUT_TIMEOUT,
+    STRICT_STABILITY_ATTEMPTS, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET,
+    STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET, SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -128,7 +129,7 @@ fn singbox_ech_settings(value: &str) -> Result<Value, String> {
     }
     if value.contains("://") {
         return Err(
-            "Xray ECH DNS resolver form is unsupported by pinned sing-box 1.14.1".to_string(),
+            "Xray ECH DNS resolver form is unsupported by the sing-box validator backend".to_string(),
         );
     }
 
@@ -235,7 +236,7 @@ fn tls_settings(stream: &Value, insecure: bool) -> Result<Option<Value>, String>
     if xray_tls.get("pinnedPeerCertSha256").is_some()
         || xray_tls.get("verifyPeerCertByName").is_some()
     {
-        return Err("Xray TLS certificate pinning/name verification is unsupported by pinned sing-box 1.14.1".to_string());
+        return Err("Xray TLS certificate pinning/name verification is unsupported by the sing-box validator backend".to_string());
     }
 
     Ok(Some(tls))
@@ -706,7 +707,7 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     }
 
     if has_pin {
-        return Err("Hysteria2 pinSHA256 is unsupported by pinned sing-box 1.14.1".to_string());
+        return Err("Hysteria2 pinSHA256 is unsupported by the sing-box validator backend".to_string());
     }
     if obfs_password.is_some() && obfs.is_none() {
         return Err("Hysteria2 obfs-password requires obfs".to_string());
@@ -1125,6 +1126,7 @@ fn client_for_port(
             reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
                 .map_err(|error| error.to_string())?,
         )
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(request_timeout)
         .user_agent("ProxyRift-SingBox/1.0");
 
@@ -1142,7 +1144,8 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
         PRIMARY_TARGET => body.is_empty(),
-        "https://speed.cloudflare.com/__down?bytes=16384" => body.len() == 16_384,
+        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
+        STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
     }
@@ -1310,7 +1313,10 @@ async fn check_batch_targets(
                 .chars()
                 .rev()
                 .collect::<String>();
-            println!("[WARN] sing-box failed to start: {}", batch_entries[0].0);
+            println!(
+                "[WARN] sing-box failed to start: {}",
+                config_label(&batch_entries[0].0)
+            );
             if !tail.is_empty() {
                 println!("[WARN] sing-box log: {tail}");
             }
@@ -1519,15 +1525,29 @@ async fn check_batch(
         let work = make_temp_dir()?;
         let config_path = work.join("sing-box.json");
         let log_path = work.join("sing-box.log");
-        let (config, local_ports) = singbox_config(&batch_entries)?;
+        let (config, local_ports) = match singbox_config(&batch_entries) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
-        fs::write(
-            &config_path,
-            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        if let Err(error) = serde_json::to_vec(&config)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| fs::write(&config_path, bytes).map_err(|error| error.to_string()))
+        {
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
 
-        let mut child = start_singbox(binary, &config_path, &log_path)?;
+        let mut child = match start_singbox(binary, &config_path, &log_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
         if !ports_ready(&mut child, &local_ports).await {
             let _ = child.kill();
@@ -1942,12 +1962,20 @@ mod tests {
             b"blocked by upstream"
         ));
         assert!(valid_probe_body(
-            "https://speed.cloudflare.com/__down?bytes=16384",
-            &vec![0_u8; 16_384]
+            EARLY_THROUGHPUT_TARGET,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
         ));
         assert!(!valid_probe_body(
-            "https://speed.cloudflare.com/__down?bytes=16384",
-            &vec![0_u8; 16_383]
+            EARLY_THROUGHPUT_TARGET,
+            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
+        ));
+        assert!(valid_probe_body(
+            STRICT_THROUGHPUT_TARGET,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES]
+        ));
+        assert!(!valid_probe_body(
+            STRICT_THROUGHPUT_TARGET,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
         ));
         assert!(valid_probe_body("https://example.com/", b"<html>"));
         assert!(!valid_probe_body("https://example.com/", b""));
