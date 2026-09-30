@@ -744,7 +744,8 @@ async fn merge_dual(
         return Ok(HashMap::new());
     }
 
-    let request_timeout = proxyrift::validator::timeout_duration(settings.timeout_seconds)?;
+    let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
+        .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
     let xray_future = async {
         if settings.strict {
             validate_candidates_with_targets_strict(
@@ -844,7 +845,8 @@ async fn validate_light_batch(
         dual_candidates.len()
     );
 
-    let request_timeout = proxyrift::validator::timeout_duration(settings.timeout_seconds)?;
+    let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
+        .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
 
     let singbox_future = async {
         if singbox_candidates.is_empty() {
