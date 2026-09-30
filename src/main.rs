@@ -105,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::builder()
         .user_agent("ProxyRift/3.0")
         .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     let mut unique = HashSet::new();
@@ -331,8 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     write_atomic(&light_candidates_path, light_candidates_subscription).await?;
 
-    let working_configs =
-        select_all_candidates(&ranked_working_configs, &special_hysteria_candidates);
+    let working_configs = select_all_candidates(&ranked_working_configs, &[]);
 
     let all_subscription = if working_configs.is_empty() {
         String::new()
@@ -441,6 +441,10 @@ fn config_pattern() -> &'static Regex {
 }
 
 fn split_concatenated_configs(config: &str) -> Vec<&str> {
+    if normalize_config(config).is_some() {
+        return vec![config];
+    }
+
     const SCHEMES: &[&str] = &[
         "vmess://",
         "vless://",
@@ -499,7 +503,6 @@ fn split_concatenated_configs(config: &str) -> Vec<&str> {
         .chain(starts.last().map(|&start| &config[start..]))
         .collect()
 }
-
 fn extract_configs(text: &str) -> Vec<String> {
     let text = decode_html_entities(text);
     let pattern = config_pattern();
@@ -1347,6 +1350,14 @@ mod tests {
     }
 
     #[test]
+    fn preserves_embedded_scheme_in_query_value() {
+        let config = "vless://00000000-0000-0000-0000-000000000001@example.com:443?url=vless://00000000-0000-0000-0000-000000000002@example.com:443";
+
+        assert_eq!(split_concatenated_configs(config), vec![config]);
+        assert_eq!(extract_configs(config), vec![config.to_string()]);
+    }
+
+    #[test]
     fn rejects_protocols_without_a_proxy_validator() {
         for config in [
             "https://127.0.0.1:443",
@@ -1456,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn all_candidates_prefer_endpoint_diversity_before_filling_duplicates() {
+    fn all_candidates_enforce_per_endpoint_limit() {
         let working = vec![
             ("vless://uuid1@example.com:443".to_string(), 10),
             ("vless://uuid2@example.com:443".to_string(), 20),
@@ -1474,7 +1485,6 @@ mod tests {
                 "vless://uuid2@example.com:443",
                 "vless://uuid3@example.com:443",
                 "vless://uuid5@other.example.com:443",
-                "vless://uuid4@example.com:443",
             ]
         );
     }
@@ -1803,9 +1813,24 @@ fn select_all_candidates(
             break;
         }
 
-        if seen.insert(config.clone()) {
-            selected.push(config);
+        if seen.contains(&config) {
+            continue;
         }
+
+        let Some(ep) = endpoint(&config) else {
+            if seen.insert(config.clone()) {
+                selected.push(config);
+            }
+            continue;
+        };
+
+        if endpoint_counts.get(&ep).copied().unwrap_or(0) >= MAX_ALL_PER_ENDPOINT {
+            continue;
+        }
+
+        seen.insert(config.clone());
+        *endpoint_counts.entry(ep).or_default() += 1;
+        selected.push(config);
     }
 
     selected
