@@ -69,16 +69,6 @@ The **Light** list starts from the same screened candidates but goes through dee
 
 Light also uses a safety threshold when publishing updates. If a new run produces too few valid configurations, the previous Light list is preserved rather than being replaced with an unexpectedly small result.
 
-## Supported Protocols
-
-* VLESS
-* VMess
-* Trojan
-* Shadowsocks
-* Hysteria
-* Hysteria2
-* SOCKS
-
 ## Automatic Updates
 
 ProxyRift regenerates the subscription lists automatically through GitHub Actions.
