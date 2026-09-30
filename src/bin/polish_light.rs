@@ -1496,6 +1496,7 @@ mod tests {
         let encoded = STANDARD.encode(payload.to_string());
         assert!(has_disabled_tls_verification(&format!("vmess://{encoded}")));
     }
+
     #[test]
     fn allows_vmess_tls_with_certificate_verification() {
         let payload = serde_json::json!({
@@ -1508,8 +1509,6 @@ mod tests {
         let encoded = STANDARD.encode(payload.to_string());
         assert!(!has_disabled_tls_verification(&format!("vmess://{encoded}")));
     }
-
-
 
     #[test]
     fn adaptive_recheck_expands_when_yield_is_low() {
