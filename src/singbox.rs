@@ -1906,17 +1906,13 @@ mod tests {
         let entries = vec![
             (
                 "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
-                singbox_outbound(
-                    "vless://00000000-0000-0000-0000-000000000001@example.com:443",
-                )
-                .unwrap(),
+                singbox_outbound("vless://00000000-0000-0000-0000-000000000001@example.com:443")
+                    .unwrap(),
             ),
             (
                 "vless://00000000-0000-0000-0000-000000000002@example.com:443".to_string(),
-                singbox_outbound(
-                    "vless://00000000-0000-0000-0000-000000000002@example.com:443",
-                )
-                .unwrap(),
+                singbox_outbound("vless://00000000-0000-0000-0000-000000000002@example.com:443")
+                    .unwrap(),
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
