@@ -157,7 +157,11 @@ fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), String> {
     let temporary = format!("{path}.tmp");
 
     fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    fs::rename(&temporary, path).map_err(|error| error.to_string())
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 pub fn write_lines(path: &str, values: &[String]) -> Result<(), String> {
@@ -895,9 +899,10 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                 settings["headers"] = json!({ "Host": host_header });
             }
             if !ws_early_data.is_empty() {
-                settings["maxEarlyData"] = json!(ws_early_data
+                let early_data = ws_early_data
                     .parse::<u32>()
-                    .expect("validated WebSocket early-data size"));
+                    .map_err(|_| "invalid WebSocket early-data size".to_string())?;
+                settings["maxEarlyData"] = json!(early_data);
             }
             if !ws_early_data.is_empty() && !ws_early_data_header.is_empty() {
                 settings["earlyDataHeaderName"] = json!(ws_early_data_header);
@@ -3260,6 +3265,7 @@ mod tests {
         assert!(client_for_port(1080, 0.0, false).is_err());
         assert!(client_for_port(1080, f64::NAN, false).is_err());
         assert!(client_for_port(1080, 3.0, false).is_ok());
+        assert!(timeout_duration(f64::MAX).is_err());
     }
 
     #[test]
