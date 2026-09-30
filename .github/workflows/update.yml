@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
+      rust_toolchain_key: ${{ steps.keys.outputs.rust-toolchain }}
       registry_key: ${{ steps.keys.outputs.registry }}
       build_key: ${{ steps.keys.outputs.build }}
       xray_key: ${{ steps.keys.outputs.xray }}
@@ -44,14 +45,45 @@ jobs:
           done <<< "$PROXY_SOURCES"
           printf '%s\n' "$PROXY_SOURCES" > sources.txt
 
+      - name: "🦀 Resolve stable Rust toolchain"
+        id: rust-toolchain
+        run: |
+          set -euo pipefail
+
+          stable_channel="$(curl -fsSL \
+            --retry 5 \
+            --retry-delay 2 \
+            --retry-max-time 45 \
+            --retry-connrefused \
+            https://static.rust-lang.org/dist/channel-rust-stable.toml)"
+
+          rust_version="$(sed -n 's/^version = "\\(1\\.[0-9][0-9]*\\.[0-9][0-9]*\\) .*/\\1/p' <<< "$stable_channel" | head -n 1)"
+          [[ "$rust_version" =~ ^1\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$rust_version" >> "$GITHUB_OUTPUT"
+
+      - name: "🦀 Restore Rust toolchain cache"
+        id: rust-toolchain-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.rustup/toolchains
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-toolchain-${{ steps.rust-toolchain.outputs.version }}
+
       - name: "🦀 Set up Rust"
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
+          set -euo pipefail
+
+          toolchain="${{ steps.rust-toolchain.outputs.version }}"
+          if ! rustup toolchain list | awk '{print $1}' | grep -E "^$toolchain(-|$)" >/dev/null; then
+            rustup toolchain install "$toolchain" --profile minimal --component rustfmt
+          fi
+          rustup default "$toolchain"
 
       - name: "📌 Record Rust version"
         id: rust-version
-        run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+        run: |
+          actual_version="$(rustc --version | awk '{print $2}')"
+          test "$actual_version" = "${{ steps.rust-toolchain.outputs.version }}"
+          echo "version=$actual_version" >> "$GITHUB_OUTPUT"
 
       - name: "🔒 Verify dependency lock"
         run: test -s Cargo.lock
@@ -119,6 +151,7 @@ jobs:
           SINGBOX_SHA256: ${{ steps.validation-cores.outputs.singbox_sha256 }}
         run: |
           {
+            echo "rust-toolchain=${RUNNER_OS_NAME}-${{ runner.arch }}-rust-toolchain-${RUST_VERSION}"
             echo "registry=${RUNNER_OS_NAME}-cargo-registry-${LOCK_HASH}"
             echo "build=${RUNNER_OS_NAME}-cargo-build-rust-${RUST_VERSION}-${LOCK_HASH}"
             echo "xray=${RUNNER_OS_NAME}-xray-${XRAY_VERSION}-${XRAY_SHA256}-verified"
@@ -242,6 +275,13 @@ jobs:
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
 
+      - name: "💾 Save Rust toolchain cache"
+        if: steps.rust-toolchain-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.rustup/toolchains
+          key: ${{ steps.keys.outputs.rust-toolchain }}
+
       - name: "💾 Save Rust registry cache"
         if: steps.cargo-registry-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -289,6 +329,11 @@ jobs:
           status=$?
           set -e
 
+          if [ "$status" -ne 0 ]; then
+            echo "Light validation failed; preserving the previous Light subscription." >&2
+            exit "$status"
+          fi
+
           if [ -s /tmp/proxyrift/light.next.txt ]; then
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
             echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
@@ -299,8 +344,6 @@ jobs:
             else
               echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
             fi
-          elif [ "$status" -ne 0 ]; then
-            echo "Light validation did not produce a new verified pool; preserving the previous Light subscription."
           else
             echo "Light validation produced no configs; preserving the previous Light subscription."
           fi
@@ -474,7 +517,6 @@ jobs:
     needs: collect
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     permissions:
       actions: write
 
@@ -484,6 +526,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUNNER_OS_NAME: ${{ runner.os }}
+          RUNNER_ARCH_NAME: ${{ runner.arch }}
+          RUST_TOOLCHAIN_KEY: ${{ needs.collect.outputs.rust_toolchain_key }}
           REGISTRY_KEY: ${{ needs.collect.outputs.registry_key }}
           BUILD_KEY: ${{ needs.collect.outputs.build_key }}
           XRAY_KEY: ${{ needs.collect.outputs.xray_key }}
@@ -492,7 +536,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for k in "$REGISTRY_KEY" "$BUILD_KEY" "$XRAY_KEY" "$SINGBOX_KEY"; do
+          for k in "$RUST_TOOLCHAIN_KEY" "$REGISTRY_KEY" "$BUILD_KEY" "$XRAY_KEY" "$SINGBOX_KEY"; do
             if [ -z "$k" ]; then
               echo "Refusing cache cleanup because a current cache key is empty." >&2
               exit 1
@@ -520,6 +564,7 @@ jobs:
             done
           }
 
+          cleanup_prefix "${RUNNER_OS_NAME}-${RUNNER_ARCH_NAME}-rust-toolchain-" "$RUST_TOOLCHAIN_KEY"
           cleanup_prefix "${RUNNER_OS_NAME}-cargo-registry-" "$REGISTRY_KEY"
           cleanup_prefix "${RUNNER_OS_NAME}-cargo-build-rust-" "$BUILD_KEY"
           cleanup_prefix "${RUNNER_OS_NAME}-xray-" "$XRAY_KEY"
