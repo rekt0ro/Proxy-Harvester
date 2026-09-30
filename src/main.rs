@@ -85,7 +85,10 @@ async fn write_atomic(
     let temporary = path.with_file_name(format!(".{file_name}.tmp"));
 
     fs::write(&temporary, contents).await?;
-    fs::rename(&temporary, path).await?;
+    if let Err(error) = fs::rename(&temporary, path).await {
+        let _ = fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
 
     Ok(())
 }
