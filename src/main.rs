@@ -2,7 +2,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
-use proxyrift::validator::{config_label, endpoint, is_public_ip};
+use proxyrift::validator::{config_label, endpoint, is_public_ip, resolve_public_host};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
@@ -52,7 +52,7 @@ enum SourceBodyError {
     Read,
 }
 
-fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
+fn parse_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
     let target_url = current_url
         .join(location)
         .map_err(|_| "redirect location is not a valid URL")?;
@@ -61,8 +61,8 @@ fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'stat
         return Err("redirect destination must use HTTPS");
     }
 
-    if target_url.host() != current_url.host() {
-        return Err("redirect destination must keep the same host");
+    if target_url.host().is_none() {
+        return Err("redirect destination must have a host");
     }
 
     if !target_url.username().is_empty() || target_url.password().is_some() {
@@ -77,6 +77,30 @@ fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'stat
 
     if current_port != target_port && !http_to_https_default_ports {
         return Err("redirect destination must keep the same port");
+    }
+
+    Ok(target_url)
+}
+
+async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
+    let target_url = parse_source_redirect(current_url, location)?;
+    let host = target_url
+        .host_str()
+        .ok_or("redirect destination must have a host")?;
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !is_public_ip(&ip) {
+            return Err("redirect destination must resolve to a public address");
+        }
+        return Ok(target_url);
+    }
+
+    let port = target_url
+        .port_or_known_default()
+        .ok_or("redirect destination must have a known port")?;
+
+    if resolve_public_host(host, port).await.is_none() {
+        return Err("redirect destination must resolve to a public address");
     }
 
     Ok(target_url)
@@ -195,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     }
                                 };
 
-                                match safe_source_redirect(&current_url, location) {
+                                match safe_source_redirect(&current_url, location).await {
                                     Ok(next_url) => {
                                         println!(
                                             "[INFO] Source #{source_number} following validated redirect {}/{}.",
@@ -1393,20 +1417,30 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, safe_source_redirect, select_all_candidates, split_concatenated_configs,
-        trim_config, MAX_SOURCE_BYTES,
+        normalize_config, parse_source_redirect, safe_source_redirect, select_all_candidates,
+        split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use url::Url;
 
     #[test]
-    fn accepts_http_to_https_source_redirect_on_same_host() {
+    fn accepts_cross_host_https_source_redirect() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert_eq!(
+            parse_source_redirect(&current, "https://cdn.example.net/source"),
+            Ok(Url::parse("https://cdn.example.net/source").unwrap())
+        );
+    }
+
+    #[test]
+    fn accepts_http_to_https_source_redirect_on_different_host() {
         let current = Url::parse("http://example.com/source").unwrap();
 
         assert_eq!(
-            safe_source_redirect(&current, "https://example.com/source"),
-            Ok(Url::parse("https://example.com/source").unwrap())
+            parse_source_redirect(&current, "https://cdn.example.net/source"),
+            Ok(Url::parse("https://cdn.example.net/source").unwrap())
         );
     }
 
@@ -1415,37 +1449,54 @@ mod tests {
         let current = Url::parse("https://example.com/old").unwrap();
 
         assert_eq!(
-            safe_source_redirect(&current, "/new"),
+            parse_source_redirect(&current, "/new"),
             Ok(Url::parse("https://example.com/new").unwrap())
         );
-    }
-
-    #[test]
-    fn rejects_source_redirect_to_another_host() {
-        let current = Url::parse("https://example.com/source").unwrap();
-
-        assert!(safe_source_redirect(&current, "https://evil.example/source").is_err());
     }
 
     #[test]
     fn rejects_source_redirect_to_non_https() {
         let current = Url::parse("https://example.com/source").unwrap();
 
-        assert!(safe_source_redirect(&current, "http://example.com/source").is_err());
+        assert!(parse_source_redirect(&current, "http://cdn.example.net/source").is_err());
     }
 
     #[test]
     fn rejects_source_redirect_with_changed_port() {
         let current = Url::parse("https://example.com/source").unwrap();
 
-        assert!(safe_source_redirect(&current, "https://example.com:8443/source").is_err());
+        assert!(parse_source_redirect(&current, "https://cdn.example.net:8443/source").is_err());
     }
 
     #[test]
     fn rejects_source_redirect_with_credentials() {
         let current = Url::parse("https://example.com/source").unwrap();
 
-        assert!(safe_source_redirect(&current, "https://user:pass@example.com/source").is_err());
+        assert!(
+            parse_source_redirect(&current, "https://user:pass@cdn.example.net/source").is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_private_ip_source_redirect() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert_eq!(
+            safe_source_redirect(&current, "https://127.0.0.1/source").await,
+            Err("redirect destination must resolve to a public address")
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_public_ip_source_redirect() {
+        let current = Url::parse("https://example.com/source").unwrap();
+
+        assert_eq!(
+            safe_source_redirect(&current, "https://1.1.1.1/source")
+                .await
+                .unwrap(),
+            Url::parse("https://1.1.1.1/source").unwrap()
+        );
     }
 
     #[test]

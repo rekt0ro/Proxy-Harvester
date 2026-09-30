@@ -384,7 +384,7 @@ pub fn is_public_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-pub(crate) async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAddr> {
+pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAddr> {
     let addresses = timeout(PUBLIC_DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
         .ok()?
