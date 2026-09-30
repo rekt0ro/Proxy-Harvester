@@ -733,90 +733,29 @@ fn light_backend(config: &str) -> LightBackend {
     LightBackend::SingBox
 }
 
-async fn merge_dual(
-    xray: &str,
-    singbox: &str,
-    candidates: &[String],
-    targets: &[&str],
-    settings: ValidationSettings,
-) -> Result<HashMap<String, ProxyMetrics>, String> {
-    if candidates.is_empty() {
-        return Ok(HashMap::new());
-    }
+fn merge_light_metadata(
+    mut xray_metadata: HashMap<String, ProxyMetrics>,
+    mut singbox_metadata: HashMap<String, ProxyMetrics>,
+    dual_candidates: &[String],
+) -> HashMap<String, ProxyMetrics> {
+    let mut verified = HashMap::with_capacity(xray_metadata.len() + singbox_metadata.len());
 
-    let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
-        .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
-    let xray_future = async {
-        if settings.strict {
-            validate_candidates_with_targets_strict(
-                xray,
-                candidates,
-                targets,
-                settings.workers,
-                settings.batch_size,
-                settings.timeout_seconds,
-            )
-            .await
-        } else {
-            validate_candidates_with_targets(
-                xray,
-                candidates,
-                targets,
-                settings.workers,
-                settings.batch_size,
-                settings.timeout_seconds,
-            )
-            .await
-        }
-    };
-    let singbox_future = async {
-        if settings.strict {
-            validate_singbox_targets_strict(
-                singbox,
-                candidates,
-                targets,
-                settings.workers.clamp(1, 40),
-                request_timeout,
-                settings.timeout_seconds * 1000.0,
-            )
-            .await
-        } else {
-            validate_singbox_targets(
-                singbox,
-                candidates,
-                targets,
-                settings.workers.clamp(1, 40),
-                request_timeout,
-                settings.timeout_seconds * 1000.0,
-            )
-            .await
-        }
-    };
+    for config in dual_candidates {
+        let xray_metrics = xray_metadata.remove(config);
+        let singbox_metrics = singbox_metadata.remove(config);
 
-    let (xray_result, singbox_result) = tokio::join!(xray_future, singbox_future);
-    let xray_metadata = xray_result?;
-    let xray_verified = xray_metadata.len();
-    let singbox_metadata = singbox_result?;
-
-    let mut verified = HashMap::new();
-    for (config, mut metrics) in xray_metadata {
-        if let Some(singbox) = singbox_metadata.get(&config) {
+        if let (Some(mut metrics), Some(singbox)) = (xray_metrics, singbox_metrics) {
             metrics.successes = metrics.successes.min(singbox.successes);
             metrics.attempts = metrics.attempts.min(singbox.attempts);
             metrics.median_ms = metrics.median_ms.max(singbox.median_ms);
             metrics.min_ms = metrics.min_ms.max(singbox.min_ms);
-            verified.insert(config, metrics);
+            verified.insert(config.clone(), metrics);
         }
     }
 
-    println!(
-        "[INFO] Dual-core Light: Xray verified {}, sing-box verified {}, intersection {}.",
-        xray_verified,
-        singbox_metadata.len(),
-        verified.len()
-    );
-
-    Ok(verified)
+    verified.extend(singbox_metadata);
+    verified.extend(xray_metadata);
+    verified
 }
 
 async fn validate_light_batch(
@@ -845,16 +784,21 @@ async fn validate_light_batch(
         dual_candidates.len()
     );
 
+    let mut singbox_validation_candidates = singbox_candidates;
+    singbox_validation_candidates.extend(dual_candidates.iter().cloned());
+    let mut xray_validation_candidates = xray_candidates;
+    xray_validation_candidates.extend(dual_candidates.iter().cloned());
+
     let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
         .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
 
     let singbox_future = async {
-        if singbox_candidates.is_empty() {
+        if singbox_validation_candidates.is_empty() {
             Ok(HashMap::new())
         } else if settings.strict {
             validate_singbox_targets_strict(
                 singbox,
-                &singbox_candidates,
+                &singbox_validation_candidates,
                 targets,
                 settings.workers.clamp(1, 40),
                 request_timeout,
@@ -864,7 +808,7 @@ async fn validate_light_batch(
         } else {
             validate_singbox_targets(
                 singbox,
-                &singbox_candidates,
+                &singbox_validation_candidates,
                 targets,
                 settings.workers.clamp(1, 40),
                 request_timeout,
@@ -875,12 +819,12 @@ async fn validate_light_batch(
     };
 
     let xray_future = async {
-        if xray_candidates.is_empty() {
+        if xray_validation_candidates.is_empty() {
             Ok(HashMap::new())
         } else if settings.strict {
             validate_candidates_with_targets_strict(
                 xray,
-                &xray_candidates,
+                &xray_validation_candidates,
                 targets,
                 settings.workers.max(1),
                 settings.batch_size,
@@ -890,7 +834,7 @@ async fn validate_light_batch(
         } else {
             validate_candidates_with_targets(
                 xray,
-                &xray_candidates,
+                &xray_validation_candidates,
                 targets,
                 settings.workers.max(1),
                 settings.batch_size,
@@ -904,13 +848,7 @@ async fn validate_light_batch(
     let singbox_metadata = singbox_result?;
     let xray_metadata = xray_result?;
 
-    let mut verified = HashMap::with_capacity(singbox_metadata.len() + xray_metadata.len());
-    verified.extend(singbox_metadata);
-    verified.extend(xray_metadata);
-
-    if !dual_candidates.is_empty() {
-        verified.extend(merge_dual(xray, singbox, &dual_candidates, targets, settings).await?);
-    }
+    let verified = merge_light_metadata(xray_metadata, singbox_metadata, &dual_candidates);
 
     println!(
         "[INFO] Multi-target Light validation: {}/{} candidates verified using {} throughput target.",
@@ -1298,11 +1236,12 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_recheck_limit, history_fingerprint, light_backend, normalize_light_config,
-        select_verified_configs, LightBackend,
+        adaptive_recheck_limit, history_fingerprint, light_backend, merge_light_metadata,
+        normalize_light_config, select_verified_configs, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use std::collections::HashMap;
 
     #[test]
     fn adaptive_recheck_expands_when_yield_is_low() {
@@ -1507,6 +1446,69 @@ mod tests {
             normalize_light_config("trojan://pass@example.com:443?path=%2Fa%3Fb&security="),
             "trojan://pass@example.com:443?path=%2Fa%3Fb&security=tls"
         );
+    }
+
+    #[test]
+    fn dual_metadata_preserves_intersection_and_exclusive_results() {
+        let dual = vec!["dual".to_string()];
+        let xray = HashMap::from([
+            (
+                "dual".to_string(),
+                ProxyMetrics {
+                    successes: 6,
+                    attempts: 8,
+                    median_ms: 20.0,
+                    min_ms: 8.0,
+                    jitter_ms: 1.0,
+                    throughput_kbps: 100.0,
+                },
+            ),
+            (
+                "xray-only".to_string(),
+                ProxyMetrics {
+                    successes: 5,
+                    attempts: 8,
+                    median_ms: 10.0,
+                    min_ms: 4.0,
+                    jitter_ms: 2.0,
+                    throughput_kbps: 80.0,
+                },
+            ),
+        ]);
+        let singbox = HashMap::from([
+            (
+                "dual".to_string(),
+                ProxyMetrics {
+                    successes: 4,
+                    attempts: 7,
+                    median_ms: 15.0,
+                    min_ms: 12.0,
+                    jitter_ms: 3.0,
+                    throughput_kbps: 90.0,
+                },
+            ),
+            (
+                "singbox-only".to_string(),
+                ProxyMetrics {
+                    successes: 5,
+                    attempts: 6,
+                    median_ms: 12.0,
+                    min_ms: 6.0,
+                    jitter_ms: 1.5,
+                    throughput_kbps: 70.0,
+                },
+            ),
+        ]);
+
+        let merged = merge_light_metadata(xray, singbox, &dual);
+
+        assert_eq!(merged["dual"].successes, 4);
+        assert_eq!(merged["dual"].attempts, 7);
+        assert_eq!(merged["dual"].median_ms, 20.0);
+        assert_eq!(merged["dual"].min_ms, 12.0);
+        assert_eq!(merged["dual"].throughput_kbps, 100.0);
+        assert!(merged.contains_key("xray-only"));
+        assert!(merged.contains_key("singbox-only"));
     }
 
     #[test]
