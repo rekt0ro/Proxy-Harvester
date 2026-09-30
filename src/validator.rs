@@ -131,9 +131,6 @@ fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
 }
 
-/// Lower-cased scheme taken from the raw text. `Url::parse` cannot be used for
-/// this because it rejects valid Hysteria2 port-hopping authorities such as
-/// `host:1234,5000-5002`.
 fn scheme_of(config: &str) -> String {
     config
         .split_once("://")
@@ -154,7 +151,6 @@ pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Write through a temporary sibling so a crash never leaves a truncated file.
 fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), String> {
     let temporary = format!("{path}.tmp");
 
@@ -319,10 +315,6 @@ fn csv(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Host and port of a parsed URL. IPv6 literals are returned WITHOUT brackets:
-/// that is what DNS lookup, Xray and sing-box expect, and `config_label` adds
-/// the brackets back for display. (`host_str()` keeps them, which broke IPv6
-/// probing and produced `[[::1]]` labels.)
 fn normalize_transport(value: &str) -> String {
     let normalized = value.trim().to_ascii_lowercase();
 
@@ -357,8 +349,6 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
     Ok((host, port))
 }
 
-/// Decode a legacy fully-base64 Shadowsocks payload
-/// (`ss://BASE64(method:password@host:port)`).
 fn ss_legacy_decode(payload: &str) -> Option<String> {
     let encoded = payload.split('?').next()?.trim_end_matches('/');
 
@@ -373,8 +363,6 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         return hysteria2_probe_endpoint(config);
     }
 
-    // VMess carries its endpoint inside a base64 JSON blob, so handle it before
-    // any URL parsing.
     if scheme == "vmess" {
         let payload = config.split_once("://")?.1;
         let decoded = b64decode(payload)?;
@@ -391,8 +379,6 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         return Some((host, port));
     }
 
-    // Legacy Shadowsocks links have no authority at all; the endpoint is inside
-    // the base64 payload.
     if scheme == "ss" {
         let payload = config.split_once("://")?.1;
 
@@ -563,8 +549,6 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
             decoded = next;
         }
 
-        // XHTTP extra is optional source metadata. Ignore malformed values
-        // rather than rejecting an otherwise usable VLESS configuration.
         return Ok(None);
     }
 
@@ -597,9 +581,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         _ => return Err(format!("unsupported security {security}")),
     };
 
-    // REALITY is valid only with RAW, XHTTP, and gRPC. Preserve the transport
-    // when a source combines REALITY with another transport, but fall back to
-    // ordinary TLS so the usable transport is still testable.
     if security == "reality" && !matches!(network.as_str(), "raw" | "xhttp" | "grpc") {
         security = "tls".to_string();
     }
@@ -612,8 +593,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     });
 
     if security == "tls" {
-        // Xray removed TLS allowInsecure after 2026-06-01. Do not emit the
-        // removed field because certificate pinning cannot be derived from a URL alone.
         let mut tls = json!({ "serverName": sni });
         if !alpn.is_empty() {
             tls["alpn"] = json!(alpn);
@@ -714,8 +693,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     ws_early_data = early_data.to_string();
                 }
                 _ => {
-                    // Early data is optional. Drop malformed or oversized values
-                    // instead of rejecting the entire WebSocket candidate.
                     ws_early_data.clear();
                     ws_early_data_header.clear();
                 }
@@ -914,9 +891,6 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         q.push(("headerType".to_string(), "http".to_string()));
     }
 
-    // In the VMess share format a gRPC link keeps its service name in `path`
-    // and its mode (`gun`/`multi`) in `type`; without this mapping the service
-    // name was silently dropped.
     if network.eq_ignore_ascii_case("grpc") {
         if let Some(service) = json_text(value.get("path")).filter(|value| !value.is_empty()) {
             q.push(("serviceName".to_string(), service));
@@ -1064,8 +1038,6 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 
         let (method, password, remote) =
             if let Some((credentials, remote)) = payload.rsplit_once('@') {
-                // SIP002: base64(method:password)@host:port. The credentials may be
-                // percent-encoded (`%3D` for padding), so decode that first.
                 let decoded = String::from_utf8(
                     b64decode(&decode_component(credentials))
                         .ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
@@ -1077,7 +1049,6 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 
                 (method.to_string(), password.to_string(), remote.to_string())
             } else {
-                // Legacy: base64(method:password@host:port) with no authority.
                 let decoded = ss_legacy_decode(payload)
                     .ok_or_else(|| "invalid Shadowsocks base64".to_string())?;
                 let (credentials, remote) = decoded
@@ -1281,9 +1252,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }))
 }
 
-/// Validate a 32-byte base64 key and return it in canonical standard base64.
-/// Unescaped `+` in a query value is decoded to a space by URL parsers, so
-/// spaces are turned back into `+` first (base64 never contains spaces).
 fn decode_key(value: &str) -> Option<String> {
     let bytes = b64decode(&value.replace(' ', "+"))?;
 
@@ -1382,8 +1350,6 @@ fn parse_basic(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let scheme = url.scheme().to_ascii_lowercase();
 
-    // Must match `endpoint()`: HTTP proxies default to port 80 (this used to
-    // be 8080, so probing and validation targeted different ports).
     let default = if matches!(scheme.as_str(), "socks" | "socks5" | "socks5h") {
         1080
     } else {
@@ -1410,8 +1376,6 @@ fn parse_basic(config: &str) -> Result<Value, String> {
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
-    // The scheme comes from the raw text, not `Url::parse`, which rejects
-    // Hysteria2 port-hopping authorities before they can reach `parse_hy2`.
     let scheme = scheme_of(clean(config));
 
     match scheme.as_str() {
@@ -1657,8 +1621,6 @@ fn client_for_port(
     timeout_seconds: f64,
     fresh_connections: bool,
 ) -> Result<Client, String> {
-    // An invalid timeout used to be silently replaced by 1 second, hiding
-    // misconfiguration and failing every probe. Report it instead.
     let request_timeout = timeout_duration(timeout_seconds)?;
 
     let mut builder = Client::builder()
@@ -1667,9 +1629,6 @@ fn client_for_port(
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        // A proxy that answers with a redirect (captive portal / injected
-        // login page) must fail the probe, not be followed to a page that
-        // returns 200.
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("ProxyRift/3.0");
 
@@ -1848,8 +1807,6 @@ async fn check_batch(
                     .rev()
                     .collect::<String>();
 
-                // Label only: the full URL carries credentials and CI logs of a
-                // public repository are world-readable.
                 println!(
                     "[WARN] Validation skipped: {}",
                     config_label(&batch_entries[0].0)
@@ -2466,8 +2423,6 @@ async fn validate_candidates_inner(
         metadata.extend(batch_metadata);
     }
 
-    // The summaries below used to print MIN_SUCCESSFUL_TARGETS where the number
-    // of required successful attempts was meant.
     if let Some(compatibility_target) = compatibility_target.as_ref() {
         println!(
             "{}/{} verified by Xray against {} and {} with {}/{} successful attempts and every measured latency <= {}ms",
@@ -3012,7 +2967,6 @@ mod tests {
 
     #[test]
     fn wireguard_keys_with_unescaped_plus_survive_query_parsing() {
-        // 0xfb bytes encode to base64 containing both '+' and '/'.
         let key = STANDARD.encode([0xfb_u8; 32]);
         assert!(key.contains('+'));
 
