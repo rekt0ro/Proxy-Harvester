@@ -557,6 +557,7 @@ async fn validate_light_transfer_batch(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
     singbox: &str,
@@ -610,8 +611,7 @@ async fn fill_transfer_gate(
         let exploration_floor = remaining.saturating_mul(2).saturating_add(20);
         let batch_limit = estimated
             .max(exploration_floor)
-            .min(FINAL_TRANSFER_BATCH_LIMIT)
-            .max(1);
+            .clamp(1, FINAL_TRANSFER_BATCH_LIMIT);
 
         let batch = diversify_recheck_candidates(&untested, batch_limit, 1);
         if batch.is_empty() {
