@@ -14,6 +14,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
+use std::net::IpAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -1193,18 +1194,49 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     })
 }
 
-async fn pin_singbox_entries(entries: &[(String, Value)]) -> Vec<(String, Value)> {
-    stream::iter(entries.iter().cloned())
-        .map(|(config, mut outbound)| async move {
-            let (host, port) = crate::validator::endpoint(&config)?;
-            let ip = crate::validator::resolve_public_host(&host, port).await?;
-            outbound["server"] = Value::String(ip.to_string());
-            Some((config, outbound))
+type SingBoxEndpointCache = HashMap<(String, u16), IpAddr>;
+
+fn singbox_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
+    (host.to_ascii_lowercase(), port)
+}
+
+async fn pin_singbox_entries(
+    entries: &[(String, Value)],
+    cache: &mut SingBoxEndpointCache,
+) -> Vec<(String, Value)> {
+    let missing = entries
+        .iter()
+        .filter_map(|(config, _)| {
+            let (host, port) = crate::validator::endpoint(config)?;
+            let key = singbox_endpoint_cache_key(&host, port);
+            (!cache.contains_key(&key)).then_some(key)
+        })
+        .collect::<HashSet<_>>();
+
+    let resolved = stream::iter(missing)
+        .map(|(host, port)| async move {
+            crate::validator::resolve_public_host(&host, port)
+                .await
+                .map(|ip| ((host, port), ip))
         })
         .buffer_unordered(64)
-        .filter_map(|result| async move { result })
+        .collect::<Vec<_>>()
+        .await;
+
+    cache.extend(resolved.into_iter().flatten());
+
+    entries
+        .iter()
+        .filter_map(|(config, mut outbound)| {
+            let (host, port) = crate::validator::endpoint(config)?;
+            let ip = cache
+                .get(&singbox_endpoint_cache_key(&host, port))
+                .copied()?;
+
+            outbound["server"] = Value::String(ip.to_string());
+            Some((config.clone(), outbound))
+        })
         .collect()
-        .await
 }
 
 async fn check_batch_targets(
@@ -1214,6 +1246,7 @@ async fn check_batch_targets(
     workers: usize,
     request_timeout: Duration,
     policy: ValidationPolicy,
+    endpoint_cache: &mut SingBoxEndpointCache,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() || targets.is_empty() {
         return Ok(HashMap::new());
@@ -1223,7 +1256,7 @@ async fn check_batch_targets(
     let mut verified = HashMap::new();
 
     while let Some(batch_entries) = pending.pop() {
-        let batch_entries = pin_singbox_entries(&batch_entries).await;
+        let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
         if batch_entries.is_empty() {
             continue;
         }
@@ -1231,15 +1264,29 @@ async fn check_batch_targets(
         let work = make_temp_dir()?;
         let config_path = work.join("sing-box.json");
         let log_path = work.join("sing-box.log");
-        let (config, local_ports) = singbox_config(&batch_entries)?;
+        let (config, local_ports) = match singbox_config(&batch_entries) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
-        fs::write(
-            &config_path,
-            serde_json::to_vec(&config).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        if let Err(error) = serde_json::to_vec(&config)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| fs::write(&config_path, bytes).map_err(|error| error.to_string()))
+        {
+            let _ = fs::remove_dir_all(&work);
+            return Err(error);
+        }
 
-        let mut child = start_singbox(binary, &config_path, &log_path)?;
+        let mut child = match start_singbox(binary, &config_path, &log_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        };
 
         if !ports_ready(&mut child, &local_ports).await {
             let _ = child.kill();
@@ -1453,6 +1500,7 @@ async fn check_batch(
     workers: usize,
     request_timeout: Duration,
     max_latency_ms: f64,
+    endpoint_cache: &mut SingBoxEndpointCache,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     if entries.is_empty() {
         return Ok(HashMap::new());
@@ -1699,6 +1747,7 @@ async fn validate_candidates_with_targets_policy(
     let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
+    let mut endpoint_cache = SingBoxEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
         println!(
@@ -1720,6 +1769,7 @@ async fn validate_candidates_with_targets_policy(
                 workers.max(1),
                 request_timeout,
                 policy,
+                &mut endpoint_cache,
             )
             .await?,
         );
@@ -1797,6 +1847,7 @@ pub async fn validate_candidates_with_target(
                 workers.max(1),
                 request_timeout,
                 max_latency_ms,
+                &mut endpoint_cache,
             )
             .await?,
         );
@@ -1849,6 +1900,34 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reuses_cached_singbox_endpoint() {
+        let entries = vec![
+            (
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
+                singbox_outbound(
+                    "vless://00000000-0000-0000-0000-000000000001@example.com:443",
+                )
+                .unwrap(),
+            ),
+            (
+                "vless://00000000-0000-0000-0000-000000000002@example.com:443".to_string(),
+                singbox_outbound(
+                    "vless://00000000-0000-0000-0000-000000000002@example.com:443",
+                )
+                .unwrap(),
+            ),
+        ];
+        let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
+        let mut cache = SingBoxEndpointCache::from([(("example.com".to_string(), 443), ip)]);
+
+        let pinned = pin_singbox_entries(&entries, &mut cache).await;
+
+        assert_eq!(pinned.len(), entries.len());
+        assert_eq!(pinned[0].1["server"], ip.to_string());
+        assert_eq!(pinned[1].1["server"], ip.to_string());
+    }
 
     #[test]
     fn primary_probe_requires_http_204() {
