@@ -28,7 +28,6 @@ use wireguard_sans_io::{
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 
-
 const TEST_CONCURRENCY: usize = 2;
 const TEST_CONNECTION_CONCURRENCY: usize = 64;
 
