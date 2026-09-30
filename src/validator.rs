@@ -2285,7 +2285,7 @@ async fn check_batch_targets(
     let mut combined = HashMap::new();
 
     while let Some(batch_entries) = pending_batches.pop() {
-        let batch_entries = pin_xray_entries(&batch_entries).await;
+        let batch_entries = pin_xray_entries(&batch_entries, xray_cache).await;
         if batch_entries.is_empty() {
             continue;
         }
