@@ -1511,7 +1511,7 @@ async fn check_batch(
     let mut verified = HashMap::new();
 
     while let Some(batch_entries) = pending.pop() {
-        let batch_entries = pin_singbox_entries(&batch_entries).await;
+        let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
         if batch_entries.is_empty() {
             continue;
         }
