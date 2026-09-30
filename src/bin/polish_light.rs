@@ -1349,34 +1349,10 @@ async fn main() -> Result<(), String> {
         );
 
         if selected.len() >= selection_limit {
-            let mut protocol_counts = BTreeMap::<String, usize>::new();
-            for config in &selected {
-                let scheme = config
-                    .split_once("://")
-                    .map(|(scheme, _)| scheme.to_ascii_lowercase())
-                    .unwrap_or_else(|| "unknown".to_string());
-                *protocol_counts.entry(scheme).or_default() += 1;
-            }
-            println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
             println!(
-                "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
+                "[INFO] Light strict pool reached {} configs; deferring publication to the final 10 MiB gate.",
                 selected.len()
             );
-            persist_light_result(
-                &output,
-                &selected,
-                history_path,
-                &history,
-                &final_attempts,
-                &final_metadata,
-            )?;
-            println!(
-                "[INFO] Published {} Light configs from {} globally verified candidates after {} strict checks.",
-                selected.len(),
-                global_verified.len(),
-                final_attempts.values().copied().sum::<usize>()
-            );
-            return Ok(());
         }
     }
 
