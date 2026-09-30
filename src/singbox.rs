@@ -1,10 +1,10 @@
 use crate::validator::{
     config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
     read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
-    ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
-    PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
-    STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET,
+    ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES,
+    MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
+    STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+    STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
     STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET, SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -129,7 +129,8 @@ fn singbox_ech_settings(value: &str) -> Result<Value, String> {
     }
     if value.contains("://") {
         return Err(
-            "Xray ECH DNS resolver form is unsupported by the sing-box validator backend".to_string(),
+            "Xray ECH DNS resolver form is unsupported by the sing-box validator backend"
+                .to_string(),
         );
     }
 
@@ -707,7 +708,9 @@ fn singbox_hysteria2_outbound(config: &str) -> Result<Value, String> {
     }
 
     if has_pin {
-        return Err("Hysteria2 pinSHA256 is unsupported by the sing-box validator backend".to_string());
+        return Err(
+            "Hysteria2 pinSHA256 is unsupported by the sing-box validator backend".to_string(),
+        );
     }
     if obfs_password.is_some() && obfs.is_none() {
         return Err("Hysteria2 obfs-password requires obfs".to_string());
