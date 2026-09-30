@@ -437,7 +437,7 @@ fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> boo
     false
 }
 
-type XrayEndpointCache = HashMap<(String, u16), Option<IpAddr>>;
+type XrayEndpointCache = HashMap<(String, u16), IpAddr>;
 
 fn xray_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
     (host.to_ascii_lowercase(), port)
@@ -462,14 +462,15 @@ async fn pin_xray_entries(
 
     let resolved = stream::iter(missing)
         .map(|(host, port)| async move {
-            let ip = resolve_public_host(&host, port).await;
-            ((host, port), ip)
+            resolve_public_host(&host, port)
+                .await
+                .map(|ip| ((host, port), ip))
         })
         .buffer_unordered(64)
         .collect::<Vec<_>>()
         .await;
 
-    cache.extend(resolved);
+    cache.extend(resolved.into_iter().flatten());
 
     entries
         .iter()
@@ -479,9 +480,7 @@ async fn pin_xray_entries(
             let ip = match host.parse::<IpAddr>() {
                 Ok(ip) if is_public_ip(&ip) => Some(ip),
                 Ok(_) => None,
-                Err(_) => cache
-                    .get(&xray_endpoint_cache_key(&host, port))
-                    .and_then(|ip| *ip),
+                Err(_) => cache.get(&xray_endpoint_cache_key(&host, port)).copied(),
             }?;
 
             let mut value = value.clone();
@@ -2669,7 +2668,7 @@ mod tests {
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
-        let mut cache = HashMap::from([(("example.com".to_string(), 443), Some(ip))]);
+        let mut cache = HashMap::from([(("example.com".to_string(), 443), ip)]);
 
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
