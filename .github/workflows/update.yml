@@ -67,8 +67,6 @@ jobs:
         with:
           path: ~/.rustup/toolchains
           key: ${{ runner.os }}-${{ runner.arch }}-rust-toolchain-${{ steps.rust-toolchain.outputs.version }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-rust-toolchain-
 
       - name: "🦀 Set up Rust"
         run: |
