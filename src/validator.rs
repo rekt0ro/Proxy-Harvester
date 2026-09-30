@@ -131,9 +131,6 @@ fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
 }
 
-
-
-
 fn scheme_of(config: &str) -> String {
     config
         .split_once("://")
@@ -153,7 +150,6 @@ pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
         .map(ToOwned::to_owned)
         .collect())
 }
-
 
 fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), String> {
     let temporary = format!("{path}.tmp");
@@ -319,10 +315,6 @@ fn csv(value: &str) -> Vec<String> {
         .collect()
 }
 
-
-
-
-
 fn normalize_transport(value: &str) -> String {
     let normalized = value.trim().to_ascii_lowercase();
 
@@ -357,8 +349,6 @@ fn endpoint_from_url(url: &Url, default_port: Option<u16>) -> Result<(String, u1
     Ok((host, port))
 }
 
-
-
 fn ss_legacy_decode(payload: &str) -> Option<String> {
     let encoded = payload.split('?').next()?.trim_end_matches('/');
 
@@ -373,8 +363,6 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         return hysteria2_probe_endpoint(config);
     }
 
-    
-    
     if scheme == "vmess" {
         let payload = config.split_once("://")?.1;
         let decoded = b64decode(payload)?;
@@ -391,8 +379,6 @@ pub fn endpoint(config: &str) -> Option<(String, u16)> {
         return Some((host, port));
     }
 
-    
-    
     if scheme == "ss" {
         let payload = config.split_once("://")?.1;
 
@@ -563,8 +549,6 @@ fn xhttp_extra_value(url: &Url) -> Result<Option<Value>, String> {
             decoded = next;
         }
 
-        
-        
         return Ok(None);
     }
 
@@ -597,9 +581,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
         _ => return Err(format!("unsupported security {security}")),
     };
 
-    
-    
-    
     if security == "reality" && !matches!(network.as_str(), "raw" | "xhttp" | "grpc") {
         security = "tls".to_string();
     }
@@ -612,8 +593,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
     });
 
     if security == "tls" {
-        
-        
         let mut tls = json!({ "serverName": sni });
         if !alpn.is_empty() {
             tls["alpn"] = json!(alpn);
@@ -714,8 +693,6 @@ fn stream_settings(url: &Url, host: &str) -> Result<Value, String> {
                     ws_early_data = early_data.to_string();
                 }
                 _ => {
-                    
-                    
                     ws_early_data.clear();
                     ws_early_data_header.clear();
                 }
@@ -914,9 +891,6 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
         q.push(("headerType".to_string(), "http".to_string()));
     }
 
-    
-    
-    
     if network.eq_ignore_ascii_case("grpc") {
         if let Some(service) = json_text(value.get("path")).filter(|value| !value.is_empty()) {
             q.push(("serviceName".to_string(), service));
@@ -1064,8 +1038,6 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 
         let (method, password, remote) =
             if let Some((credentials, remote)) = payload.rsplit_once('@') {
-                
-                
                 let decoded = String::from_utf8(
                     b64decode(&decode_component(credentials))
                         .ok_or_else(|| "invalid Shadowsocks base64".to_string())?,
@@ -1077,7 +1049,6 @@ fn parse_ss(config: &str) -> Result<Value, String> {
 
                 (method.to_string(), password.to_string(), remote.to_string())
             } else {
-                
                 let decoded = ss_legacy_decode(payload)
                     .ok_or_else(|| "invalid Shadowsocks base64".to_string())?;
                 let (credentials, remote) = decoded
@@ -1281,9 +1252,6 @@ fn parse_hy2(config: &str) -> Result<Value, String> {
     }))
 }
 
-
-
-
 fn decode_key(value: &str) -> Option<String> {
     let bytes = b64decode(&value.replace(' ', "+"))?;
 
@@ -1382,8 +1350,6 @@ fn parse_basic(config: &str) -> Result<Value, String> {
     let url = Url::parse(clean(config)).map_err(|error| error.to_string())?;
     let scheme = url.scheme().to_ascii_lowercase();
 
-    
-    
     let default = if matches!(scheme.as_str(), "socks" | "socks5" | "socks5h") {
         1080
     } else {
@@ -1410,8 +1376,6 @@ fn parse_basic(config: &str) -> Result<Value, String> {
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
-    
-    
     let scheme = scheme_of(clean(config));
 
     match scheme.as_str() {
@@ -1657,8 +1621,6 @@ fn client_for_port(
     timeout_seconds: f64,
     fresh_connections: bool,
 ) -> Result<Client, String> {
-    
-    
     let request_timeout = timeout_duration(timeout_seconds)?;
 
     let mut builder = Client::builder()
@@ -1667,9 +1629,6 @@ fn client_for_port(
                 .map_err(|error| error.to_string())?,
         )
         .timeout(request_timeout)
-        
-        
-        
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("ProxyRift/3.0");
 
@@ -1848,8 +1807,6 @@ async fn check_batch(
                     .rev()
                     .collect::<String>();
 
-                
-                
                 println!(
                     "[WARN] Validation skipped: {}",
                     config_label(&batch_entries[0].0)
@@ -2466,8 +2423,6 @@ async fn validate_candidates_inner(
         metadata.extend(batch_metadata);
     }
 
-    
-    
     if let Some(compatibility_target) = compatibility_target.as_ref() {
         println!(
             "{}/{} verified by Xray against {} and {} with {}/{} successful attempts and every measured latency <= {}ms",
@@ -3012,7 +2967,6 @@ mod tests {
 
     #[test]
     fn wireguard_keys_with_unescaped_plus_survive_query_parsing() {
-        
         let key = STANDARD.encode([0xfb_u8; 32]);
         assert!(key.contains('+'));
 
