@@ -1036,10 +1036,10 @@ async fn validate_light_batch(
     let verified = merge_light_metadata(xray_metadata, singbox_metadata, &dual_candidates);
 
     println!(
-        "[INFO] Multi-target Light validation: {}/{} candidates verified using {} throughput target.",
+        "[INFO] Multi-target Light validation: {}/{} candidates verified across {} validation targets.",
         verified.len(),
         candidates.len(),
-        if settings.strict { "10 MiB" } else { "1 MiB" }
+        targets.len()
     );
 
     Ok(verified)
@@ -1093,8 +1093,9 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let early_targets = [primary_target.as_str(), LIGHT_TARGETS[1], LIGHT_TARGETS[2]];
-    let strict_targets = [primary_target.as_str(), LIGHT_TARGETS[2], LIGHT_TARGETS[1]];
+    let light_targets = [primary_target.as_str(), LIGHT_TARGETS[2]];
+    let early_targets = light_targets;
+    let strict_targets = light_targets;
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,
