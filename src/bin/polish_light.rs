@@ -1389,7 +1389,12 @@ async fn main() -> Result<(), String> {
                 transfer_selected, selection_limit
             );
 
-            let selected = transfer_ranked[..selection_limit].to_vec();
+            let selected = select_verified_configs(
+                &transfer_ranked,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            );
             persist_light_result(
                 &output,
                 &selected,
