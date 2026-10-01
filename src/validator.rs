@@ -1635,7 +1635,11 @@ fn split_hysteria2_endpoint_conflicts(
                     .and_then(|settings| settings.get("port"))
                     .and_then(Value::as_u64),
             )
-            .and_then(|(host, port)| u16::try_from(port).ok().map(|port| (host.to_ascii_lowercase(), port)));
+            .and_then(|(host, port)| {
+                u16::try_from(port)
+                    .ok()
+                    .map(|port| (host.to_ascii_lowercase(), port))
+            });
 
         let Some(endpoint) = endpoint else {
             non_hysteria2.push(entry.clone());
