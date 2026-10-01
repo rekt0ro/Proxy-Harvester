@@ -430,8 +430,7 @@ fn diversify_recheck_candidates(
         }
 
         let family = family_key(config);
-        let family_available =
-            family_counts.get(&family).copied().unwrap_or(0) < max_family;
+        let family_available = family_counts.get(&family).copied().unwrap_or(0) < max_family;
         let endpoint_available = endpoint(config)
             .map(|ep| !seen_endpoints.contains(&ep))
             .unwrap_or(true);
