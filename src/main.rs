@@ -192,8 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let mut redirect_count = 0usize;
                 let mut attempt = 0usize;
                 loop {
-                    loop {
-                        match client.get(current_url.clone()).send().await {
+                    match client.get(current_url.clone()).send().await {
                         Ok(response) => {
                             let status = response.status();
 
