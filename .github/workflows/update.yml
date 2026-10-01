@@ -138,7 +138,7 @@ jobs:
           resolve_release "${XRAY_REPOSITORY}" '^Xray-linux-64\.zip$' xray
           resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
 
-          echo "Validation core resolution complete."
+          echo "[INFO] 🧩 [CORES] RESOLUTION COMPLETE"
       - name: "⚡ Compute cache keys"
         id: keys
         env:
@@ -249,7 +249,7 @@ jobs:
 
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           singbox_version="$("$HOME/.local/bin/sing-box" version | head -n 1)"
-          echo "$singbox_version"
+          echo "[INFO] 🧩 [SING-BOX] VERSION | ${singbox_version}"
           grep -F "$SINGBOX_VERSION" <<< "$singbox_version" >/dev/null
 
       - name: "💾 Save sing-box binary cache"
@@ -266,10 +266,11 @@ jobs:
         run: |
           curl -fsS --max-time 10 "https://speed.cloudflare.com/__down?bytes=1" -o /dev/null
           curl -fsS --max-time 10 "https://api.ipify.org?format=json" -o /dev/null
+          echo "[INFO] 🌍 [NETWORK] RUNNER CONNECTIVITY OK"
 
       - name: "🔨 Build Rust binaries"
         run: |
-          cargo build --release --locked --bins
+          cargo build --release --locked --bins --quiet
           test -x ./target/release/ProxyRift
           test -x ./target/release/check_proxies
           test -x ./target/release/polish_light
@@ -309,7 +310,6 @@ jobs:
           LIGHT_MIN_PUBLISH: "200"
         run: |
           mkdir -p /tmp/proxyrift
-          echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
           light_started=$SECONDS
           set +e
           ./target/release/polish_light \
@@ -331,25 +331,25 @@ jobs:
           status=$?
           light_elapsed=$((SECONDS - light_started))
           set -e
-          echo "Light validation elapsed: ${light_elapsed}s"
+          echo "[INFO] ✅ [LIGHT] VALIDATION COMPLETE | ${light_elapsed}s"
 
           if [ "$status" -ne 0 ]; then
-            echo "Light validation failed; preserving the previous Light subscription." >&2
+            echo "[WARN] ⚠️ [LIGHT] VALIDATION FAILED | PRESERVING PREVIOUS SUBSCRIPTION" >&2
             exit "$status"
           fi
 
           if [ -s /tmp/proxyrift/light.next.txt ]; then
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
-            echo "Light verified/publish candidate count: ${light_count} (minimum ${LIGHT_MIN_PUBLISH})"
+            echo "[INFO] 🎯 [LIGHT] OUTPUT | ${light_count} CANDIDATES | MIN: ${LIGHT_MIN_PUBLISH}"
             if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
               cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
               mv -f subscriptions/.light.txt.next subscriptions/light.txt
-              echo "Published refreshed Light subscription."
+              echo "[INFO] ✅ [LIGHT] PUBLISHED REFRESHED SUBSCRIPTION"
             else
-              echo "Light pool is too small to replace the current subscription; preserving the previous Light subscription."
+              echo "[WARN] ⚠️ [LIGHT] POOL TOO SMALL | ${light_count}/${LIGHT_MIN_PUBLISH} | PRESERVING PREVIOUS"
             fi
           else
-            echo "Light validation produced no configs; preserving the previous Light subscription."
+            echo "[WARN] ⚠️ [LIGHT] NO CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION"
           fi
 
           if [ -s /tmp/proxyrift/light-stats.json ]; then
@@ -469,7 +469,7 @@ jobs:
           git config user.email "104654981+rekt0ro@users.noreply.github.com"
 
           for attempt in 1 2 3 4 5; do
-            echo "Publishing generated subscriptions (attempt ${attempt}/5)."
+            echo "[INFO] 📤 [PUBLISH] ATTEMPT ${attempt}/5"
 
             git fetch origin main
             git reset --hard origin/main
@@ -489,22 +489,22 @@ jobs:
             fi
 
             if git diff --cached --quiet; then
-              echo "No changes."
+              echo "[INFO] 📤 [PUBLISH] NO CHANGES"
               exit 0
             fi
 
             git commit -m "Update subscriptions"
 
             if git push origin HEAD:main; then
-              echo "Published subscription update."
+              echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
               exit 0
             fi
 
-            echo "Main moved during publish; retrying from the latest main."
+            echo "[WARN] ⚠️ [PUBLISH] MAIN MOVED | RETRYING"
             git reset --hard
           done
 
-          echo "Failed to publish generated subscriptions after 5 attempts." >&2
+          echo "[ERROR] ❌ [PUBLISH] FAILED AFTER 5 ATTEMPTS" >&2
           exit 1
 
   cleanup:
