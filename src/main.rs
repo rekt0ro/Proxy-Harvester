@@ -45,6 +45,8 @@ const MAX_COLLECTED_CONFIGS: usize = 20_000;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
+const SOURCE_RETRIES: usize = 2;
+const SOURCE_RETRY_BASE_MS: u64 = 250;
 
 #[derive(Debug)]
 enum SourceBodyError {
@@ -187,7 +189,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 };
 
-                for redirect_count in 0..=MAX_SOURCE_REDIRECTS {
+                let mut redirect_count = 0usize;
+                let mut attempt = 0usize;
+                loop {
                     match client.get(current_url.clone()).send().await {
                         Ok(response) => {
                             let status = response.status();
@@ -227,6 +231,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             MAX_SOURCE_REDIRECTS
                                         );
                                         current_url = next_url;
+                                        redirect_count += 1;
+                                        attempt = 0;
                                         continue;
                                     }
 
@@ -240,6 +246,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             }
 
                             if !status.is_success() {
+                                let retryable = status.as_u16() == 408
+                                    || status.as_u16() == 425
+                                    || status.as_u16() == 429
+                                    || status.is_server_error();
+
+                                if retryable && attempt < SOURCE_RETRIES {
+                                    let delay = Duration::from_millis(
+                                        SOURCE_RETRY_BASE_MS
+                                            .saturating_mul(1u64 << attempt.min(4)),
+                                    );
+                                    println!(
+                                        "[INFO] Source #{source_number} returned HTTP status {status}; retrying after {} ms.",
+                                        delay.as_millis()
+                                    );
+                                    tokio::time::sleep(delay).await;
+                                    attempt += 1;
+                                    continue;
+                                }
+
                                 println!(
                                     "[WARN] Source #{source_number} returned HTTP status {status}"
                                 );
@@ -286,6 +311,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
 
                         Err(error) => {
+                            if attempt < SOURCE_RETRIES {
+                                let delay = Duration::from_millis(
+                                    SOURCE_RETRY_BASE_MS
+                                        .saturating_mul(1u64 << attempt.min(4)),
+                                );
+                                println!(
+                                    "[INFO] Source #{source_number} download failed; retrying after {} ms.",
+                                    delay.as_millis()
+                                );
+                                tokio::time::sleep(delay).await;
+                                attempt += 1;
+                                continue;
+                            }
+
                             println!(
                                 "[WARN] Failed to download source #{source_number}: {error}"
                             );
@@ -294,10 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
 
-                Vec::new()
             }
         })
-        .buffer_unordered(DOWNLOAD_CONCURRENCY);
+        .buffer_unordered(DOWNLOAD_CONCURRENCY.min(sources.len()).max(1));
 
     while let Some(configs) = source_results.next().await {
         unique.extend(configs);
@@ -317,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .cloned()
         .collect::<Vec<_>>();
 
-    configs.truncate(MAX_COLLECTED_CONFIGS);
+    configs = cap_configs_by_protocol(configs, MAX_COLLECTED_CONFIGS);
 
     println!("[INFO] Collected {} unique configs.", configs.len());
 
@@ -340,9 +378,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
+    let transport_chunk_count = configs.len().div_ceil(CHUNK_SIZE);
+    let test_concurrency = TEST_CONCURRENCY.min(transport_chunk_count).max(1);
+
     let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
         .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
-        .buffer_unordered(TEST_CONCURRENCY)
+        .buffer_unordered(test_concurrency)
         .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
         .await?;
 
@@ -531,6 +572,48 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Err("failed to determine project root".into())
+}
+
+fn cap_configs_by_protocol(configs: Vec<String>, cap: usize) -> Vec<String> {
+    if configs.len() <= cap {
+        return configs;
+    }
+
+    let mut by_protocol = HashMap::<String, Vec<String>>::new();
+    for config in configs {
+        by_protocol
+            .entry(config_scheme(&config))
+            .or_default()
+            .push(config);
+    }
+
+    let mut protocols = by_protocol.keys().cloned().collect::<Vec<_>>();
+    protocols.sort_unstable();
+
+    let mut selected = Vec::with_capacity(cap);
+    let mut index = 0usize;
+
+    while selected.len() < cap {
+        let mut added = false;
+        for protocol in &protocols {
+            if selected.len() >= cap {
+                break;
+            }
+            if let Some(values) = by_protocol.get(protocol) {
+                if index < values.len() {
+                    selected.push(values[index].clone());
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+        index += 1;
+    }
+
+    selected.sort_unstable();
+    selected
 }
 
 async fn load_sources(

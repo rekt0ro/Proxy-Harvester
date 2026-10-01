@@ -1,11 +1,12 @@
 use crate::validator::{
-    config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
-    read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
-    ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES,
-    MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
-    STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
-    STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
-    STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET, SUSTAINED_THROUGHPUT_TIMEOUT,
+    adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
+    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit,
+    ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET,
+    MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET,
+    STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
+    STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
+    STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET,
+    SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1385,6 +1386,23 @@ async fn check_batch_targets(
                 .collect::<Vec<_>>()
                 .await;
 
+            // A core crash is a backend failure, not a proxy-quality verdict. Split the
+            // batch and retry the pieces so one bad config cannot poison unrelated candidates.
+            if child.try_wait().ok().flatten().is_some() {
+                if batch_entries.len() > 1 {
+                    let mid = batch_entries.len() / 2;
+                    pending.push(batch_entries[..mid].to_vec());
+                    pending.push(batch_entries[mid..].to_vec());
+                } else {
+                    println!(
+                        "[WARN] sing-box core exited during validation: {}",
+                        config_label(&batch_entries[0].0)
+                    );
+                }
+                let _ = fs::remove_dir_all(&work);
+                continue;
+            }
+
             for (entry_index, result) in results {
                 attempts[entry_index] += 1;
                 match result {
@@ -1786,11 +1804,16 @@ async fn validate_candidates_with_targets_policy(
         return Ok(HashMap::new());
     }
 
-    let target_values = targets
+    let parsed_targets = targets
+        .iter()
+        .map(|target| Url::parse(target).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let parsed_targets = healthy_targets(&parsed_targets, MIN_SUCCESSFUL_TARGETS).await;
+    let target_values = parsed_targets
         .iter()
         .map(|target| target.to_string())
         .collect::<Vec<_>>();
-    let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
+    let batch_size = adaptive_batch_size(BATCH_SIZE, parsed.len(), workers);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
     let mut endpoint_cache = SingBoxEndpointCache::new();
