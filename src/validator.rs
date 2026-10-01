@@ -41,6 +41,9 @@ pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
 pub const MAX_LATENCY_MS: f64 = 1200.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
+const TARGET_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_ADAPTIVE_BATCH_SIZE: usize = 800;
+const MIN_ADAPTIVE_BATCH_SIZE: usize = 128;
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
 pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(300);
@@ -2084,6 +2087,62 @@ async fn check_batch(
     Ok(combined)
 }
 
+fn adaptive_batch_size(requested: usize, total: usize, workers: usize) -> usize {
+    if total == 0 {
+        return 1;
+    }
+
+    let worker_scaled = workers
+        .max(1)
+        .saturating_mul(64)
+        .clamp(MIN_ADAPTIVE_BATCH_SIZE, MAX_ADAPTIVE_BATCH_SIZE);
+
+    requested.max(1).min(worker_scaled).min(total).max(1)
+}
+
+async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
+    if targets.len() <= minimum {
+        return targets.to_vec();
+    }
+
+    let client = match Client::builder()
+        .timeout(TARGET_HEALTH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("ProxyRift-TargetHealth/1.0")
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return targets.to_vec(),
+    };
+
+    let checks = stream::iter(targets.iter().cloned())
+        .map(|target| {
+            let client = client.clone();
+            async move {
+                let healthy = match client.get(target.as_str()).send().await {
+                    Ok(response) if response.status().as_u16() == 429 => true,
+                    Ok(response) => response.status().is_success(),
+                    Err(_) => false,
+                };
+                (target, healthy)
+            }
+        })
+        .buffer_unordered(targets.len().clamp(1, 8))
+        .collect::<Vec<_>>()
+        .await;
+
+    let healthy = checks
+        .into_iter()
+        .filter_map(|(target, healthy)| healthy.then_some(target))
+        .collect::<Vec<_>>();
+
+    if healthy.len() >= minimum {
+        healthy
+    } else {
+        targets.to_vec()
+    }
+}
+
 pub async fn validate_candidates_with_targets(
     binary: &str,
     candidates: &[String],
@@ -2206,7 +2265,7 @@ async fn validate_candidates_targets_inner(
     policy: ValidationPolicy,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut seen_targets = HashSet::new();
-    let targets = targets
+    let mut targets = targets
         .iter()
         .map(|target| Url::parse(target).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?
@@ -2219,6 +2278,16 @@ async fn validate_candidates_targets_inner(
             "Light validation requires at least {} targets",
             policy.min_successful_targets
         ));
+    }
+
+    let original_target_count = targets.len();
+    targets = healthy_targets(&targets, policy.min_successful_targets).await;
+    if targets.len() != original_target_count {
+        println!(
+            "target health screening retained {}/{} usable validation targets",
+            targets.len(),
+            original_target_count
+        );
     }
 
     let (parsed, rejected) = unique_parsed(candidates);
@@ -2246,7 +2315,7 @@ async fn validate_candidates_targets_inner(
         return Ok(HashMap::new());
     }
 
-    let batch_size = batch_size.max(1);
+    let batch_size = adaptive_batch_size(batch_size, parsed.len(), workers);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
     let mut xray_cache = XrayEndpointCache::new();
