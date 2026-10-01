@@ -522,16 +522,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
-    let before_local_compatibility = ranked_working_configs.len();
-    ranked_working_configs.retain(|(config, _)| is_locally_supported_config(config));
-    let locally_rejected = before_local_compatibility.saturating_sub(ranked_working_configs.len());
-    if locally_rejected > 0 {
-        println!(
-            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} TRANSPORT-REACHABLE CONFIGS BY LOCAL PARSER SCREENING",
-            locally_rejected
-        );
-    }
-
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
             "[WARN] ⚠️ No usable configs remained after transport-aware reachability and compatibility screening."
