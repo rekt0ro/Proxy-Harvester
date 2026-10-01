@@ -473,7 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let locally_rejected = reachable_before_filter.saturating_sub(ranked_working_configs.len());
     if locally_rejected > 0 {
         println!(
-            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} TRANSPORT-REACHABLE CONFIGS WITH LOCAL PARSER/BACKEND ERRORS",
+            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} TRANSPORT-REACHABLE CONFIGS WITH LOCAL COMPATIBILITY ERRORS",
             locally_rejected
         );
     }
