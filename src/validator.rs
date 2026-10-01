@@ -1971,7 +1971,7 @@ async fn check_batch(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] Validation skipped: {}",
+                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -1979,7 +1979,7 @@ async fn check_batch(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] Xray core failed to start: {tail}");
+                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
                 }
             }
 
@@ -2038,7 +2038,7 @@ async fn check_batch(
                     pending_batches.push(batch_entries[mid..].to_vec());
                 } else {
                     println!(
-                        "[WARN] Xray core exited during validation: {}",
+                        "[WARN] ⚠️ [XRAY] CORE EXITED | {}",
                         config_label(&batch_entries[0].0)
                     );
                 }
@@ -2305,7 +2305,7 @@ async fn validate_candidates_targets_inner(
     targets = healthy_targets(&targets, policy.min_successful_targets).await;
     if targets.len() != original_target_count {
         println!(
-            "target health screening retained {}/{} usable validation targets",
+            "[INFO] 🔎 [TARGETS] HEALTH | {}/{} USABLE",
             targets.len(),
             original_target_count
         );
@@ -2314,14 +2314,17 @@ async fn validate_candidates_targets_inner(
     let (parsed, rejected) = unique_parsed(candidates);
 
     println!(
-        "loaded {} input URLs, accepted {} for Xray, rejected {}",
+        "[INFO] 🔬 [XRAY] INPUT | {} CONFIGS | ACCEPTED: {} | REJECTED: {}",
         candidates.len(),
         parsed.len(),
         rejected.len()
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {} :: {reason}", config_label(config));
+        println!(
+            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            config_label(config)
+        );
     }
 
     if !rejected.is_empty() {
@@ -2329,7 +2332,7 @@ async fn validate_candidates_targets_inner(
         for (config, _) in &rejected {
             *counts.entry(scheme_of(clean(config))).or_insert(0) += 1;
         }
-        println!("rejected by scheme: {:?}", counts);
+        println!("[INFO] 📊 [XRAY] REJECTED BY SCHEME | {:?}", counts);
     }
 
     if parsed.is_empty() {
@@ -2342,17 +2345,6 @@ async fn validate_candidates_targets_inner(
     let mut xray_cache = XrayEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
-        println!(
-            "targets {:?}: batch {}/{} testing {} configs with Xray; requiring {}/{} successful attempts across at least {} destinations",
-            targets.iter().map(Url::as_str).collect::<Vec<_>>(),
-            index + 1,
-            total_batches,
-            batch.len(),
-            policy.min_successful_attempts,
-            policy.stability_attempts,
-            policy.min_successful_targets
-        );
-
         let batch_metadata = check_batch_targets(
             binary,
             batch,
@@ -2363,11 +2355,23 @@ async fn validate_candidates_targets_inner(
             &mut xray_cache,
         )
         .await?;
+
+        println!(
+            "[INFO] ✅ [XRAY] BATCH {}/{} | {} TESTED | {} VERIFIED | REQUIREMENT: {}/{} | DESTINATIONS: {}",
+            index + 1,
+            total_batches,
+            batch.len(),
+            batch_metadata.len(),
+            policy.min_successful_attempts,
+            policy.stability_attempts,
+            policy.min_successful_targets
+        );
+
         metadata.extend(batch_metadata);
     }
 
     println!(
-        "{}/{} verified by Xray against {} targets with {}/{} successful attempts and at least {} distinct successful destinations",
+        "[INFO] ✅ [XRAY] COMPLETE | {}/{} VERIFIED | TARGETS: {} | REQUIREMENT: {}/{} | DESTINATIONS: {}",
         metadata.len(),
         candidates.len(),
         targets.len(),
@@ -2448,7 +2452,7 @@ async fn check_batch_targets(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] Validation skipped: {}",
+                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -2456,7 +2460,7 @@ async fn check_batch_targets(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] Xray core failed to start: {tail}");
+                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
                 }
             }
 
@@ -2646,14 +2650,17 @@ async fn validate_candidates_inner(
     let (parsed, rejected) = unique_parsed(candidates);
 
     println!(
-        "loaded {} input URLs, accepted {} for Xray, rejected {}",
+        "[INFO] 🔬 [XRAY] INPUT | {} CONFIGS | ACCEPTED: {} | REJECTED: {}",
         candidates.len(),
         parsed.len(),
         rejected.len()
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("rejected: {} :: {reason}", config_label(config));
+        println!(
+            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            config_label(config)
+        );
     }
 
     if !rejected.is_empty() {
@@ -2661,7 +2668,7 @@ async fn validate_candidates_inner(
         for (config, _) in &rejected {
             *counts.entry(scheme_of(clean(config))).or_insert(0) += 1;
         }
-        println!("rejected by scheme: {:?}", counts);
+        println!("[INFO] 📊 [XRAY] REJECTED BY SCHEME | {:?}", counts);
     }
 
     if parsed.is_empty() {
@@ -2675,30 +2682,11 @@ async fn validate_candidates_inner(
         .map_err(|error| error.to_string())?;
     let batch_size = batch_size.max(1);
     let total_batches = parsed.len().div_ceil(batch_size);
+    let target_count = usize::from(compatibility_target.is_some()) + 1;
     let mut metadata = HashMap::new();
     let mut xray_cache = XrayEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
-        if let Some(compatibility_target) = compatibility_target.as_ref() {
-            println!(
-                "targets {target} + {compatibility_target}: batch {}/{} testing {} configs with Xray core; requiring {}/{}",
-                index + 1,
-                total_batches,
-                batch.len(),
-                MIN_SUCCESSFUL_ATTEMPTS,
-                STABILITY_ATTEMPTS
-            );
-        } else {
-            println!(
-                "target {target}: batch {}/{} testing {} configs with Xray core; requiring {}/{}",
-                index + 1,
-                total_batches,
-                batch.len(),
-                MIN_SUCCESSFUL_ATTEMPTS,
-                STABILITY_ATTEMPTS
-            );
-        }
-
         let batch_metadata = check_batch(
             binary,
             batch,
@@ -2709,30 +2697,30 @@ async fn validate_candidates_inner(
             &mut xray_cache,
         )
         .await?;
+
+        println!(
+            "[INFO] ✅ [XRAY] BATCH {}/{} | {} TESTED | {} VERIFIED | REQUIREMENT: {}/{} | TARGETS: {}",
+            index + 1,
+            total_batches,
+            batch.len(),
+            batch_metadata.len(),
+            MIN_SUCCESSFUL_ATTEMPTS,
+            STABILITY_ATTEMPTS,
+            target_count
+        );
+
         metadata.extend(batch_metadata);
     }
 
-    if let Some(compatibility_target) = compatibility_target.as_ref() {
-        println!(
-            "{}/{} verified by Xray against {} and {} with {}/{} successful attempts and every measured latency <= {}ms",
-            metadata.len(),
-            candidates.len(),
-            target,
-            compatibility_target,
-            MIN_SUCCESSFUL_ATTEMPTS,
-            STABILITY_ATTEMPTS,
-            MAX_LATENCY_MS
-        );
-    } else {
-        println!(
-            "{}/{} verified by Xray with {}/{} successful attempts and every measured latency <= {}ms",
-            metadata.len(),
-            candidates.len(),
-            MIN_SUCCESSFUL_ATTEMPTS,
-            STABILITY_ATTEMPTS,
-            MAX_LATENCY_MS
-        );
-    }
+    println!(
+        "[INFO] ✅ [XRAY] COMPLETE | {}/{} VERIFIED | TARGETS: {} | REQUIREMENT: {}/{} | LATENCY ≤ {}ms",
+        metadata.len(),
+        candidates.len(),
+        target_count,
+        MIN_SUCCESSFUL_ATTEMPTS,
+        STABILITY_ATTEMPTS,
+        MAX_LATENCY_MS
+    );
 
     Ok(metadata)
 }
