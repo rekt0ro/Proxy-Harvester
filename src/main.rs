@@ -510,6 +510,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|(_, working)| working.len())
         .sum::<usize>();
 
+    println!(
+        "[INFO] ✅ [TRANSPORT] COMPLETE | {} CONFIGS | {} REACHABLE",
+        configs.len(),
+        reachable_probes
+    );
+
     let mut ranked_working_configs = Vec::new();
 
     for (_, working) in chunk_results {
@@ -2380,7 +2386,8 @@ fn build_tcp_probe_cache(configs: &[String]) -> (TcpProbeCache, usize, usize) {
     let cache = tcp_by_endpoint
         .into_keys()
         .map(|(host, port)| {
-            let probe = async move { tcp_latency_endpoint(&host, port).await }
+            let probe_host = host.clone();
+            let probe = async move { tcp_latency_endpoint(&probe_host, port).await }
                 .boxed()
                 .shared();
             ((host, port), probe)
