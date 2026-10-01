@@ -131,7 +131,8 @@ impl Registry {
     }
 
     fn active_urls(&self) -> Vec<String> {
-        self.sources()
+        let mut active = self
+            .sources()
             .iter()
             .filter_map(|(url, record)| {
                 let failures = record
@@ -139,9 +140,20 @@ impl Registry {
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
 
-                (failures < MAX_FAILURE_STREAK).then(|| url.clone())
+                (failures < MAX_FAILURE_STREAK).then(|| {
+                    (
+                        url.clone(),
+                        record
+                            .get("last_checked")
+                            .and_then(Value::as_u64)
+                            .unwrap_or_default(),
+                    )
+                })
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        active.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        active.into_iter().map(|(url, _)| url).collect()
     }
 
     fn add_candidate(&mut self, candidate: &Candidate, now: u64) {
@@ -516,14 +528,13 @@ async fn search_repositories(
     let mut repos = Vec::new();
 
     for query in DEFAULT_QUERIES {
-        let mut request = client
-            .get("https://api.github.com/search/repositories")
-            .query(&[
-                ("q", query),
-                ("sort", "updated"),
-                ("order", "desc"),
-                ("per_page", &SEARCH_PER_PAGE.to_string()),
-            ]);
+        let url = format!(
+            "https://api.github.com/search/repositories?q={}&sort=updated&order=desc&per_page={}",
+            percent_encode(query),
+            SEARCH_PER_PAGE
+        );
+
+        let mut request = client.get(url);
 
         if let Some(token) = token {
             request = request.bearer_auth(token);
@@ -676,7 +687,7 @@ fn is_source_path(path: &str) -> bool {
         .any(|extension| lowered.ends_with(extension));
     let hint_ok = PATH_HINTS.iter().any(|hint| lowered.contains(hint));
 
-    extension_ok && hint_ok
+    extension_ok || hint_ok
 }
 
 fn percent_encode(value: &str) -> String {
