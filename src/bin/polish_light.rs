@@ -86,6 +86,7 @@ fn write_light_stats(
     std::fs::write(path, body).map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_light_result(
     output: &str,
     selected: &[String],
