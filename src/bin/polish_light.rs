@@ -200,7 +200,7 @@ fn load_history(path: &str) -> Result<HashMap<String, HistoryEntry>, String> {
     let value = match serde_json::from_str::<Value>(&content) {
         Ok(value) => value,
         Err(error) => {
-            println!("[WARN] Ignoring invalid Light history: {error}");
+            println!("[WARN] ⚠️ Ignoring invalid Light history: {error}");
             return Ok(HashMap::new());
         }
     };
@@ -572,7 +572,7 @@ async fn validate_light_transfer_batch(
     let singbox_metadata = match singbox_result {
         Ok(metadata) => metadata,
         Err(error) => {
-            println!("[WARN] sing-box validation failed for this batch; preserving Xray results: {error}");
+            println!("[WARN] ⚠️ sing-box validation failed for this batch; preserving Xray results: {error}");
             HashMap::new()
         }
     };
@@ -580,7 +580,7 @@ async fn validate_light_transfer_batch(
     let mut xray_metadata = match xray_result {
         Ok(metadata) => metadata,
         Err(error) => {
-            println!("[WARN] Xray validation failed for this batch; preserving sing-box results: {error}");
+            println!("[WARN] ⚠️ Xray validation failed for this batch; preserving sing-box results: {error}");
             HashMap::new()
         }
     };
@@ -609,7 +609,7 @@ async fn validate_light_transfer_batch(
         {
             Ok(fallback_xray) => xray_metadata.extend(fallback_xray),
             Err(error) => println!(
-                "[WARN] Xray fallback validation failed for {} candidates: {error}",
+                "[WARN] ⚠️ Xray fallback validation failed for {} candidates: {error}",
                 fallback_retry.len()
             ),
         }
@@ -676,7 +676,7 @@ async fn fill_transfer_gate(
         transfer_tested.extend(batch.iter().cloned());
 
         println!(
-            "[INFO] ===== LIGHT TRANSFER: {} SLOTS REMAINING | TESTING {} CANDIDATES =====",
+            "[INFO] 📥 [10 MiB] {} SLOTS REMAINING | TESTING {} CANDIDATES",
             remaining,
             batch.len()
         );
@@ -712,7 +712,7 @@ async fn fill_transfer_gate(
         }
 
         println!(
-            "[INFO] ===== LIGHT TRANSFER BATCH COMPLETE: {}/{} PASSED IN {}s | {} TOTAL PASSED | {} SLOTS REMAINING =====",
+            "[INFO] ✅ [10 MiB] {}/{} PASSED IN {}s | TOTAL PASSED: {} | SLOTS REMAINING: {}",
             batch_passed,
             batch.len(),
             batch_elapsed,
@@ -1042,13 +1042,6 @@ async fn validate_light_batch(
         }
     }
 
-    println!(
-        "[INFO] 🔄 [LIGHT ROUTING] XRAY-ONLY {} | SING-BOX {} | FALLBACK {}",
-        xray_candidates.len(),
-        singbox_candidates.len(),
-        fallback_candidates.len()
-    );
-
     let mut singbox_validation_candidates = singbox_candidates;
     singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
     let xray_validation_candidates = xray_candidates;
@@ -1149,7 +1142,7 @@ async fn validate_light_batch(
     let verified = merge_light_metadata(xray_metadata, singbox_metadata);
 
     println!(
-        "[INFO] ✅ [LIGHT VALIDATION] {}/{} CANDIDATES VERIFIED | {} VALIDATION TARGETS",
+        "[INFO] ✅ [LIGHT VALIDATION] {}/{} CANDIDATES VERIFIED | TARGETS: {}",
         verified.len(),
         candidates.len(),
         targets.len()
@@ -1264,11 +1257,17 @@ async fn main() -> Result<(), String> {
 
     let chunk_count = candidates.len().div_ceil(DISCOVERY_CHUNK_SIZE);
 
+    println!(
+        "[INFO] 🔬 [LIGHT] VALIDATION STARTED | {} CANDIDATES | TARGETS: {}",
+        candidates.len(),
+        early_targets.len()
+    );
+
     for (chunk_index, chunk) in candidates.chunks(DISCOVERY_CHUNK_SIZE).enumerate() {
         let wave = chunk_index + 1;
 
         println!(
-            "[INFO] 🔎 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | TESTING {} CANDIDATES | {} VERIFIED SO FAR",
+            "[INFO] 🔎 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | TESTING {} CANDIDATES | VERIFIED SO FAR: {}",
             chunk.len(),
             global_verified.len()
         );
@@ -1450,7 +1449,7 @@ async fn main() -> Result<(), String> {
         if let Some(message) = intelligence
             .anomaly_message(final_attempts.values().copied().sum(), final_metadata.len())
         {
-            println!("[WARN] {message}");
+            println!("[WARN] ⚠️ {message}");
         }
 
         sort_ranked(
@@ -1472,7 +1471,7 @@ async fn main() -> Result<(), String> {
             .checked_div(selection_limit)
             .unwrap_or(0);
         println!(
-            "\n[INFO] 🔥 ===== LIGHT FILL PROGRESS: {}/{} READY ({}%) | STRICT CHECKS: {} =====\n",
+            "[INFO] 🔥 [LIGHT FILL] {}/{} READY ({}%) | STRICT CHECKS: {}",
             selected.len(),
             selection_limit,
             fill_percent,
@@ -1481,7 +1480,7 @@ async fn main() -> Result<(), String> {
 
         if selected.len() >= selection_limit {
             println!(
-                "[INFO] 🎯 [LIGHT] STRICT POOL READY: {}/{} | STARTING 10 MiB TRANSFER GATE",
+                "[INFO] 🎯 [LIGHT] STRICT POOL READY | {}/{} | NEXT: 10 MiB TRANSFER GATE",
                 selected.len(),
                 selection_limit
             );
@@ -1536,7 +1535,7 @@ async fn main() -> Result<(), String> {
                     selected.len(),
                 )?;
                 println!(
-                    "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; all published entries passed the 10 MiB gate.",
+                    "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
                     selected.len()
                 );
                 return Ok(());
@@ -1620,8 +1619,22 @@ async fn main() -> Result<(), String> {
             LightBackend::Fallback => *backend_counts.entry("fallback").or_default() += 1,
         }
     }
-    println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
-    println!("[INFO] Light backend distribution: {:?}", backend_counts);
+    for chunk in protocol_counts
+        .iter()
+        .map(|(scheme, count)| format!("{scheme} {count}"))
+        .collect::<Vec<_>>()
+        .chunks(4)
+    {
+        println!("[INFO] 📊 [LIGHT PROTOCOLS] {}", chunk.join(" | "));
+    }
+
+    let backend_summary = backend_counts
+        .iter()
+        .map(|(backend, count)| format!("{backend} {count}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    println!("[INFO] 📊 [LIGHT BACKENDS] {backend_summary}");
+
     println!(
         "[INFO] 🎯 [LIGHT SELECTION] {} CONFIGS READY | NO PROTOCOL QUOTA",
         selected.len()
@@ -1639,7 +1652,7 @@ async fn main() -> Result<(), String> {
         intelligence_path,
     )?;
     println!(
-        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY {} | STRICT CHECKS {} | 10 MiB PASSES {}",
+        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY: {} | STRICT CHECKS: {} | 10 MiB PASSES: {}",
         selected.len(),
         candidates.len(),
         final_attempts.values().copied().sum::<usize>(),
