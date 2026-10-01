@@ -3813,6 +3813,19 @@ mod tests {
     }
 
     #[test]
+    fn cheap_compatibility_rejects_unsupported_vless_flow() {
+        assert!(!is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-legacy"
+        ));
+        assert!(is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision"
+        ));
+        assert!(is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-udp443"
+        ));
+    }
+
+    #[test]
     fn cheap_compatibility_rejects_hysteria2_without_password() {
         assert!(!is_cheaply_supported_config("hy2://example.com:443"));
     }
@@ -3859,6 +3872,20 @@ mod tests {
     fn local_compatibility_rejects_unsupported_vless_transport() {
         assert!(!is_locally_supported_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_unsupported_vless_flow() {
+        assert!(!is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-legacy"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_accepts_supported_vless_flow() {
+        assert!(is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision"
         ));
     }
 
