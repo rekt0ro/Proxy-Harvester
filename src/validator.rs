@@ -1729,15 +1729,6 @@ async fn ports_ready(child: &mut Child, ports: &[u16]) -> bool {
     pending.is_empty()
 }
 
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 pub(crate) fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration {
     headers
         .get("retry-after")
@@ -1753,7 +1744,7 @@ pub(crate) fn extend_rate_limit(_wait: Duration) {
     RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
 }
 
-pub(crate) fn rate_limit_events() -> u64 {
+pub fn rate_limit_events() -> u64 {
     RATE_LIMIT_EVENTS.load(Ordering::Acquire)
 }
 
