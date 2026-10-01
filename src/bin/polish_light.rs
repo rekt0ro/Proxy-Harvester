@@ -694,9 +694,8 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        // Test the highest-ranked strict candidates first. This keeps the
-        // transfer gate focused on configs already likely to be selected.
-        sort_ranked(&mut untested, final_metadata, global_positions, history);
+        // final_verified is kept ranked before entering the transfer gate,
+        // so retaining this order tests the most likely winners first.
 
         let remaining = selection_limit.saturating_sub(selected.len());
         let queue_window = transfer_workers
