@@ -552,20 +552,35 @@ async fn validate_light_transfer_batch(
     };
 
     let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
-    let singbox_metadata = singbox_result?;
-    let mut xray_metadata = xray_result?;
+
+    let singbox_metadata = match singbox_result {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            println!("[WARN] sing-box validation failed for this batch; preserving Xray results: {error}");
+            HashMap::new()
+        }
+    };
+
+    let mut xray_metadata = match xray_result {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            println!("[WARN] Xray validation failed for this batch; preserving sing-box results: {error}");
+            HashMap::new()
+        }
+    };
 
     // Fallback candidates are intentionally sent to sing-box first. A candidate
     // already accepted by sing-box is finished; only the ones not accepted there
-    // are retried through Xray. No candidate is intentionally validated by both
-    // cores once the first supported core has accepted it.
+    // are retried through Xray. If sing-box itself failed, all fallback candidates
+    // are eligible for the Xray retry so a backend outage does not become a proxy
+    // quality verdict.
     let fallback_retry = fallback_candidates
         .into_iter()
         .filter(|config| !singbox_metadata.contains_key(config))
         .collect::<Vec<_>>();
 
     if !fallback_retry.is_empty() {
-        let fallback_xray = proxyrift::validator::validate_candidates_with_target_once(
+        match proxyrift::validator::validate_candidates_with_target_once(
             xray,
             &fallback_retry,
             proxyrift::validator::STRICT_THROUGHPUT_TARGET,
@@ -574,8 +589,15 @@ async fn validate_light_transfer_batch(
             FINAL_TRANSFER_TIMEOUT_SECS,
             FINAL_TRANSFER_LATENCY_LIMIT_MS,
         )
-        .await?;
-        xray_metadata.extend(fallback_xray);
+        .await
+        {
+            Ok(fallback_xray) => xray_metadata.extend(fallback_xray),
+            Err(error) => println!("[WARN] Xray fallback validation failed for {} candidates: {error}", fallback_retry.len()),
+        }
+    }
+
+    if singbox_metadata.is_empty() && xray_metadata.is_empty() {
+        return Err("both validation backends failed or produced no verified candidates".to_string());
     }
 
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
