@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
+use futures::FutureExt;
 use percent_encoding::percent_decode_str;
 use proxyrift::validator::{
     config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
@@ -50,6 +51,9 @@ const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
 const SOURCE_RETRIES: usize = 2;
 const SOURCE_RETRY_BASE_MS: u64 = 250;
+
+type TcpProbe = futures::future::Shared<futures::future::BoxFuture<'static, Option<u64>>>;
+type TcpProbeCache = Arc<HashMap<(String, u16), TcpProbe>>;
 
 #[derive(Debug)]
 enum SourceBodyError {
@@ -148,19 +152,10 @@ async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, 
 
 async fn test_chunk(
     index: usize,
-    total_chunks: usize,
     configs: &[String],
+    tcp_probe_cache: TcpProbeCache,
 ) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
-    let working = test_transport_configs(configs).await;
-
-    println!(
-        "[INFO] ✅ [TRANSPORT] CHUNK {}/{} | {} TESTED | {} REACHABLE",
-        index + 1,
-        total_chunks,
-        configs.len(),
-        working.len()
-    );
-
+    let working = test_transport_configs(configs, tcp_probe_cache).await;
     Ok((index, working))
 }
 
@@ -460,16 +455,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
+    let (tcp_probe_cache, tcp_config_count, unique_tcp_endpoints) =
+        build_tcp_probe_cache(&configs);
+    let non_tcp_transport_count = configs
+        .iter()
+        .filter(|config| {
+            matches!(
+                config_scheme(config).as_str(),
+                "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+            )
+        })
+        .count();
+
+    println!(
+        "[INFO] 🔎 [TRANSPORT] PLAN | {} CONFIGS | TCP {} CONFIGS → {} UNIQUE | NON-TCP {}",
+        configs.len(),
+        tcp_config_count,
+        unique_tcp_endpoints,
+        non_tcp_transport_count
+    );
+
     let transport_chunk_count = configs.len().div_ceil(CHUNK_SIZE);
     let test_concurrency = TEST_CONCURRENCY.min(transport_chunk_count).max(1);
 
-    let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-        .map(|(index, chunk)| async move { test_chunk(index, transport_chunk_count, chunk).await })
-        .buffer_unordered(test_concurrency)
-        .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
-        .await?;
+    let mut chunk_stream = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
+        .map(|(index, chunk)| {
+            let tcp_probe_cache = Arc::clone(&tcp_probe_cache);
+            async move { test_chunk(index, chunk, tcp_probe_cache).await }
+        })
+        .buffered(test_concurrency);
 
-    chunk_results.sort_by_key(|(index, _)| *index);
+    let mut chunk_results = Vec::with_capacity(transport_chunk_count);
+
+    while let Some(result) = chunk_stream.next().await {
+        let (index, working) = result?;
+
+        let tested = configs
+            .chunks(CHUNK_SIZE)
+            .nth(index)
+            .map_or(0, |chunk| chunk.len());
+
+        println!(
+            "[INFO] ✅ [TRANSPORT] CHUNK {}/{} | {} TESTED | {} REACHABLE",
+            index + 1,
+            transport_chunk_count,
+            tested,
+            working.len()
+        );
+
+        chunk_results.push((index, working));
+    }
+
+    let mut ranked_working_configs = Vec::new();
+
+    let reachable_probes = chunk_results
+        .iter()
+        .map(|(_, working)| working.len())
+        .sum::<usize>();
 
     let mut ranked_working_configs = Vec::new();
     let mut reachable_probes = 0usize;
@@ -594,9 +636,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .len();
 
     println!(
-        "[INFO] 📦 [ALL] {} CONFIGS READY | PROBES: {} | UNIQUE ENDPOINTS: {}",
+        "[INFO] 📦 [ALL] {} CONFIGS READY | UNIQUE ENDPOINTS: {}",
         working_configs.len(),
-        reachable_probes,
         all_unique_endpoints
     );
 
@@ -1583,11 +1624,34 @@ mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
         normalize_config, parse_source_redirect, safe_source_client, safe_source_redirect,
-        select_all_candidates, split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
+        select_all_candidates, split_concatenated_configs, tcp_endpoint_groups, trim_config,
+        MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use url::Url;
+
+    #[test]
+    fn tcp_endpoint_groups_share_identical_endpoints() {
+        let configs = vec![
+            "http://example.com:443".to_string(),
+            "socks5://example.com:443".to_string(),
+            "http://example.net:443".to_string(),
+            "hysteria://example.com:443?upmbps=1&downmbps=1".to_string(),
+        ];
+
+        let groups = tcp_endpoint_groups(&configs);
+
+        assert_eq!(
+            groups.get(&("example.com".to_string(), 443)),
+            Some(&vec![0, 1])
+        );
+        assert_eq!(
+            groups.get(&("example.net".to_string(), 443)),
+            Some(&vec![2])
+        );
+        assert_eq!(groups.len(), 2);
+    }
 
     #[tokio::test]
     async fn rejects_private_initial_source_addresses() {
@@ -2294,19 +2358,14 @@ async fn transport_reachable(config: &str) -> bool {
     transport_latency(config).await.is_some()
 }
 
-async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
+fn tcp_endpoint_groups(configs: &[String]) -> HashMap<(String, u16), Vec<usize>> {
     let mut tcp_by_endpoint: HashMap<(String, u16), Vec<usize>> = HashMap::new();
 
-    let mut transport_indices = Vec::new();
-
     for (index, config) in configs.iter().enumerate() {
-        let scheme = config_scheme(config);
-
         if matches!(
-            scheme.as_str(),
+            config_scheme(config).as_str(),
             "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
         ) {
-            transport_indices.push(index);
             continue;
         }
 
@@ -2315,21 +2374,41 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
         }
     }
 
-    let tcp_config_count: usize = tcp_by_endpoint.values().map(Vec::len).sum();
+    tcp_by_endpoint
+}
 
-    if tcp_config_count > 0 {
-        println!(
-            "[INFO] 🔎 [TRANSPORT] TCP ENDPOINTS | {} CONFIGS → {} UNIQUE",
-            tcp_config_count,
-            tcp_by_endpoint.len()
-        );
-    }
+fn build_tcp_probe_cache(configs: &[String]) -> (TcpProbeCache, usize, usize) {
+    let tcp_by_endpoint = tcp_endpoint_groups(configs);
+    let tcp_config_count = tcp_by_endpoint.values().map(Vec::len).sum();
+    let unique_tcp_endpoints = tcp_by_endpoint.len();
+
+    let cache = tcp_by_endpoint
+        .into_keys()
+        .map(|(host, port)| {
+            let probe = async move { tcp_latency_endpoint(&host, port).await }
+                .boxed()
+                .shared();
+            ((host, port), probe)
+        })
+        .collect();
+
+    (Arc::new(cache), tcp_config_count, unique_tcp_endpoints)
+}
+
+async fn test_transport_configs(
+    configs: &[String],
+    tcp_probe_cache: TcpProbeCache,
+) -> Vec<(String, u64)> {
+    let tcp_by_endpoint = tcp_endpoint_groups(configs);
 
     let tcp_results = stream::iter(tcp_by_endpoint.keys().cloned())
-        .map(|(host, port)| async move {
-            tcp_latency_endpoint(&host, port)
-                .await
-                .map(|latency| ((host, port), latency))
+        .map(|(host, port)| {
+            let probe = tcp_probe_cache.get(&(host.clone(), port)).cloned();
+
+            async move {
+                let latency = probe?.await;
+                latency.map(|latency| ((host, port), latency))
+            }
         })
         .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
         .filter_map(|result| async move { result })
@@ -2348,12 +2427,19 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
         }
     }
 
-    if !transport_indices.is_empty() {
-        println!(
-            "[INFO] 🔎 [TRANSPORT] UDP PROBES | {} TRANSPORT CONFIGS",
-            transport_indices.len()
-        );
+    let transport_indices = configs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, config)| {
+            matches!(
+                config_scheme(config).as_str(),
+                "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
 
+    if !transport_indices.is_empty() {
         let udp_results = stream::iter(transport_indices)
             .map(|index| async move {
                 transport_latency(&configs[index])
