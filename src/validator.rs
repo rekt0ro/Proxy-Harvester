@@ -1701,7 +1701,23 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             }
             ss_has_nonempty_password(config)
         }
-        "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => true,
+        "vmess" => {
+            let payload = config.split_once("://").map(|(_, payload)| payload).unwrap_or_default();
+            let decoded = b64decode(payload);
+            let Some(decoded) = decoded else {
+                return false;
+            };
+            let Ok(value) = serde_json::from_slice::<Value>(&decoded) else {
+                return false;
+            };
+            let network =
+                normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
+            matches!(
+                network.as_str(),
+                "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp"
+            )
+        }
+        "http" | "socks" | "socks5" | "socks5h" | "wg" => true,
         _ => false,
     }
 }
@@ -2260,7 +2276,7 @@ async fn check_batch(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
+                    "[INFO] 🧹 [XRAY] REJECTED | {} | core could not start for this candidate",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -2268,7 +2284,7 @@ async fn check_batch(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
+                    println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
                 }
             }
 
@@ -2618,7 +2634,7 @@ async fn validate_candidates_targets_inner(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [XRAY] REJECTED | {} | {reason}",
             config_label(config)
         );
     }
@@ -3760,6 +3776,18 @@ mod tests {
         assert!(is_cheaply_supported_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
         ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_vmess_none_transport() {
+        let config = "vmess://eyJ2IjoiMiIsInBzIjoiIiwiYWRkIjoiZXhhbXBsZS5jb20iLCJwb3J0IjoiNDQzIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhaWQiOiIwIiwibmV0Ijoibm9uZSJ9";
+        assert!(!is_cheaply_supported_config(config));
+    }
+
+    #[test]
+    fn cheap_compatibility_accepts_vmess_tcp_transport() {
+        let config = "vmess://eyJ2IjoiMiIsInBzIjoiIiwiYWRkIjoiZXhhbXBsZS5jb20iLCJwb3J0IjoiNDQzIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhaWQiOiIwIiwibmV0IjoidGNwIn0";
+        assert!(is_cheaply_supported_config(config));
     }
 
     #[test]
