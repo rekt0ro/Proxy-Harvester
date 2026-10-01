@@ -90,6 +90,31 @@ fn selection_potential_count(
     selection_eligible_count(&combined, max_per_endpoint, max_per_family)
 }
 
+fn selection_additional_potential_count(
+    selected: &[String],
+    candidates: &[String],
+    selection_limit: usize,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> usize {
+    if selected.len() >= selection_limit {
+        return 0;
+    }
+
+    let mut combined = Vec::with_capacity(selected.len() + candidates.len());
+    combined.extend_from_slice(selected);
+    combined.extend_from_slice(candidates);
+
+    select_verified_configs(
+        &combined,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    )
+    .len()
+    .saturating_sub(selected.len())
+}
+
 fn transfer_reserve_target(
     selection_limit: usize,
     transfer_selected: usize,
@@ -1743,21 +1768,26 @@ async fn main() -> Result<(), String> {
             &global_positions,
             &history,
         );
-        let mut transfer_selected = select_verified_configs(
+        let transfer_selected_configs = select_verified_configs(
             &transfer_ranked,
             selection_limit,
             max_per_endpoint,
             max_per_family,
-        )
-        .len();
+        );
+        let transfer_selected = transfer_selected_configs.len();
 
         let strict_untested = final_verified
             .iter()
             .filter(|config| !transfer_tested.contains(*config))
             .cloned()
             .collect::<Vec<_>>();
-        let strict_untested_eligible =
-            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
+        let strict_untested_additional_potential = selection_additional_potential_count(
+            &transfer_selected_configs,
+            &strict_untested,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
         let reserve_target = transfer_reserve_target(
             selection_limit,
             transfer_selected,
@@ -1806,10 +1836,10 @@ async fn main() -> Result<(), String> {
             return Ok(());
         }
 
-        if strict_untested_eligible >= reserve_target {
+        if strict_untested_additional_potential >= reserve_target {
             println!(
-                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
-                strict_untested_eligible, reserve_target, transfer_selected
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | ADDITIONAL STRICT POTENTIAL: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
+                strict_untested_additional_potential, reserve_target, transfer_selected
             );
 
             transfer_selected = fill_transfer_gate(
@@ -1986,14 +2016,6 @@ async fn main() -> Result<(), String> {
             .filter(|config| !transfer_tested.contains(*config))
             .cloned()
             .collect::<Vec<_>>();
-        let strict_untested_eligible =
-            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
-        let reserve_target = transfer_reserve_target(
-            selection_limit,
-            transfer_selected,
-            transfer_tested.len(),
-            transfer_verified.len(),
-        );
         let mut transfer_ranked_after = transfer_verified.keys().cloned().collect::<Vec<_>>();
         sort_ranked(
             &mut transfer_ranked_after,
@@ -2001,32 +2023,50 @@ async fn main() -> Result<(), String> {
             &global_positions,
             &history,
         );
-        let transfer_eligible =
-            selection_eligible_count(&transfer_ranked_after, max_per_endpoint, max_per_family);
+        let transfer_selected_configs_after = select_verified_configs(
+            &transfer_ranked_after,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
+        let strict_untested_additional_potential = selection_additional_potential_count(
+            &transfer_selected_configs_after,
+            &strict_untested,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_selected,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
+        let transfer_eligible = transfer_selected_configs_after.len();
         let transfer_slots_remaining = selection_limit.saturating_sub(transfer_eligible);
 
         println!(
-            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | UNTESTED STRICT ELIGIBLE: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
+            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | ADDITIONAL STRICT POTENTIAL: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
             selected.len(),
             selection_limit,
-            strict_untested_eligible,
+            strict_untested_additional_potential,
             transfer_eligible,
             transfer_slots_remaining,
             reserve_target,
             final_attempts.values().copied().sum::<usize>()
         );
 
-        if strict_untested_eligible >= reserve_target {
+        if strict_untested_additional_potential >= reserve_target {
             println!(
-                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {}",
-                strict_untested_eligible, reserve_target
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | ADDITIONAL STRICT POTENTIAL: {} | RESERVE TARGET: {}",
+                strict_untested_additional_potential, reserve_target
             );
         } else {
             println!(
-                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | NEED {} MORE",
-                strict_untested_eligible,
+                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | ADDITIONAL STRICT POTENTIAL: {} | RESERVE TARGET: {} | NEED {} MORE",
+                strict_untested_additional_potential,
                 reserve_target,
-                reserve_target.saturating_sub(strict_untested_eligible)
+                reserve_target.saturating_sub(strict_untested_additional_potential)
             );
         }
     }
@@ -2153,8 +2193,9 @@ mod tests {
     use super::{
         adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
         history_fingerprint, light_backend, light_training_features, merge_light_metadata,
-        normalize_light_config, select_verified_configs, selection_eligible_count,
-        selection_potential_count, transfer_reserve_target, LightBackend, ProxyMetrics,
+        normalize_light_config, select_verified_configs, selection_additional_potential_count,
+        selection_eligible_count, selection_potential_count, transfer_reserve_target, LightBackend,
+        ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2248,6 +2289,35 @@ mod tests {
             "vless://c@example.net:443".to_string(),
         ];
         assert_eq!(selection_potential_count(&selected, &untested, 1, 3), 2);
+    }
+
+    #[test]
+    fn selection_additional_potential_accounts_for_selected_limits() {
+        let selected = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.net:443".to_string(),
+        ];
+        let untested = vec![
+            "vless://c@example.com:443".to_string(),
+            "vless://d@example.net:443".to_string(),
+            "vless://e@example.org:443".to_string(),
+        ];
+
+        assert_eq!(
+            selection_additional_potential_count(&selected, &untested, 3, 1, 3),
+            1
+        );
+
+        let selected = vec!["vless://shared@example.com:443".to_string()];
+        let untested = vec![
+            "vless://shared@example.net:443".to_string(),
+            "vless://other@example.net:443".to_string(),
+        ];
+
+        assert_eq!(
+            selection_additional_potential_count(&selected, &untested, 2, 1, 1),
+            1
+        );
     }
 
     #[test]

@@ -595,9 +595,9 @@ jobs:
             echo "| Stage | This run | Previous run | Δ |"
             echo "|---|---:|---:|---:|"
             if [ -n "$previous_run_number" ]; then
-              echo "| Total pipeline | $current_total_display | #$previous_run_number: $previous_total_display | $total_delta_display |"
-              echo "| Collection & transport | $current_collect_display | #$previous_run_number: $previous_collect_display | $collect_delta_display |"
-              echo "| Light validation | $current_light_display | #$previous_run_number: $previous_light_display | $light_delta_display |"
+              echo "| Total pipeline | $current_total_display | $previous_total_display | $total_delta_display |"
+              echo "| Collection & transport | $current_collect_display | $previous_collect_display | $collect_delta_display |"
+              echo "| Light validation | $current_light_display | $previous_light_display | $light_delta_display |
               echo
               echo "_Comparison is against the immediately preceding completed update run (#$previous_run_number)._"
             else
