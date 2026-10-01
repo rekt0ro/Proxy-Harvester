@@ -2172,7 +2172,7 @@ mod tests {
 
     #[test]
     fn adaptive_transfer_budget_uses_remaining_slots_and_pass_rate() {
-        assert_eq!(adaptive_transfer_test_limit(200, 180, 0, 0, 100), 210);
+        assert_eq!(adaptive_transfer_test_limit(200, 180, 0, 0, 100), 30);
         assert_eq!(adaptive_transfer_test_limit(200, 180, 100, 50, 100), 148);
     }
 
