@@ -1386,6 +1386,23 @@ async fn check_batch_targets(
                 .collect::<Vec<_>>()
                 .await;
 
+            // A core crash is a backend failure, not a proxy-quality verdict. Split the
+            // batch and retry the pieces so one bad config cannot poison unrelated candidates.
+            if child.try_wait().ok().flatten().is_some() {
+                if batch_entries.len() > 1 {
+                    let mid = batch_entries.len() / 2;
+                    pending.push(batch_entries[..mid].to_vec());
+                    pending.push(batch_entries[mid..].to_vec());
+                } else {
+                    println!(
+                        "[WARN] sing-box core exited during validation: {}",
+                        config_label(&batch_entries[0].0)
+                    );
+                }
+                let _ = fs::remove_dir_all(&work);
+                continue;
+            }
+
             for (entry_index, result) in results {
                 attempts[entry_index] += 1;
                 match result {
