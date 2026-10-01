@@ -100,6 +100,35 @@ fn transfer_reserve_target(
     estimated.clamp(minimum, maximum)
 }
 
+fn adaptive_transfer_test_limit(
+    selection_limit: usize,
+    selected_len: usize,
+    transfer_tested: usize,
+    transfer_passed: usize,
+    eligible_remaining: usize,
+) -> usize {
+    if selected_len >= selection_limit || eligible_remaining == 0 {
+        return transfer_tested;
+    }
+
+    let remaining = selection_limit.saturating_sub(selected_len);
+    let observed_rate = if transfer_tested < 16 {
+        TRANSFER_RESERVE_DEFAULT_PASS_RATE
+    } else {
+        ((transfer_passed as f64 + 2.0) / (transfer_tested as f64 + 4.0)).clamp(0.35, 0.95)
+    };
+
+    let estimated_additional = ((remaining as f64 / observed_rate) * 1.20).ceil() as usize;
+    let exploration_floor = remaining.saturating_add(8);
+    let additional_budget = estimated_additional
+        .max(exploration_floor)
+        .min(eligible_remaining);
+
+    transfer_tested
+        .saturating_add(additional_budget)
+        .min(FINAL_TRANSFER_TEST_LIMIT)
+}
+
 fn write_light_stats(
     path: &str,
     input_candidates: usize,
@@ -704,7 +733,19 @@ async fn fill_transfer_gate(
             .cloned()
             .collect::<Vec<_>>();
 
-        if untested.is_empty() || transfer_tested.len() >= FINAL_TRANSFER_TEST_LIMIT {
+        if untested.is_empty() {
+            return Ok(selected.len());
+        }
+
+        let eligible_remaining =
+            selection_eligible_count(&untested, max_per_endpoint, max_per_family);
+        if selected.len().saturating_add(eligible_remaining) < selection_limit {
+            println!(
+                "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {}",
+                selected.len(),
+                eligible_remaining,
+                selection_limit
+            );
             return Ok(selected.len());
         }
 
@@ -717,17 +758,32 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        // final_verified is kept ranked before entering the transfer gate,
-        // so retaining this order tests the most likely winners first.
-
         let remaining = selection_limit.saturating_sub(selected.len());
+        let dynamic_test_limit = adaptive_transfer_test_limit(
+            selection_limit,
+            selected.len(),
+            transfer_tested.len(),
+            transfer_verified.len(),
+            eligible_remaining,
+        );
+
+        if transfer_tested.len() >= dynamic_test_limit {
+            println!(
+                "[INFO] 🎯 [10 MiB] ADAPTIVE TEST BUDGET REACHED | TESTED: {} | SELECTABLE: {} | TARGET/MAX: {}",
+                transfer_tested.len(),
+                selected.len(),
+                selection_limit
+            );
+            return Ok(selected.len());
+        }
+
         let queue_window = transfer_workers
             .saturating_mul(FINAL_TRANSFER_QUEUE_MULTIPLIER)
             .max(8);
-        let batch_limit = remaining
+        let batch_limit = dynamic_test_limit
+            .saturating_sub(transfer_tested.len())
             .min(FINAL_TRANSFER_BATCH_SIZE)
             .min(queue_window)
-            .min(FINAL_TRANSFER_TEST_LIMIT.saturating_sub(transfer_tested.len()))
             .max(1);
 
         let batch = diversify_recheck_candidates(&untested, batch_limit, 1);
@@ -738,9 +794,10 @@ async fn fill_transfer_gate(
         transfer_tested.extend(batch.iter().cloned());
 
         println!(
-            "[INFO] 📥 [10 MiB] {} SLOTS REMAINING | TESTING {} CANDIDATES",
+            "[INFO] 📥 [10 MiB] {} SLOTS REMAINING | TESTING {} CANDIDATES | ADAPTIVE MAX TESTS: {}",
             remaining,
-            batch.len()
+            batch.len(),
+            dynamic_test_limit
         );
 
         let rate_limits_before = rate_limit_events();
@@ -2039,10 +2096,10 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        light_training_features, merge_light_metadata, normalize_light_config,
-        select_verified_configs, selection_eligible_count, transfer_reserve_target, LightBackend,
-        ProxyMetrics,
+        adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
+        history_fingerprint, light_backend, light_training_features, merge_light_metadata,
+        normalize_light_config, select_verified_configs, selection_eligible_count,
+        transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2109,6 +2166,23 @@ mod tests {
     fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
         assert_eq!(transfer_reserve_target(200, 200, 160), 273);
         assert_eq!(transfer_reserve_target(200, 200, 100), 320);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_uses_remaining_slots_and_pass_rate() {
+        assert_eq!(adaptive_transfer_test_limit(200, 180, 0, 0, 100), 30);
+        assert_eq!(adaptive_transfer_test_limit(200, 180, 100, 50, 100), 148);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_respects_hard_limit_and_candidate_headroom() {
+        assert_eq!(adaptive_transfer_test_limit(200, 0, 300, 240, 50), 320);
+        assert_eq!(adaptive_transfer_test_limit(200, 190, 300, 240, 3), 303);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_stops_when_target_is_already_met() {
+        assert_eq!(adaptive_transfer_test_limit(200, 200, 320, 280, 20), 320);
     }
 
     #[test]
