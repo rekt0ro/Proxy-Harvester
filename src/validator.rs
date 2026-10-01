@@ -1555,6 +1555,41 @@ pub fn is_locally_supported_config(config: &str) -> bool {
     let scheme = scheme_of(clean(config));
 
     if scheme == "hysteria" {
+        let Ok(url) = Url::parse(clean(config)) else {
+            return false;
+        };
+        if endpoint(config).is_none() {
+            return false;
+        }
+
+        let protocol = first_query(&url, &["protocol"], Some("udp"));
+        if !protocol.eq_ignore_ascii_case("udp") {
+            return false;
+        }
+
+        let parse_positive = |name: &str| {
+            first_query(&url, &[name], Some(""))
+                .parse::<u32>()
+                .ok()
+                .is_some_and(|value| value > 0)
+        };
+
+        if !parse_positive("upmbps") || !parse_positive("downmbps") {
+            return false;
+        }
+
+        let obfs = first_query(&url, &["obfs"], Some("")).to_ascii_lowercase();
+        let obfs_param = first_query(&url, &["obfsparam"], Some("")).trim().to_string();
+        if !obfs.is_empty() && obfs != "xplus" {
+            return false;
+        }
+        if obfs == "xplus" && obfs_param.is_empty() {
+            return false;
+        }
+        if obfs.is_empty() && !obfs_param.is_empty() {
+            return false;
+        }
+
         return true;
     }
 
@@ -3587,6 +3622,12 @@ mod tests {
     fn local_compatibility_keeps_legacy_hysteria_for_special_handling() {
         assert!(is_locally_supported_config(
             "hysteria://example.com:443?upmbps=100&downmbps=100"
+        ));
+        assert!(!is_locally_supported_config(
+            "hysteria://example.com:443?protocol=tcp&upmbps=100&downmbps=100"
+        ));
+        assert!(!is_locally_supported_config(
+            "hysteria://example.com:443?upmbps=0&downmbps=100"
         ));
     }
 
