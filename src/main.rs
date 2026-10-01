@@ -438,12 +438,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut scheme_counts: HashMap<String, usize> = HashMap::new();
 
     for config in &configs {
-        let scheme = match config_scheme(config).as_str() {
-            "hy2" => "hysteria2",
-            scheme => scheme,
+        let scheme = config_scheme(config);
+        let scheme = if scheme == "hy2" {
+            "hysteria2".to_string()
+        } else {
+            scheme
         };
 
-        *scheme_counts.entry(scheme.to_string()).or_insert(0usize) += 1;
+        *scheme_counts.entry(scheme).or_insert(0usize) += 1;
     }
 
     let mut scheme_counts = scheme_counts.into_iter().collect::<Vec<_>>();
