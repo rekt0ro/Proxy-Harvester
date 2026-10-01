@@ -2183,8 +2183,8 @@ pub(crate) fn adaptive_batch_size(requested: usize, total: usize, workers: usize
 }
 
 pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
-    if targets.len() <= minimum {
-        return targets.to_vec();
+    if targets.is_empty() {
+        return Vec::new();
     }
 
     let client = match Client::builder()
@@ -2202,8 +2202,7 @@ pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url>
             let client = client.clone();
             async move {
                 let healthy = match client.get(target.as_str()).send().await {
-                    Ok(response) if response.status().as_u16() == 429 => true,
-                    Ok(response) => response.status().is_success(),
+                    Ok(response) => response.status().is_success() && response.status().as_u16() != 429,
                     Err(_) => false,
                 };
                 (target, healthy)
@@ -2216,10 +2215,14 @@ pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url>
     let healthy = checks
         .into_iter()
         .filter_map(|(target, healthy)| healthy.then_some(target))
-        .collect::<Vec<_>>();
+        .collect::<HashSet<_>>();
 
     if healthy.len() >= minimum {
-        healthy
+        targets
+            .iter()
+            .filter(|target| healthy.contains(*target))
+            .cloned()
+            .collect()
     } else {
         targets.to_vec()
     }
@@ -2918,6 +2921,25 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn target_health_preserves_input_order_after_parallel_checks() {
+        let targets = vec![
+            Url::parse("https://example.com/a").unwrap(),
+            Url::parse("https://example.com/b").unwrap(),
+        ];
+
+        let healthy = vec![targets[1].clone(), targets[0].clone()];
+        let healthy = healthy.into_iter().collect::<HashSet<_>>();
+
+        let ordered = targets
+            .iter()
+            .filter(|target| healthy.contains(*target))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(ordered, targets);
     }
 
     #[test]
