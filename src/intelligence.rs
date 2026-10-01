@@ -94,7 +94,13 @@ impl IntelligenceModel {
         self.total_attempts >= MIN_TRAINING_SAMPLES && self.features.len() >= MIN_FEATURES
     }
 
-    pub fn update(&mut self, config: &str, metrics: Option<&ProxyMetrics>, attempts: usize, passed: bool) {
+    pub fn update(
+        &mut self,
+        config: &str,
+        metrics: Option<&ProxyMetrics>,
+        attempts: usize,
+        passed: bool,
+    ) {
         if attempts == 0 {
             return;
         }
@@ -104,7 +110,10 @@ impl IntelligenceModel {
         let key = feature_key(config, metrics);
         let entry = self.features.entry(key).or_default();
         entry.attempts = entry.attempts.saturating_add(attempts);
-        entry.successes = entry.successes.saturating_add(successes).min(entry.attempts);
+        entry.successes = entry
+            .successes
+            .saturating_add(successes)
+            .min(entry.attempts);
         self.total_attempts = self.total_attempts.saturating_add(attempts);
         self.total_successes = self
             .total_successes
@@ -142,8 +151,7 @@ impl IntelligenceModel {
         }
 
         let observed = successes as f64 / attempts as f64;
-        let expected =
-            (self.total_successes as f64 + 2.0) / (self.total_attempts as f64 + 4.0);
+        let expected = (self.total_successes as f64 + 2.0) / (self.total_attempts as f64 + 4.0);
 
         if (observed - expected).abs() < 0.20 {
             return None;
