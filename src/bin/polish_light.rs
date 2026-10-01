@@ -596,10 +596,6 @@ async fn validate_light_transfer_batch(
         }
     }
 
-    if singbox_metadata.is_empty() && xray_metadata.is_empty() {
-        return Err("both validation backends failed or produced no verified candidates".to_string());
-    }
-
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
