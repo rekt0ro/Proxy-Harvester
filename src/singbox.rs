@@ -1318,11 +1318,11 @@ async fn check_batch_targets(
                 .rev()
                 .collect::<String>();
             println!(
-                "[WARN] ⚠️ [SING-BOX] CORE START FAILED | {}",
+                "[INFO] 🧹 [SING-BOX] REJECTED | {} | core could not start for this candidate",
                 config_label(&batch_entries[0].0)
             );
             if !tail.is_empty() {
-                println!("[WARN] ⚠️ [SING-BOX] CORE LOG | {tail}");
+                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
             }
             let _ = fs::remove_dir_all(&work);
             continue;
@@ -1395,7 +1395,7 @@ async fn check_batch_targets(
                     pending.push(batch_entries[mid..].to_vec());
                 } else {
                     println!(
-                        "[WARN] ⚠️ [SING-BOX] CORE EXITED | {}",
+                        "[INFO] ℹ️ [SING-BOX] CORE EXITED | {}",
                         config_label(&batch_entries[0].0)
                     );
                 }
@@ -1592,11 +1592,11 @@ async fn check_batch(
                 .rev()
                 .collect::<String>();
             println!(
-                "[WARN] ⚠️ [SING-BOX] CORE START FAILED | {}",
+                "[INFO] 🧹 [SING-BOX] REJECTED | {}",
                 config_label(&batch_entries[0].0)
             );
             if !tail.is_empty() {
-                println!("[WARN] ⚠️ [SING-BOX] CORE LOG | {tail}");
+                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
             }
             let _ = fs::remove_dir_all(&work);
             continue;
@@ -1798,7 +1798,7 @@ async fn validate_candidates_with_targets_policy(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [SING-BOX] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [SING-BOX] REJECTED | {} | {reason}",
             config_label(config)
         );
     }
@@ -1893,7 +1893,7 @@ pub async fn validate_candidates_with_target(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [SING-BOX] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [SING-BOX] REJECTED | {} | {reason}",
             config_label(config)
         );
     }

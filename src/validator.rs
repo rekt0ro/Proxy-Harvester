@@ -533,6 +533,45 @@ fn ss_legacy_decode(payload: &str) -> Option<String> {
     String::from_utf8(b64decode(&decode_component(encoded))?).ok()
 }
 
+fn ss_has_nonempty_password(config: &str) -> bool {
+    let config = clean(config);
+    let Ok(url) = Url::parse(config) else {
+        return false;
+    };
+
+    if let Some(password) = url.password() {
+        return !decode_component(password).is_empty();
+    }
+
+    let payload = config
+        .split_once("://")
+        .map(|(_, payload)| payload)
+        .unwrap_or_default();
+
+    if let Some((credentials, _remote)) = payload.rsplit_once('@') {
+        let decoded = b64decode(&decode_component(credentials))
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let Some(credentials) = decoded else {
+            return false;
+        };
+
+        return credentials
+            .split_once(':')
+            .is_some_and(|(_, password)| !password.is_empty());
+    }
+
+    let Some(decoded) = ss_legacy_decode(payload) else {
+        return false;
+    };
+    let Some((credentials, _remote)) = decoded.rsplit_once('@') else {
+        return false;
+    };
+
+    credentials
+        .split_once(':')
+        .is_some_and(|(_, password)| !password.is_empty())
+}
+
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
     let config = clean(config);
     let scheme = scheme_of(config);
@@ -1660,12 +1699,29 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             {
                 return false;
             }
-            if url.password().is_some_and(str::is_empty) {
-                return false;
-            }
-            true
+            ss_has_nonempty_password(config)
         }
-        "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => true,
+        "vmess" => {
+            let payload = config
+                .split_once("://")
+                .map(|(_, payload)| payload)
+                .unwrap_or_default();
+            let decoded = b64decode(payload);
+            let Some(decoded) = decoded else {
+                return false;
+            };
+            let Ok(value) = serde_json::from_slice::<Value>(&decoded) else {
+                return false;
+            };
+            let network = normalize_transport(
+                &json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()),
+            );
+            matches!(
+                network.as_str(),
+                "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp"
+            )
+        }
+        "http" | "socks" | "socks5" | "socks5h" | "wg" => true,
         _ => false,
     }
 }
@@ -2224,7 +2280,7 @@ async fn check_batch(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
+                    "[INFO] 🧹 [XRAY] REJECTED | {} | core could not start for this candidate",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -2232,7 +2288,7 @@ async fn check_batch(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
+                    println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
                 }
             }
 
@@ -2582,7 +2638,7 @@ async fn validate_candidates_targets_inner(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [XRAY] REJECTED | {} | {reason}",
             config_label(config)
         );
     }
@@ -2725,7 +2781,7 @@ async fn check_batch_targets(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
+                    "[INFO] 🧹 [XRAY] REJECTED | {}",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -2733,7 +2789,7 @@ async fn check_batch_targets(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
+                    println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
                 }
             }
 
@@ -2931,7 +2987,7 @@ async fn validate_candidates_inner(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [XRAY] REJECTED | {} | {reason}",
             config_label(config)
         );
     }
@@ -3727,6 +3783,18 @@ mod tests {
     }
 
     #[test]
+    fn cheap_compatibility_rejects_vmess_none_transport() {
+        let config = "vmess://eyJ2IjoiMiIsInBzIjoiIiwiYWRkIjoiZXhhbXBsZS5jb20iLCJwb3J0IjoiNDQzIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhaWQiOiIwIiwibmV0Ijoibm9uZSJ9";
+        assert!(!is_cheaply_supported_config(config));
+    }
+
+    #[test]
+    fn cheap_compatibility_accepts_vmess_tcp_transport() {
+        let config = "vmess://eyJ2IjoiMiIsInBzIjoiIiwiYWRkIjoiZXhhbXBsZS5jb20iLCJwb3J0IjoiNDQzIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhaWQiOiIwIiwibmV0IjoidGNwIn0";
+        assert!(is_cheaply_supported_config(config));
+    }
+
+    #[test]
     fn cheap_compatibility_rejects_unsupported_vless_transport() {
         assert!(!is_cheaply_supported_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
@@ -3749,6 +3817,23 @@ mod tests {
     fn cheap_compatibility_keeps_passwordless_http_proxy() {
         assert!(is_cheaply_supported_config(
             "socks5://user@example.com:1080"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_empty_sip002_shadowsocks_password() {
+        assert!(!is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206@example.com:8388"
+        ));
+        assert!(is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:8388"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_empty_legacy_shadowsocks_password() {
+        assert!(!is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206QGV4YW1wbGUuY29tOjgzODg="
         ));
     }
 
