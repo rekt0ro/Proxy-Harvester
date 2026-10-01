@@ -2830,8 +2830,6 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
 
-    #[tokio::test]
-    async fn reuses_cached_xray_endpoint() {
     #[test]
     fn separates_hysteria2_configs_sharing_an_endpoint() {
         let entries = vec![
@@ -2857,29 +2855,30 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 2);
         assert_eq!(batches[1].len(), 1);
-        assert!(
+        assert_eq!(
             batches[0]
                 .iter()
                 .filter(|(config, _)| matches!(
                     scheme_of(clean(config)).as_str(),
                     "hysteria2" | "hy2"
                 ))
-                .count()
-                <= 1
+                .count(),
+            1
         );
-        assert!(
+        assert_eq!(
             batches[1]
                 .iter()
                 .filter(|(config, _)| matches!(
                     scheme_of(clean(config)).as_str(),
                     "hysteria2" | "hy2"
                 ))
-                .count()
-                <= 1
+                .count(),
+            1
         );
     }
 
-
+    #[tokio::test]
+    async fn reuses_cached_xray_endpoint() {
         let entries = vec![
             (
                 "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
@@ -2921,25 +2920,6 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
-    }
-
-    #[test]
-    fn target_health_preserves_input_order_after_parallel_checks() {
-        let targets = vec![
-            Url::parse("https://example.com/a").unwrap(),
-            Url::parse("https://example.com/b").unwrap(),
-        ];
-
-        let healthy = vec![targets[1].clone(), targets[0].clone()];
-        let healthy = healthy.into_iter().collect::<HashSet<_>>();
-
-        let ordered = targets
-            .iter()
-            .filter(|target| healthy.contains(*target))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        assert_eq!(ordered, targets);
     }
 
     #[test]
