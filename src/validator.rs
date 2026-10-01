@@ -2025,6 +2025,23 @@ async fn check_batch(
                 .collect::<Vec<_>>()
                 .await;
 
+            // A core crash is a backend failure, not a proxy-quality verdict. Split the
+            // batch and retry the pieces so one bad config cannot poison unrelated candidates.
+            if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+                if batch_entries.len() > 1 {
+                    let mid = batch_entries.len() / 2;
+                    pending_batches.push(batch_entries[..mid].to_vec());
+                    pending_batches.push(batch_entries[mid..].to_vec());
+                } else {
+                    println!(
+                        "[WARN] Xray core exited during validation: {}",
+                        config_label(&batch_entries[0].0)
+                    );
+                }
+                let _ = fs::remove_dir_all(&work);
+                continue;
+            }
+
             for (config, _, result) in results {
                 *attempts.entry(config.clone()).or_insert(0) += 1;
                 match result {
