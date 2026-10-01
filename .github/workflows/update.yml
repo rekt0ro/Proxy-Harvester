@@ -419,6 +419,31 @@ jobs:
           transfer_tested="unknown"
           transfer_passed="unknown"
           published="unknown"
+          ml_rows="0"
+          ml_strict_passes="0"
+          ml_transfer_tests="0"
+          ml_transfer_passes="0"
+          ml_strict_rate="0.0"
+          ml_feature_count="0"
+          if [ -s "subscriptions/light-training.jsonl" ]; then
+            ml_stats="$(jq -s '
+              {
+                rows: length,
+                strict_passes: (map(select(.label.strict_pass == true)) | length),
+                transfer_tests: (map(select(.label.transfer_tested == true)) | length),
+                transfer_passes: (map(select(.label.transfer_tested == true and .label.transfer_pass == true)) | length)
+              }' subscriptions/light-training.jsonl 2>/dev/null || true)"
+            if [ -n "$ml_stats" ]; then
+              ml_rows="$(jq -r '.rows // 0' <<< "$ml_stats")"
+              ml_feature_count="$(head -n 1 subscriptions/light-training.jsonl | jq -r '.features | length' 2>/dev/null || printf '0')"
+              ml_strict_passes="$(jq -r '.strict_passes // 0' <<< "$ml_stats")"
+              ml_transfer_tests="$(jq -r '.transfer_tests // 0' <<< "$ml_stats")"
+              ml_transfer_passes="$(jq -r '.transfer_passes // 0' <<< "$ml_stats")"
+              if [ "$ml_rows" -gt 0 ]; then
+                ml_strict_rate="$(awk -v passes="$ml_strict_passes" -v rows="$ml_rows" 'BEGIN { printf "%.1f", (passes / rows) * 100 }')"
+              fi
+            fi
+          fi
           if [ -s /tmp/proxyrift/light-stats.json ]; then
             input_candidates="$(jq -r '.input_candidates // "unknown"' /tmp/proxyrift/light-stats.json)"
             security_rejected="$(jq -r '.security_rejected // "unknown"' /tmp/proxyrift/light-stats.json)"
@@ -592,6 +617,15 @@ jobs:
             echo "| 10 MiB passed | $transfer_passed |"
             echo "| Published by validator | $published |"
             echo
+            echo "### 🧠 Light ML dataset"
+            echo
+            echo "| Metric | Value |"
+            echo "|---|---:|"
+            echo "| Dataset rows | $ml_rows |"
+            echo "| Features per row | $ml_feature_count |"
+            echo "| Strict pass rate | $ml_strict_rate% |"
+            echo "| Transfer labels | $ml_transfer_passes/$ml_transfer_tests passed |"
+            echo
             echo "### 📦 Published outputs"
             echo
             echo "| Output | Config entries |"
@@ -630,6 +664,10 @@ jobs:
             cp -- subscriptions/light-history.json "$publish_snapshot/subscriptions/light-history.json"
           fi
 
+          if [ -s "subscriptions/light-training.jsonl" ]; then
+            cp -- subscriptions/light-training.jsonl "$publish_snapshot/subscriptions/light-training.jsonl"
+          fi
+
           git config user.name "rekt0ro"
           git config user.email "104654981+rekt0ro@users.noreply.github.com"
 
@@ -648,6 +686,10 @@ jobs:
               cp -- "$publish_snapshot/subscriptions/light-history.json" subscriptions/light-history.json
             fi
 
+            if [ -f "$publish_snapshot/subscriptions/light-training.jsonl" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-training.jsonl" subscriptions/light-training.jsonl
+            fi
+
             git add -- \
               subscriptions/all.txt \
               subscriptions/light.txt \
@@ -656,6 +698,10 @@ jobs:
 
             if [ -f "subscriptions/light-history.json" ]; then
               git add -- subscriptions/light-history.json
+            fi
+
+            if [ -f "subscriptions/light-training.jsonl" ]; then
+              git add -- subscriptions/light-training.jsonl
             fi
 
             if git diff --cached --quiet; then

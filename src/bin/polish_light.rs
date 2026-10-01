@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use proxyrift::intelligence::IntelligenceModel;
+use proxyrift::light_training::{persist as persist_light_training, DatasetStats, TrainingRow};
 use proxyrift::singbox::{
     validate_candidates_with_targets as validate_singbox_targets,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
@@ -39,6 +40,7 @@ const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
 const HISTORY_RETENTION_SECS: u64 = 45 * 24 * 60 * 60;
+const LIGHT_TRAINING_PATH: &str = "subscriptions/light-training.jsonl";
 
 fn adaptive_recheck_limit(
     remaining: usize,
@@ -133,8 +135,18 @@ fn persist_light_result(
     intelligence: &IntelligenceModel,
     global_metadata: &HashMap<String, ProxyMetrics>,
     intelligence_path: &str,
+    transfer_tested: &HashSet<String>,
+    transfer_verified: &HashMap<String, ProxyMetrics>,
 ) -> Result<(), String> {
     write_light_lines(output, selected)?;
+    persist_light_training_data(
+        history,
+        final_attempts,
+        final_metadata,
+        global_metadata,
+        transfer_tested,
+        transfer_verified,
+    )?;
 
     let mut model = intelligence.clone();
     for (config, attempts) in final_attempts {
@@ -1062,6 +1074,280 @@ fn light_backend(config: &str) -> LightBackend {
     LightBackend::SingBox
 }
 
+fn vmess_payload(config: &str) -> Option<Value> {
+    let encoded = config.split_once("://").map(|(_, rest)| rest)?;
+    let payload = encoded.split('#').next().unwrap_or("").trim();
+    let mut padded = payload.to_string();
+    while !padded.len().is_multiple_of(4) {
+        padded.push('=');
+    }
+
+    for candidate in [payload, padded.as_str()] {
+        for bytes in [
+            STANDARD.decode(candidate),
+            URL_SAFE.decode(candidate),
+            URL_SAFE_NO_PAD.decode(candidate),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
+fn json_u64(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::Number(number)) => number.as_u64().unwrap_or(0),
+        Some(Value::String(string)) => string.trim().parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn training_number(value: f64) -> Value {
+    serde_json::Number::from_f64(value)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn light_training_features(
+    config: &str,
+    early_metadata: Option<&ProxyMetrics>,
+    history_rate: f64,
+    history_checks: u64,
+) -> BTreeMap<String, Value> {
+    let cleaned = config.split('#').next().unwrap_or(config);
+    let url = Url::parse(cleaned).ok();
+    let protocol = url
+        .as_ref()
+        .map(|value| value.scheme().to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+    let vmess = if protocol == "vmess" {
+        vmess_payload(config)
+    } else {
+        None
+    };
+
+    let transport = if let Some(payload) = vmess.as_ref() {
+        payload
+            .get("net")
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "vmess-default".to_string())
+    } else {
+        url.as_ref()
+            .map(|value| query_value(value, &["type", "network"]).to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    };
+
+    let security = if let Some(payload) = vmess.as_ref() {
+        let tls_enabled = match payload.get("tls") {
+            Some(Value::String(value)) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "tls" | "1" | "true" | "yes" | "on"
+            ),
+            Some(value) => value_boolish(value),
+            None => false,
+        };
+        if tls_enabled {
+            "tls".to_string()
+        } else {
+            "none".to_string()
+        }
+    } else {
+        url.as_ref()
+            .map(|value| query_value(value, &["security"]).to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    };
+
+    let port = if let Some(payload) = vmess.as_ref() {
+        json_u64(payload.get("port"))
+    } else {
+        url.as_ref().and_then(Url::port).map(u64::from).unwrap_or(0)
+    };
+
+    let query_parameter_count = url
+        .as_ref()
+        .map(|value| value.query_pairs().count() as u64)
+        .unwrap_or(0);
+
+    let has_sni = if let Some(payload) = vmess.as_ref() {
+        ["sni", "serverName", "servername"].iter().any(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["sni", "serverName", "servername"]))
+    };
+
+    let has_host = if let Some(payload) = vmess.as_ref() {
+        ["host", "Host"].iter().any(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["host", "authority"]))
+    };
+
+    let has_path = if let Some(payload) = vmess.as_ref() {
+        payload
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["path"]))
+    };
+
+    let tls_enabled = if vmess.is_some() {
+        security == "tls"
+    } else {
+        matches!(security.as_str(), "tls" | "reality" | "xtls")
+    };
+    let reality_enabled = security == "reality";
+
+    let early_attempts = early_metadata.map(|metrics| metrics.attempts).unwrap_or(0);
+    let early_success_rate = early_metadata
+        .filter(|metrics| metrics.attempts > 0)
+        .map(|metrics| metrics.successes as f64 / metrics.attempts as f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+
+    let mut features = BTreeMap::new();
+    features.insert("protocol".to_string(), Value::String(protocol));
+    features.insert(
+        "backend".to_string(),
+        Value::String(
+            match light_backend(config) {
+                LightBackend::SingBox => "sing-box",
+                LightBackend::Xray => "xray",
+                LightBackend::Fallback => "fallback",
+            }
+            .to_string(),
+        ),
+    );
+    features.insert("transport".to_string(), Value::String(transport));
+    features.insert("security".to_string(), Value::String(security));
+    features.insert("port".to_string(), Value::from(port));
+    features.insert(
+        "query_parameter_count".to_string(),
+        Value::from(query_parameter_count),
+    );
+    features.insert("has_sni".to_string(), Value::Bool(has_sni));
+    features.insert("has_host".to_string(), Value::Bool(has_host));
+    features.insert("has_path".to_string(), Value::Bool(has_path));
+    features.insert("tls_enabled".to_string(), Value::Bool(tls_enabled));
+    features.insert("reality_enabled".to_string(), Value::Bool(reality_enabled));
+    features.insert("early_attempts".to_string(), Value::from(early_attempts));
+    features.insert(
+        "early_success_rate".to_string(),
+        training_number(early_success_rate),
+    );
+
+    let metrics = early_metadata;
+    features.insert(
+        "early_median_ms".to_string(),
+        training_number(metrics.map(|value| value.median_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_min_ms".to_string(),
+        training_number(metrics.map(|value| value.min_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_jitter_ms".to_string(),
+        training_number(metrics.map(|value| value.jitter_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_throughput_kbps".to_string(),
+        training_number(metrics.map(|value| value.throughput_kbps).unwrap_or(0.0)),
+    );
+    features.insert("history_checks".to_string(), Value::from(history_checks));
+    features.insert(
+        "history_pass_rate".to_string(),
+        training_number(history_rate.clamp(0.0, 1.0)),
+    );
+
+    features
+}
+
+fn persist_light_training_data(
+    history: &HashMap<String, HistoryEntry>,
+    final_attempts: &HashMap<String, usize>,
+    final_metadata: &HashMap<String, ProxyMetrics>,
+    global_metadata: &HashMap<String, ProxyMetrics>,
+    transfer_tested: &HashSet<String>,
+    transfer_verified: &HashMap<String, ProxyMetrics>,
+) -> Result<DatasetStats, String> {
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let run_id = env::var("GITHUB_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let mut rows = Vec::with_capacity(final_attempts.len());
+    for (config, attempts) in final_attempts {
+        let (history_rate, history_checks) = historical_score(config, history);
+        let candidate_fingerprint = history_fingerprint(config);
+        let observation_id = if let Some(run_id) = run_id.as_deref() {
+            format!("{run_id}:{candidate_fingerprint}")
+        } else {
+            format!("local:{observed_at}:{candidate_fingerprint}")
+        };
+        let transfer_was_tested = transfer_tested.contains(config);
+
+        rows.push(TrainingRow {
+            observed_at,
+            run_id: run_id.clone(),
+            candidate_fingerprint,
+            observation_id,
+            features: light_training_features(
+                config,
+                global_metadata.get(config),
+                history_rate,
+                history_checks,
+            ),
+            strict_pass: final_metadata.contains_key(config),
+            strict_checks: *attempts as u64,
+            transfer_tested: transfer_was_tested,
+            transfer_pass: transfer_was_tested.then(|| transfer_verified.contains_key(config)),
+        });
+    }
+
+    let stats = persist_light_training(LIGHT_TRAINING_PATH, &rows)?;
+    let strict_rate = if stats.rows == 0 {
+        0.0
+    } else {
+        stats.strict_passes as f64 / stats.rows as f64
+    };
+
+    println!(
+        "[INFO] 🧠 [LIGHT ML DATA] +{} ROWS | TOTAL: {} | FEATURES: {} | STRICT PASS RATE: {:.1}% | TRANSFER: {}/{}",
+        stats.new_rows,
+        stats.rows,
+        rows.first().map(|row| row.features.len()).unwrap_or(0),
+        strict_rate * 100.0,
+        stats.transfer_passes,
+        stats.transfer_tests
+    );
+
+    Ok(stats)
+}
+
 fn merge_light_metadata(
     xray_metadata: HashMap<String, ProxyMetrics>,
     singbox_metadata: HashMap<String, ProxyMetrics>,
@@ -1406,6 +1692,8 @@ async fn main() -> Result<(), String> {
                 &intelligence,
                 &global_metadata,
                 intelligence_path,
+                &transfer_tested,
+                &transfer_verified,
             )?;
             write_light_stats(
                 &stats_path,
@@ -1468,6 +1756,8 @@ async fn main() -> Result<(), String> {
                     &intelligence,
                     &global_metadata,
                     intelligence_path,
+                    &transfer_tested,
+                    &transfer_verified,
                 )?;
                 write_light_stats(
                     &stats_path,
@@ -1653,6 +1943,14 @@ async fn main() -> Result<(), String> {
     );
 
     if selected.len() < selection_limit {
+        persist_light_training_data(
+            &history,
+            &final_attempts,
+            &final_metadata,
+            &global_metadata,
+            &transfer_tested,
+            &transfer_verified,
+        )?;
         persist_history(history_path, &history, &final_attempts, &final_metadata)?;
         write_light_stats(
             &stats_path,
@@ -1725,6 +2023,8 @@ async fn main() -> Result<(), String> {
         &intelligence,
         &global_metadata,
         intelligence_path,
+        &transfer_tested,
+        &transfer_verified,
     )?;
     println!(
         "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY: {} | STRICT CHECKS: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {}",
@@ -1741,8 +2041,9 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        merge_light_metadata, normalize_light_config, select_verified_configs,
-        selection_eligible_count, transfer_reserve_target, LightBackend, ProxyMetrics,
+        light_training_features, merge_light_metadata, normalize_light_config,
+        select_verified_configs, selection_eligible_count, transfer_reserve_target, LightBackend,
+        ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2016,6 +2317,85 @@ mod tests {
         assert_eq!(
             normalize_light_config("trojan://pass@example.com:443?path=%2Fa%3Fb&security="),
             "trojan://pass@example.com:443?path=%2Fa%3Fb&security=tls"
+        );
+    }
+
+    #[test]
+    fn light_training_features_are_precheck_only() {
+        let metrics = ProxyMetrics {
+            successes: 2,
+            attempts: 3,
+            median_ms: 120.0,
+            min_ms: 80.0,
+            jitter_ms: 10.0,
+            throughput_kbps: 900.0,
+        };
+
+        let features = super::light_training_features(
+            "vless://uuid@example.com:443?security=tls&type=ws&sni=example.com&path=%2F",
+            Some(&metrics),
+            0.75,
+            4,
+        );
+
+        assert_eq!(features.len(), proxyrift::light_training::FEATURE_COUNT);
+        assert_eq!(
+            features.get("protocol"),
+            Some(&serde_json::Value::String("vless".to_string()))
+        );
+        assert_eq!(
+            features
+                .get("transport")
+                .and_then(serde_json::Value::as_str),
+            Some("ws")
+        );
+        assert_eq!(
+            features.get("security").and_then(serde_json::Value::as_str),
+            Some("tls")
+        );
+        assert_eq!(
+            features
+                .get("early_attempts")
+                .and_then(serde_json::Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            features
+                .get("history_checks")
+                .and_then(serde_json::Value::as_u64),
+            Some(4)
+        );
+        assert!(!features.values().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text.contains("uuid@example.com"))
+        }));
+    }
+
+    #[test]
+    fn light_training_features_recognize_vmess_tls_string() {
+        let payload = serde_json::json!({
+            "v": "2",
+            "add": "example.com",
+            "port": "443",
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "ws",
+            "tls": "tls",
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        let config = format!("vmess://{encoded}");
+
+        let features = light_training_features(&config, None, 0.5, 0);
+
+        assert_eq!(
+            features.get("security").and_then(serde_json::Value::as_str),
+            Some("tls")
+        );
+        assert_eq!(
+            features
+                .get("tls_enabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 
