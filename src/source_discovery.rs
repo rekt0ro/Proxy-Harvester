@@ -104,11 +104,7 @@ impl Registry {
             return Self::new(now);
         };
 
-        if root
-            .get("schema_version")
-            .and_then(Value::as_u64)
-            != Some(REGISTRY_VERSION)
-        {
+        if root.get("schema_version").and_then(Value::as_u64) != Some(REGISTRY_VERSION) {
             return Self::new(now);
         }
 
@@ -150,25 +146,27 @@ impl Registry {
 
     fn add_candidate(&mut self, candidate: &Candidate, now: u64) {
         let sources = self.sources_mut();
-        let record = sources
-            .entry(candidate.url.clone())
-            .or_insert_with(|| {
-                let mut object = Map::new();
-                object.insert("url".into(), Value::String(candidate.url.clone()));
-                object.insert("repo".into(), Value::String(candidate.repo.clone()));
-                object.insert("first_seen".into(), Value::from(now));
-                object.insert("last_discovered".into(), Value::from(now));
-                object.insert("last_checked".into(), Value::Null);
-                object.insert("successes".into(), Value::from(0u64));
-                object.insert("failures".into(), Value::from(0u64));
-                object.insert("failure_streak".into(), Value::from(0u64));
-                object.insert("configs_total".into(), Value::from(0u64));
-                Value::Object(object)
-            });
+        let record = sources.entry(candidate.url.clone()).or_insert_with(|| {
+            let mut object = Map::new();
+            object.insert("url".into(), Value::String(candidate.url.clone()));
+            object.insert("repo".into(), Value::String(candidate.repo.clone()));
+            object.insert("first_seen".into(), Value::from(now));
+            object.insert("last_discovered".into(), Value::from(now));
+            object.insert("last_checked".into(), Value::Null);
+            object.insert("successes".into(), Value::from(0u64));
+            object.insert("failures".into(), Value::from(0u64));
+            object.insert("failure_streak".into(), Value::from(0u64));
+            object.insert("configs_total".into(), Value::from(0u64));
+            Value::Object(object)
+        });
 
         if let Some(object) = record.as_object_mut() {
             object.insert("last_discovered".into(), Value::from(now));
-            if object.get("repo").and_then(Value::as_str).is_none_or(str::is_empty) {
+            if object
+                .get("repo")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
                 object.insert("repo".into(), Value::String(candidate.repo.clone()));
             }
         }
@@ -240,7 +238,8 @@ impl Registry {
     }
 }
 
-pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>>
+{
     let root = project_root()?;
     let registry_path = root.join("subscriptions").join("source-registry.json");
     let sources_path = root.join("sources.txt");
@@ -423,7 +422,11 @@ async fn discover_repo(
         }
 
         let body = response.bytes().await?;
-        let body = body.iter().copied().take(README_MAX_BYTES).collect::<Vec<_>>();
+        let body = body
+            .iter()
+            .copied()
+            .take(README_MAX_BYTES)
+            .collect::<Vec<_>>();
         let text = String::from_utf8_lossy(&body);
         let candidates = extract_source_urls(&text, name);
 
@@ -479,7 +482,10 @@ async fn scan_repo_tree(
                 "https://raw.githubusercontent.com/{}/{}/{}",
                 name,
                 branch,
-                path.split('/').map(percent_encode).collect::<Vec<_>>().join("/")
+                path.split('/')
+                    .map(percent_encode)
+                    .collect::<Vec<_>>()
+                    .join("/")
             ),
             repo: name.clone(),
             priority: 50,
@@ -545,9 +551,12 @@ fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
     while let Some(relative) = text[start..].find("http") {
         let absolute = start + relative;
         let end = text[absolute..]
-            .find(|character: char| {
+.find(|character: char| {
                 character.is_whitespace()
-                    || matches!(character, '<' | '>' | '"' | '\'' | ')' | ']' | '}' | '\u{60}')
+                    || matches!(
+                        character,
+                        '<' | '>' | '"' | '\'' | ')' | ']' | '}' | '\u{60}'
+                    )
             })
             .map(|offset| absolute + offset)
             .unwrap_or(text.len());
@@ -740,9 +749,7 @@ mod tests {
                 "https://github.com/example/project/blob/main/subscriptions/all.txt"
             )
             .as_deref(),
-            Some(
-                "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
-            )
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
     }
 
