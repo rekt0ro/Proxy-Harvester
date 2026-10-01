@@ -1592,11 +1592,11 @@ async fn check_batch(
                 .rev()
                 .collect::<String>();
             println!(
-                "[WARN] ⚠️ [SING-BOX] CORE START FAILED | {}",
+                "[INFO] 🧹 [SING-BOX] REJECTED | {}",
                 config_label(&batch_entries[0].0)
             );
             if !tail.is_empty() {
-                println!("[WARN] ⚠️ [SING-BOX] CORE LOG | {tail}");
+                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
             }
             let _ = fs::remove_dir_all(&work);
             continue;
