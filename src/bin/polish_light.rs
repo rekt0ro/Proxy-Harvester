@@ -1474,7 +1474,7 @@ async fn main() -> Result<(), String> {
             .checked_div(selection_limit)
             .unwrap_or(0);
         println!(
-            "[INFO] 🔥 [LIGHT FILL] {}/{} READY ({}%) | STRICT CHECKS: {}",
+            "[INFO] 📈 [LIGHT FILL] {}/{} READY ({}%) | STRICT CHECKS: {}",
             selected.len(),
             selection_limit,
             fill_percent,
