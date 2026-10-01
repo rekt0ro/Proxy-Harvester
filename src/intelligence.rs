@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn remains_inert_until_enough_training_data() {
-        let mut model = IntelligenceModel::default();
+        let model = IntelligenceModel::default();
         let mut configs = vec![
             "vless://a@example.com:443".to_string(),
             "trojan://b@example.com:443".to_string(),
@@ -246,6 +246,14 @@ mod tests {
                 Some(&metrics(900.0)),
                 1,
                 false,
+            );
+        }
+        for _ in 0..60 {
+            model.update(
+                "hysteria2://c@example.com:443",
+                Some(&metrics(300.0)),
+                1,
+                true,
             );
         }
 
