@@ -359,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for chunk in scheme_counts.chunks(4) {
         let summary = chunk
             .iter()
-            .map(|(scheme, count)| format!("{scheme} {count}"))
+            .map(|(scheme, count)| format!("{} {count}", scheme.to_ascii_uppercase()))
             .collect::<Vec<_>>()
             .join(" | ");
         println!("[INFO] 📊 [PROTOCOLS] {summary}");
