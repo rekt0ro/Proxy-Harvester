@@ -390,6 +390,8 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
           XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
           SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
         run: |
