@@ -592,7 +592,10 @@ async fn validate_light_transfer_batch(
         .await
         {
             Ok(fallback_xray) => xray_metadata.extend(fallback_xray),
-            Err(error) => println!("[WARN] Xray fallback validation failed for {} candidates: {error}", fallback_retry.len()),
+            Err(error) => println!(
+                "[WARN] Xray fallback validation failed for {} candidates: {error}",
+                fallback_retry.len()
+            ),
         }
     }
 
