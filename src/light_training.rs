@@ -309,8 +309,7 @@ mod tests {
         let mut rows = vec![row("fresh", 1_000, true, None)];
         rows.push(row("old", 1, true, None));
 
-        persist_at(&path, &rows, 1_000 + 45 * 24 * 60 * 60)
-            .expect("persist retained rows");
+        persist_at(&path, &rows, 1_000 + 45 * 24 * 60 * 60).expect("persist retained rows");
 
         let body = fs::read_to_string(&path).expect("read dataset");
         assert_eq!(body.lines().count(), 1);
