@@ -1702,7 +1702,10 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             ss_has_nonempty_password(config)
         }
         "vmess" => {
-            let payload = config.split_once("://").map(|(_, payload)| payload).unwrap_or_default();
+            let payload = config
+                .split_once("://")
+                .map(|(_, payload)| payload)
+                .unwrap_or_default();
             let decoded = b64decode(payload);
             let Some(decoded) = decoded else {
                 return false;
@@ -1710,8 +1713,9 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             let Ok(value) = serde_json::from_slice::<Value>(&decoded) else {
                 return false;
             };
-            let network =
-                normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
+            let network = normalize_transport(
+                &json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()),
+            );
             matches!(
                 network.as_str(),
                 "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp"
