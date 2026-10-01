@@ -1347,10 +1347,6 @@ async fn main() -> Result<(), String> {
         }
 
         println!(
-            "[INFO] LIGHT SLOTS REMAINING: {} / {}",
-            remaining, selection_limit
-        );
-        println!(
             "[INFO] Strict recheck wave {wave}: testing {} candidates.",
             final_candidates.len()
         );
