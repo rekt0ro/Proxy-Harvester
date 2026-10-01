@@ -176,8 +176,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             async move {
                 let source_number = source_index + 1;
-                println!("[INFO] Downloading source #{source_number}");
-
                 let mut current_url = match Url::parse(&url) {
                     Ok(url) if matches!(url.scheme(), "http" | "https") => url,
 
@@ -225,11 +223,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                 match safe_source_redirect(&current_url, location).await {
                                     Ok(next_url) => {
-                                        println!(
-                                            "[INFO] Source #{source_number} following validated redirect {}/{}.",
-                                            redirect_count + 1,
-                                            MAX_SOURCE_REDIRECTS
-                                        );
                                         current_url = next_url;
                                         redirect_count += 1;
                                         attempt = 0;
@@ -255,10 +248,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     let delay = Duration::from_millis(
                                         SOURCE_RETRY_BASE_MS
                                             .saturating_mul(1u64 << attempt.min(4)),
-                                    );
-                                    println!(
-                                        "[INFO] Source #{source_number} returned HTTP status {status}; retrying after {} ms.",
-                                        delay.as_millis()
                                     );
                                     tokio::time::sleep(delay).await;
                                     attempt += 1;
@@ -287,10 +276,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     let text = String::from_utf8_lossy(&bytes);
                                     let configs = extract_configs(&text);
 
-                                    println!(
-                                        "[INFO] Found {} configs from source #{source_number}.",
-                                        configs.len()
-                                    );
 
                                     return configs;
                                 }
@@ -315,10 +300,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 let delay = Duration::from_millis(
                                     SOURCE_RETRY_BASE_MS
                                         .saturating_mul(1u64 << attempt.min(4)),
-                                );
-                                println!(
-                                    "[INFO] Source #{source_number} download failed; retrying after {} ms.",
-                                    delay.as_millis()
                                 );
                                 tokio::time::sleep(delay).await;
                                 attempt += 1;
