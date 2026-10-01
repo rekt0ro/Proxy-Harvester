@@ -25,7 +25,6 @@ const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
-const TRANSFER_RESERVE_MIN_HEADROOM: usize = 60;
 const TRANSFER_RESERVE_DEFAULT_PASS_RATE: f64 = 0.80;
 const TRANSFER_RESERVE_SAFETY_FACTOR: f64 = 1.08;
 const TRANSFER_RESERVE_MAX_HEADROOM: usize = 120;
@@ -112,13 +111,13 @@ fn transfer_reserve_target(
         ((transfer_passed as f64 + 2.0) / (transfer_tested as f64 + 4.0)).clamp(0.60, 0.95)
     };
 
-    let estimated = ((remaining as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR).ceil() as usize;
+    let estimated = ((remaining as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR)
+        .ceil() as usize;
     let minimum = remaining.saturating_add(8);
     let maximum = remaining.saturating_add(TRANSFER_RESERVE_MAX_HEADROOM);
 
     estimated.clamp(minimum, maximum)
 }
-
 
 fn adaptive_transfer_test_limit(
     selection_limit: usize,
