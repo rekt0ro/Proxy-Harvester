@@ -1479,7 +1479,6 @@ async fn main() -> Result<(), String> {
         selection_limit,
         max_per_endpoint,
         max_per_family,
-        final_workers,
     )
     .await?;
 
