@@ -103,7 +103,7 @@ fn transfer_reserve_target(
     estimated.clamp(minimum, maximum)
 }
 
-fn write_light_stats 
+fn write_light_stats(
     path: &str,
     input_candidates: usize,
     security_rejected: usize,
