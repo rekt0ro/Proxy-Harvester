@@ -2777,7 +2777,7 @@ async fn check_batch_targets(
                     .collect::<String>();
 
                 println!(
-                    "[WARN] ⚠️ [XRAY] VALIDATION SKIPPED | {}",
+                    "[INFO] 🧹 [XRAY] REJECTED | {}",
                     config_label(&batch_entries[0].0)
                 );
                 if !tail.is_empty()
@@ -2785,7 +2785,7 @@ async fn check_batch_targets(
                         "The feature HTTP transport (without header padding, etc.) has been removed"
                     )
                 {
-                    println!("[WARN] ⚠️ [XRAY] CORE START FAILED | {tail}");
+                    println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
                 }
             }
 
@@ -2983,7 +2983,7 @@ async fn validate_candidates_inner(
 
     for (config, reason) in rejected.iter().take(8) {
         println!(
-            "[WARN] ⚠️ [XRAY] REJECTED | {} | {reason}",
+            "[INFO] 🧹 [XRAY] REJECTED | {} | {reason}",
             config_label(config)
         );
     }
