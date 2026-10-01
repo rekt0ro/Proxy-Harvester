@@ -44,6 +44,8 @@ pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
 pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(300);
+const RATE_LIMIT_JITTER_BASE_MS: u64 = 150;
+const RATE_LIMIT_JITTER_STEP_MS: u64 = 100;
 
 static RATE_LIMIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 
@@ -1845,7 +1847,13 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
     let response = request.send().await.map_err(|_| ProbeError::Failed)?;
 
     if response.status().as_u16() == 429 {
-        extend_rate_limit(rate_limit_wait(response.headers()));
+        let wait = rate_limit_wait(response.headers());
+        let event = RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
+        let jitter_ms = RATE_LIMIT_JITTER_BASE_MS
+            + (event % 8) * RATE_LIMIT_JITTER_STEP_MS;
+        let delay = wait.min(Duration::from_secs(2))
+            .max(Duration::from_millis(jitter_ms));
+        sleep(delay).await;
         return Err(ProbeError::Failed);
     }
 
