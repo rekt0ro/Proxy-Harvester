@@ -636,7 +636,7 @@ async fn fill_transfer_gate(
         transfer_tested.extend(batch.iter().cloned());
 
         println!(
-            "[INFO] LIGHT TRANSFER: {} SLOTS REMAINING | testing {} candidates",
+            "[INFO] ===== LIGHT TRANSFER: {} SLOTS REMAINING | TESTING {} CANDIDATES =====",
             remaining,
             batch.len()
         );
@@ -649,7 +649,7 @@ async fn fill_transfer_gate(
         transfer_verified.extend(metadata);
 
         println!(
-            "[INFO] LIGHT TRANSFER: batch complete {}/{} passed in {}s; {} total passed; {} slots remaining.",
+            "[INFO] ===== LIGHT TRANSFER BATCH COMPLETE: {}/{} PASSED IN {}s | {} TOTAL PASSED | {} SLOTS REMAINING =====",
             batch_passed,
             batch.len(),
             batch_elapsed,
