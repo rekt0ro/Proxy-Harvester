@@ -392,6 +392,18 @@ jobs:
           publish_started=$SECONDS
 
           files="all.txt light.txt all-base64.txt light-base64.txt"
+          publish_snapshot="$(mktemp -d /tmp/proxyrift-publish.XXXXXX)"
+          trap 'rm -rf "$publish_snapshot"' EXIT
+
+          mkdir -p "$publish_snapshot/subscriptions"
+          for f in $files; do
+            test -s "subscriptions/${f}"
+            cp -- "subscriptions/${f}" "$publish_snapshot/subscriptions/${f}"
+          done
+
+          if [ -s "subscriptions/light-history.json" ]; then
+            cp -- subscriptions/light-history.json "$publish_snapshot/subscriptions/light-history.json"
+          fi
 
           git config user.name "rekt0ro"
           git config user.email "104654981+rekt0ro@users.noreply.github.com"
@@ -402,9 +414,14 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            # Reapply the freshly generated subscription artifacts after syncing with main.
             for f in $files; do
-              test -s "subscriptions/${f}"
+              cp -- "$publish_snapshot/subscriptions/${f}" "subscriptions/${f}"
             done
+
+            if [ -f "$publish_snapshot/subscriptions/light-history.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-history.json" subscriptions/light-history.json
+            fi
 
             git add -- \
               subscriptions/all.txt \
@@ -412,7 +429,7 @@ jobs:
               subscriptions/all-base64.txt \
               subscriptions/light-base64.txt
 
-            if [ -s "subscriptions/light-history.json" ]; then
+            if [ -f "subscriptions/light-history.json" ]; then
               git add -- subscriptions/light-history.json
             fi
 
@@ -438,184 +455,6 @@ jobs:
 
           echo "[ERROR] ❌ [PUBLISH] FAILED AFTER 5 ATTEMPTS" >&2
           exit 1
-
-      - name: "📊 Write run summary"
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
-          XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
-          SINGBOX_VERSION: ${{ steps.validation-cores.outputs.singbox_version }}
-          WORKFLOW_ID: ${{ github.workflow_id }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -eo pipefail
-
-          status_icon="✅"
-          status_text="Complete"
-          case "$JOB_STATUS" in
-            failure) status_icon="❌"; status_text="Failed" ;;
-            cancelled) status_icon="⏹️"; status_text="Cancelled" ;;
-          esac
-
-          format_duration() {
-            local seconds="$1"
-            if ! [[ "$seconds" =~ ^[0-9]+$ ]]; then
-              printf 'unknown'
-              return
-            fi
-            if (( seconds < 1 )); then
-              printf '<1s'
-              return
-            fi
-            local minutes=$((seconds / 60))
-            local remainder=$((seconds % 60))
-            if (( minutes > 0 )); then
-              printf '%dm %02ds' "$minutes" "$remainder"
-            else
-              printf '%ds' "$remainder"
-            fi
-          }
-
-          format_delta() {
-            local current="$1"
-            local previous="$2"
-            if ! [[ "$current" =~ ^[0-9]+$ && "$previous" =~ ^[0-9]+$ ]]; then
-              printf 'n/a'
-              return
-            fi
-            local delta=$((current - previous))
-            if (( delta == 0 )); then
-              printf '±0s'
-            elif (( delta > 0 )); then
-              printf '+%s' "$(format_duration "$delta")"
-            else
-              printf -- '-%s' "$(format_duration "$((-delta))")"
-            fi
-          }
-
-          format_percent() {
-            local current="$1"
-            local previous="$2"
-            if ! [[ "$current" =~ ^[0-9]+$ && "$previous" =~ ^[1-9][0-9]*$ ]]; then
-              printf 'n/a'
-              return
-            fi
-            awk -v current="$current" -v previous="$previous" \
-              'BEGIN { printf "%+.1f%%", ((current - previous) / previous) * 100 }'
-          }
-
-          count_subscription() {
-            if [ -s "$1" ]; then
-              awk 'NF { count++ } END { print (count > 0 ? count - 1 : 0) }' "$1"
-            else
-              printf '0'
-            fi
-          }
-
-          all_count="$(count_subscription subscriptions/all.txt)"
-          light_count="$(count_subscription subscriptions/light.txt)"
-          all_b64_count="$all_count"
-          light_b64_count="$light_count"
-
-          xray_version="$XRAY_VERSION"
-          singbox_version="$SINGBOX_VERSION"
-          [ -n "$xray_version" ] || xray_version="unavailable"
-          [ -n "$singbox_version" ] || singbox_version="unavailable"
-
-          collect_elapsed="$COLLECT_ELAPSED"
-          light_elapsed="$LIGHT_ELAPSED"
-          generation_elapsed="$GENERATION_ELAPSED"
-          publish_elapsed="$PUBLISH_ELAPSED"
-
-          pipeline_elapsed=""
-          if [[ "$PIPELINE_STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
-            pipeline_elapsed="$(( $(date +%s) - PIPELINE_STARTED_EPOCH ))"
-          fi
-
-          previous_run_id=""
-          previous_collect=""
-          previous_light=""
-
-          if previous_runs="$(curl -fsSL \
-            --retry 3 \
-            --retry-delay 1 \
-            --retry-max-time 20 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_ID/runs?status=success&per_page=20")"; then
-            previous_run_id="$(jq -r --argjson current "$CURRENT_RUN_ID" \
-              '[.workflow_runs[] | select(.id != $current) | .id] | .[0] // empty' \
-              <<< "$previous_runs")"
-          fi
-
-          if [ -n "$previous_run_id" ]; then
-            if previous_jobs="$(curl -fsSL \
-              --retry 3 \
-              --retry-delay 1 \
-              --retry-max-time 20 \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$previous_run_id/jobs?per_page=100")"; then
-              previous_collect="$(jq -r '[.jobs[] | select(.name == "🔎 Collect & Validate") | select(.started_at != null and .completed_at != null) | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))][0] // empty' <<< "$previous_jobs")"
-              previous_light="$(jq -r '[.jobs[] | select(.name == "🔎 Collect & Validate") | .steps[] | select(.name == "💡 Build Light subscription") | select(.started_at != null and .completed_at != null) | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))][0] // empty' <<< "$previous_jobs")"
-            fi
-          fi
-
-          runtime_line="$(format_duration "$pipeline_elapsed")"
-          if [[ "$pipeline_elapsed" =~ ^[0-9]+$ && "$previous_collect" =~ ^[0-9]+$ ]]; then
-            benchmark_line="$(format_delta "$pipeline_elapsed" "$previous_collect") ($(format_percent "$pipeline_elapsed" "$previous_collect")) vs previous"
-          else
-            benchmark_line="previous run unavailable"
-          fi
-
-          collection_line="$(format_duration "$collect_elapsed")"
-          light_line="$(format_duration "$light_elapsed")"
-          generation_line="$(format_duration "$generation_elapsed")"
-          publish_line="$(format_duration "$publish_elapsed")"
-
-          collection_delta=""
-          light_delta=""
-          if [[ "$collect_elapsed" =~ ^[0-9]+$ && "$previous_collect" =~ ^[0-9]+$ ]]; then
-            collection_delta=" • $(format_delta "$collect_elapsed" "$previous_collect")"
-          fi
-          if [[ "$light_elapsed" =~ ^[0-9]+$ && "$previous_light" =~ ^[0-9]+$ ]]; then
-            light_delta=" • $(format_delta "$light_elapsed" "$previous_light")"
-          fi
-
-          {
-            echo "## 🔄 ProxyRift Update"
-            echo
-            echo "$status_icon $status_text"
-            echo
-            echo "📦 OUTPUTS"
-            printf 'ALL <code>%s</code>  •  LIGHT <code>%s</code>\n' "$all_count" "$light_count"
-            printf 'BASE64 <code>%s</code>  •  LIGHT-B64 <code>%s</code>\n' "$all_b64_count" "$light_b64_count"
-            echo
-            echo "⏱️ PERFORMANCE"
-            printf '<code>%s</code> total  •  %s\n' "$runtime_line" "$benchmark_line"
-            echo
-            echo "🔎 STAGES"
-            printf 'Collection       %s%s\n' "$collection_line" "$collection_delta"
-            printf 'Light            %s%s\n' "$light_line" "$light_delta"
-            printf 'Generation       %s\n' "$generation_line"
-            printf 'Publish          %s\n' "$publish_line"
-            echo
-            echo "🛡️ CORES"
-            printf 'XRAY      %s\n' "$xray_version"
-            printf 'SING-BOX  %s\n' "$singbox_version"
-            echo
-            echo "📈 RUN STATUS"
-            echo "$status_icon $status_text"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "🧹 Clean generated temporary files"
-        if: always()
-        run: |
-          rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
-          rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
   cleanup:
     name: "🧹 Cleanup Caches"
