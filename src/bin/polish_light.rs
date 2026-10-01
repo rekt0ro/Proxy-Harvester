@@ -1147,7 +1147,15 @@ fn light_training_features(
     };
 
     let security = if let Some(payload) = vmess.as_ref() {
-        if value_boolish(payload.get("tls").unwrap_or(&Value::Null)) {
+        let tls_enabled = match payload.get("tls") {
+            Some(Value::String(value)) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "tls" | "1" | "true" | "yes" | "on"
+            ),
+            Some(value) => value_boolish(value),
+            None => false,
+        };
+        if tls_enabled {
             "tls".to_string()
         } else {
             "none".to_string()
@@ -2033,7 +2041,7 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        merge_light_metadata, normalize_light_config, select_verified_configs,
+        light_training_features, merge_light_metadata, normalize_light_config, select_verified_configs,
         selection_eligible_count, transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
@@ -2361,6 +2369,31 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("uuid@example.com"))
         }));
+    }
+
+    #[test]
+    fn light_training_features_recognize_vmess_tls_string() {
+        let payload = serde_json::json!({
+            "v": "2",
+            "add": "example.com",
+            "port": "443",
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "ws",
+            "tls": "tls",
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        let config = format!("vmess://{encoded}");
+
+        let features = light_training_features(&config, None, 0.5, 0);
+
+        assert_eq!(
+            features.get("security").and_then(serde_json::Value::as_str),
+            Some("tls")
+        );
+        assert_eq!(
+            features.get("tls_enabled").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
