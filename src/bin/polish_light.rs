@@ -1954,7 +1954,9 @@ async fn main() -> Result<(), String> {
     );
 
     if selected.is_empty() {
-        return Err("selected Light validation produced no configs after the 10 MiB gate".to_string());
+        return Err(
+            "selected Light validation produced no configs after the 10 MiB gate".to_string(),
+        );
     }
 
     if selected.len() < selection_limit {
