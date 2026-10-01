@@ -29,15 +29,18 @@ impl IntelligenceModel {
             return Self::default();
         };
 
-        let mut model = Self::default();
-        model.total_attempts = value
-            .get("total_attempts")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        model.total_successes = value
-            .get("total_successes")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let mut model = Self {
+            total_attempts: value
+                .get("total_attempts")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            total_successes: value
+                .get("total_successes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            ..Self::default()
+        };
+        model.total_successes = model.total_successes.min(model.total_attempts);
 
         if let Some(features) = value.get("features").and_then(Value::as_object) {
             for (key, entry) in features {
