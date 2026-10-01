@@ -1610,6 +1610,54 @@ fn allocated_ports(count: usize) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
+fn split_hysteria2_endpoint_conflicts(
+    entries: &[(String, Value)],
+) -> Vec<Vec<(String, Value)>> {
+    let mut non_hysteria2 = Vec::new();
+    let mut groups = Vec::<(HashSet<(String, u16)>, Vec<(String, Value)>)>::new();
+
+    for entry in entries {
+        let scheme = scheme_of(clean(&entry.0));
+        if !matches!(scheme.as_str(), "hysteria2" | "hy2") {
+            non_hysteria2.push(entry.clone());
+            continue;
+        }
+
+        let Some(endpoint) = crate::validator::endpoint(&entry.0) else {
+            non_hysteria2.push(entry.clone());
+            continue;
+        };
+
+        if let Some((_, group)) = groups
+            .iter_mut()
+            .find(|(endpoints, _)| !endpoints.contains(&endpoint))
+        {
+            group.push(entry.clone());
+            continue;
+        }
+
+        let mut endpoints = HashSet::new();
+        endpoints.insert(endpoint);
+        groups.push((endpoints, vec![entry.clone()]));
+    }
+
+    if groups.is_empty() {
+        return vec![non_hysteria2];
+    }
+
+    let mut batches = Vec::with_capacity(groups.len());
+
+    if let Some((_, first_group)) = groups.first_mut() {
+        let mut batch = Vec::with_capacity(non_hysteria2.len() + first_group.len());
+        batch.append(&mut non_hysteria2);
+        batch.append(first_group);
+        batches.push(batch);
+    }
+
+    batches.extend(groups.into_iter().skip(1).map(|(_, group)| group));
+    batches
+}
+
 fn xray_config(entries: &[(String, Value)]) -> Result<(Value, Vec<u16>), String> {
     let ports = allocated_ports(entries.len())?;
     let mut inbounds = Vec::with_capacity(entries.len());
@@ -1923,6 +1971,19 @@ async fn check_batch(
         if batch_entries.is_empty() {
             continue;
         }
+
+        let split_batches = split_hysteria2_endpoint_conflicts(&batch_entries);
+        if split_batches.len() > 1 {
+            for split in split_batches.into_iter().rev() {
+                pending_batches.push(split);
+            }
+            continue;
+        }
+
+        let batch_entries = split_batches
+            .into_iter()
+            .next()
+            .expect("split helper always returns at least one batch");
 
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
@@ -2405,6 +2466,19 @@ async fn check_batch_targets(
             continue;
         }
 
+        let split_batches = split_hysteria2_endpoint_conflicts(&batch_entries);
+        if split_batches.len() > 1 {
+            for split in split_batches.into_iter().rev() {
+                pending_batches.push(split);
+            }
+            continue;
+        }
+
+        let batch_entries = split_batches
+            .into_iter()
+            .next()
+            .expect("split helper always returns at least one batch");
+
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
         let log_path = work.join("xray.log");
@@ -2755,6 +2829,54 @@ mod tests {
 
     #[tokio::test]
     async fn reuses_cached_xray_endpoint() {
+    #[test]
+    fn separates_hysteria2_configs_sharing_an_endpoint() {
+        let entries = vec![
+            (
+                "hy2://first@example.com:443".to_string(),
+                parse_config("hy2://first@example.com:443").unwrap(),
+            ),
+            (
+                "hy2://second@example.com:443".to_string(),
+                parse_config("hy2://second@example.com:443").unwrap(),
+            ),
+            (
+                "vless://00000000-0000-0000-0000-000000000001@example.net:443".to_string(),
+                parse_config(
+                    "vless://00000000-0000-0000-0000-000000000001@example.net:443",
+                )
+                .unwrap(),
+            ),
+        ];
+
+        let batches = split_hysteria2_endpoint_conflicts(&entries);
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].len(), 2);
+        assert_eq!(batches[1].len(), 1);
+        assert!(
+            batches[0]
+                .iter()
+                .filter(|(config, _)| matches!(
+                    scheme_of(clean(config)).as_str(),
+                    "hysteria2" | "hy2"
+                ))
+                .count()
+                <= 1
+        );
+        assert!(
+            batches[1]
+                .iter()
+                .filter(|(config, _)| matches!(
+                    scheme_of(clean(config)).as_str(),
+                    "hysteria2" | "hy2"
+                ))
+                .count()
+                <= 1
+        );
+    }
+
+
         let entries = vec![
             (
                 "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
