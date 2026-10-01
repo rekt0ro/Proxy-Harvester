@@ -455,8 +455,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
-    let (tcp_probe_cache, tcp_config_count, unique_tcp_endpoints) =
-        build_tcp_probe_cache(&configs);
+    let (tcp_probe_cache, tcp_config_count, unique_tcp_endpoints) = build_tcp_probe_cache(&configs);
     let non_tcp_transport_count = configs
         .iter()
         .filter(|config| {
