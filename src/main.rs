@@ -1574,6 +1574,20 @@ mod tests {
     use base64::Engine;
     use url::Url;
 
+    #[tokio::test]
+    async fn rejects_private_initial_source_addresses() {
+        let url = Url::parse("https://127.0.0.1/source").unwrap();
+        assert!(safe_source_client(&url).await.is_err());
+        let url = Url::parse("https://169.254.169.254/source").unwrap();
+        assert!(safe_source_client(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn accepts_public_initial_source_addresses() {
+        let url = Url::parse("https://93.184.216.34/source").unwrap();
+        assert!(safe_source_client(&url).await.is_ok());
+    }
+
     #[test]
     fn accepts_cross_host_https_source_redirect() {
         let current = Url::parse("https://example.com/source").unwrap();
