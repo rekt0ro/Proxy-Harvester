@@ -67,7 +67,7 @@ The **All** list uses the transport-reachable pool directly, then ranks and limi
 
 The **Light** list starts from transport-screened candidates and also retains Hysteria/Hysteria2 candidates for protocol-specific validation. Configurations that explicitly disable TLS certificate verification are excluded from Light.
 
-Light then goes through deeper validation using multiple targets, repeated stability checks, endpoint diversity, reliability, latency, jitter, and throughput. Every configuration published to Light must also pass a dedicated 10 MiB transfer gate. The transfer gate is adaptive and only tests candidates that have already survived the cheaper validation stages, stopping once enough qualifying configurations are available.
+Light then goes through deeper validation using multiple targets, repeated stability checks, endpoint diversity, reliability, latency, jitter, and throughput. Every configuration published to Light must pass a dedicated 10 MiB transfer gate, and Light publishes only when the full 200-config selection is available. The transfer stage is bounded and tuned to run as a final quality gate rather than repeatedly benchmarking the pool during discovery.
 
 **Xray** and **sing-box** are used for protocol-specific validation where appropriate before the final quality and diversity selection. The normal Light latency ceiling remains 1200 ms; the 10 MiB transfer gate uses a separate longer timeout so throughput is not confused with probe latency.
 
