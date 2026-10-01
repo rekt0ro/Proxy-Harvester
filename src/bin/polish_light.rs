@@ -421,34 +421,30 @@ fn diversify_recheck_candidates(
     max_family: usize,
 ) -> Vec<String> {
     let mut selected = Vec::new();
-    let mut deferred = Vec::new();
     let mut seen_endpoints = HashSet::new();
     let mut family_counts = HashMap::<String, usize>::new();
 
     for config in configs {
+        if selected.len() >= limit {
+            break;
+        }
+
         let family = family_key(config);
-        let family_available = family_counts.get(&family).copied().unwrap_or(0) < max_family;
+        let family_available =
+            family_counts.get(&family).copied().unwrap_or(0) < max_family;
         let endpoint_available = endpoint(config)
             .map(|ep| !seen_endpoints.contains(&ep))
             .unwrap_or(true);
 
-        if family_available && endpoint_available {
-            *family_counts.entry(family).or_default() += 1;
-            if let Some(ep) = endpoint(config) {
-                seen_endpoints.insert(ep);
-            }
-            selected.push(config.clone());
-        } else {
-            deferred.push(config.clone());
+        if !family_available || !endpoint_available {
+            continue;
         }
 
-        if selected.len() >= limit {
-            return selected;
+        *family_counts.entry(family).or_default() += 1;
+        if let Some(ep) = endpoint(config) {
+            seen_endpoints.insert(ep);
         }
-    }
-
-    if selected.len() < limit {
-        selected.extend(deferred.into_iter().take(limit - selected.len()));
+        selected.push(config.clone());
     }
 
     selected
@@ -1953,6 +1949,25 @@ mod tests {
 
         assert!(merged.contains_key("xray-only"));
         assert!(merged.contains_key("singbox-only"));
+    }
+
+    #[test]
+    fn recheck_diversity_limits_are_not_relaxed_by_fallback() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "vless://c@example.net:443".to_string(),
+        ];
+
+        let selected = super::diversify_recheck_candidates(&configs, 3, 1);
+
+        assert_eq!(
+            selected,
+            vec![
+                "vless://a@example.com:443".to_string(),
+                "vless://c@example.net:443".to_string(),
+            ]
+        );
     }
 
     #[test]
