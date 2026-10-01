@@ -506,18 +506,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         chunk_results.push((index, working));
     }
 
-    let mut ranked_working_configs = Vec::new();
-
     let reachable_probes = chunk_results
         .iter()
         .map(|(_, working)| working.len())
         .sum::<usize>();
 
     let mut ranked_working_configs = Vec::new();
-    let mut reachable_probes = 0usize;
 
     for (_, working) in chunk_results {
-        reachable_probes += working.len();
         ranked_working_configs.extend(working);
     }
 
