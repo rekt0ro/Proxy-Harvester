@@ -1,5 +1,5 @@
 use crate::validator::{
-    config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
+    adaptive_batch_size, config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
     read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
     ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES,
     MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
@@ -1790,7 +1790,7 @@ async fn validate_candidates_with_targets_policy(
         .iter()
         .map(|target| target.to_string())
         .collect::<Vec<_>>();
-    let batch_size = BATCH_SIZE.min(parsed.len()).max(1);
+    let batch_size = adaptive_batch_size(BATCH_SIZE, parsed.len(), workers);
     let total_batches = parsed.len().div_ceil(batch_size);
     let mut metadata = HashMap::new();
     let mut endpoint_cache = SingBoxEndpointCache::new();
