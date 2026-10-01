@@ -705,7 +705,7 @@ struct ValidationSettings {
 enum LightBackend {
     SingBox,
     Xray,
-    Dual,
+    Fallback,
 }
 
 fn query_value(url: &Url, names: &[&str]) -> String {
