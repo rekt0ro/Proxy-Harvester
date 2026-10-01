@@ -1,5 +1,6 @@
 use crate::validator::{
-    adaptive_batch_size, config_label, extend_rate_limit, is_throughput_target, rate_limit_wait,
+    adaptive_batch_size, config_label, extend_rate_limit, healthy_targets,
+    is_throughput_target, rate_limit_wait,
     read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit, ProxyMetrics,
     ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES,
     MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
@@ -1786,7 +1787,12 @@ async fn validate_candidates_with_targets_policy(
         return Ok(HashMap::new());
     }
 
-    let target_values = targets
+    let parsed_targets = targets
+        .iter()
+        .map(|target| Url::parse(target).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let parsed_targets = healthy_targets(&parsed_targets, MIN_SUCCESSFUL_TARGETS).await;
+    let target_values = parsed_targets
         .iter()
         .map(|target| target.to_string())
         .collect::<Vec<_>>();
