@@ -32,12 +32,12 @@ pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
-pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
-pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+pub const STRICT_STABILITY_ATTEMPTS: usize = 6;
+pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
 pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
-pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
-pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
-pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
+pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_secs(1);
+pub const STRICT_LATE_SUCCESS_STREAK: usize = 2;
+pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3];
 pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4017,6 +4017,16 @@ mod tests {
             config["streamSettings"]["tlsSettings"]["serverName"],
             "example.com"
         );
+    }
+
+    #[test]
+    fn strict_validation_policy_balances_reliability_and_runtime() {
+        assert_eq!(STRICT_STABILITY_ATTEMPTS, 6);
+        assert_eq!(STRICT_MIN_SUCCESSFUL_ATTEMPTS, 4);
+        assert_eq!(STRICT_MIN_SUCCESSFUL_TARGETS, 2);
+        assert_eq!(STRICT_INTER_ATTEMPT_DELAY, Duration::from_secs(1));
+        assert_eq!(STRICT_LATE_SUCCESS_STREAK, 2);
+        assert_eq!(STRICT_RECONNECT_AFTER_ATTEMPTS, &[3]);
     }
 
     #[test]
