@@ -1030,6 +1030,9 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
+    if !matches!(flow.as_str(), "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443") {
+        return Err(format!("unsupported VLESS flow: {flow}"));
+    }
     if !flow.is_empty() {
         user["flow"] = json!(flow);
     }
@@ -1614,6 +1617,14 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
                 if password.is_empty() {
                     return false;
                 }
+            }
+
+            let flow = first_query(&url, &["flow"], Some(""));
+            if !matches!(
+                flow.as_str(),
+                "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+            ) {
+                return false;
             }
 
             let transport =
