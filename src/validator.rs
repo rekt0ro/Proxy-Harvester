@@ -2087,7 +2087,7 @@ async fn check_batch(
     Ok(combined)
 }
 
-fn adaptive_batch_size(requested: usize, total: usize, workers: usize) -> usize {
+pub(crate) fn adaptive_batch_size(requested: usize, total: usize, workers: usize) -> usize {
     if total == 0 {
         return 1;
     }
