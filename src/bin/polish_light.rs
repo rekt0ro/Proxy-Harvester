@@ -1446,10 +1446,9 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
-        if let Some(message) = intelligence.anomaly_message(
-            final_attempts.values().copied().sum(),
-            final_metadata.len(),
-        ) {
+        if let Some(message) = intelligence
+            .anomaly_message(final_attempts.values().copied().sum(), final_metadata.len())
+        {
             println!("[WARN] {message}");
         }
 
