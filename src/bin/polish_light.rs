@@ -1371,8 +1371,13 @@ async fn main() -> Result<(), String> {
         )
         .len();
 
-        let strict_eligible =
-            selection_eligible_count(&final_verified, max_per_endpoint, max_per_family);
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
         let reserve_target = transfer_reserve_target(
             selection_limit,
             transfer_tested.len(),
@@ -1418,10 +1423,10 @@ async fn main() -> Result<(), String> {
             return Ok(());
         }
 
-        if strict_eligible >= reserve_target {
+        if strict_untested_eligible >= reserve_target {
             println!(
-                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | STRICT ELIGIBLE: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
-                strict_eligible, reserve_target, transfer_selected
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
+                strict_untested_eligible, reserve_target, transfer_selected
             );
 
             transfer_selected = fill_transfer_gate(
@@ -1564,39 +1569,51 @@ async fn main() -> Result<(), String> {
             max_per_family,
         );
 
-        let strict_eligible =
-            selection_eligible_count(&final_verified, max_per_endpoint, max_per_family);
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
         let reserve_target = transfer_reserve_target(
             selection_limit,
             transfer_tested.len(),
             transfer_verified.len(),
         );
+        let mut transfer_ranked_after = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked_after,
+            &transfer_verified,
+            &global_positions,
+            &history,
+        );
         let transfer_eligible =
-            selection_eligible_count(&transfer_ranked, max_per_endpoint, max_per_family);
+            selection_eligible_count(&transfer_ranked_after, max_per_endpoint, max_per_family);
         let transfer_slots_remaining = selection_limit.saturating_sub(transfer_eligible);
 
         println!(
-            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | STRICT ELIGIBLE: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
+            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | UNTESTED STRICT ELIGIBLE: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
             selected.len(),
             selection_limit,
-            strict_eligible,
+            strict_untested_eligible,
             transfer_eligible,
             transfer_slots_remaining,
             reserve_target,
             final_attempts.values().copied().sum::<usize>()
         );
 
-        if strict_eligible >= reserve_target {
+        if strict_untested_eligible >= reserve_target {
             println!(
-                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | STRICT ELIGIBLE: {} | RESERVE TARGET: {}",
-                strict_eligible, reserve_target
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {}",
+                strict_untested_eligible, reserve_target
             );
         } else {
             println!(
-                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | STRICT ELIGIBLE: {} | RESERVE TARGET: {} | NEED {} MORE",
-                strict_eligible,
+                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | NEED {} MORE",
+                strict_untested_eligible,
                 reserve_target,
-                reserve_target.saturating_sub(strict_eligible)
+                reserve_target.saturating_sub(strict_untested_eligible)
             );
         }
     }
