@@ -5,7 +5,7 @@ use proxyrift::singbox::{
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxyrift::validator::{
-    endpoint, read_lines, validate_candidates_with_targets,
+    endpoint, rate_limit_events, read_lines, validate_candidates_with_targets,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
     PRIMARY_TARGET,
 };
@@ -592,6 +592,7 @@ async fn fill_transfer_gate(
     max_per_endpoint: usize,
     max_per_family: usize,
 ) -> Result<usize, String> {
+    let mut transfer_workers = FINAL_TRANSFER_WORKERS;
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
         sort_ranked(
@@ -641,12 +642,25 @@ async fn fill_transfer_gate(
             batch.len()
         );
 
+        let rate_limits_before = rate_limit_events();
         let batch_started = Instant::now();
         let metadata =
-            validate_light_transfer_batch(xray, singbox, &batch, FINAL_TRANSFER_WORKERS).await?;
+            validate_light_transfer_batch(xray, singbox, &batch, transfer_workers).await?;
         let batch_elapsed = batch_started.elapsed().as_secs();
         let batch_passed = metadata.len();
         transfer_verified.extend(metadata);
+
+        let rate_limits_after = rate_limit_events();
+        let rate_limits = rate_limits_after.saturating_sub(rate_limits_before);
+        if rate_limits > 0 {
+            transfer_workers = (transfer_workers / 2).max(1);
+            println!(
+                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
+                rate_limits, transfer_workers
+            );
+        } else {
+            transfer_workers = (transfer_workers + 2).min(FINAL_TRANSFER_WORKERS);
+        }
 
         println!(
             "[INFO] ===== LIGHT TRANSFER BATCH COMPLETE: {}/{} PASSED IN {}s | {} TOTAL PASSED | {} SLOTS REMAINING =====",
