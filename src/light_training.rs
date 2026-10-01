@@ -257,7 +257,7 @@ mod tests {
             strict_pass,
             strict_checks: 1,
             transfer_tested: transfer_pass.is_some(),
-            transfer_pass: transfer_pass,
+            transfer_pass,
         }
     }
 
