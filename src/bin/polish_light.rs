@@ -71,13 +71,7 @@ fn selection_eligible_count(
     max_per_endpoint: usize,
     max_per_family: usize,
 ) -> usize {
-    select_verified_configs(
-        configs,
-        configs.len(),
-        max_per_endpoint,
-        max_per_family,
-    )
-    .len()
+    select_verified_configs(configs, configs.len(), max_per_endpoint, max_per_family).len()
 }
 
 fn transfer_reserve_target(
@@ -95,8 +89,8 @@ fn transfer_reserve_target(
         ((transfer_passed as f64 + 2.0) / (transfer_tested as f64 + 4.0)).clamp(0.60, 0.95)
     };
 
-    let estimated = ((selection_limit as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR)
-        .ceil() as usize;
+    let estimated =
+        ((selection_limit as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR).ceil() as usize;
     let minimum = selection_limit.saturating_add(TRANSFER_RESERVE_MIN_HEADROOM);
     let maximum = selection_limit.saturating_add(TRANSFER_RESERVE_MAX_HEADROOM);
 
@@ -1380,8 +1374,11 @@ async fn main() -> Result<(), String> {
 
         let strict_eligible =
             selection_eligible_count(&final_verified, max_per_endpoint, max_per_family);
-        let reserve_target =
-            transfer_reserve_target(selection_limit, transfer_tested.len(), transfer_verified.len());
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
 
         if transfer_selected >= selection_limit {
             println!(
@@ -1568,23 +1565,13 @@ async fn main() -> Result<(), String> {
             max_per_family,
         );
 
-        let fill_percent = selected
-            .len()
-            .saturating_mul(100)
-            .checked_div(selection_limit)
-            .unwrap_or(0);
-        println!(
-            "[INFO] 📈 [LIGHT FILL] {}/{} READY ({}%) | STRICT CHECKS: {}",
-            selected.len(),
-            selection_limit,
-            fill_percent,
-            final_attempts.values().copied().sum::<usize>()
-        );
-
         let strict_eligible =
             selection_eligible_count(&final_verified, max_per_endpoint, max_per_family);
-        let reserve_target =
-            transfer_reserve_target(selection_limit, transfer_tested.len(), transfer_verified.len());
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
         let transfer_eligible = selection_eligible_count(
             &transfer_verified.keys().cloned().collect::<Vec<_>>(),
             max_per_endpoint,
@@ -1741,9 +1728,8 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        merge_light_metadata, normalize_light_config, select_verified_configs, selection_eligible_count,
-        transfer_reserve_target, LightBackend,
-        ProxyMetrics,
+        merge_light_metadata, normalize_light_config, select_verified_configs,
+        selection_eligible_count, transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
