@@ -3,11 +3,11 @@ use base64::Engine;
 use proxyrift::intelligence::IntelligenceModel;
 use proxyrift::light_training::{persist as persist_light_training, DatasetStats, TrainingRow};
 use proxyrift::singbox::{
-    validate_candidates_with_targets as validate_singbox_targets,
+    validate_candidates_with_target_once as validate_singbox_target_once,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxyrift::validator::{
-    endpoint, rate_limit_events, read_lines, validate_candidates_with_targets,
+    endpoint, rate_limit_events, read_lines, validate_candidates_with_target_once,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
     PRIMARY_TARGET,
 };
@@ -1496,6 +1496,9 @@ async fn validate_light_batch(
 
     let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
         .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
+    let prefilter_target = *targets
+        .first()
+        .ok_or_else(|| "Light validation requires at least one target".to_string())?;
 
     let singbox_future = async {
         if singbox_validation_candidates.is_empty() {
@@ -1511,10 +1514,10 @@ async fn validate_light_batch(
             )
             .await
         } else {
-            validate_singbox_targets(
+            validate_singbox_target_once(
                 singbox,
                 &singbox_validation_candidates,
-                targets,
+                prefilter_target,
                 settings.workers.clamp(1, 40),
                 request_timeout,
                 settings.timeout_seconds * 1000.0,
@@ -1537,13 +1540,14 @@ async fn validate_light_batch(
             )
             .await
         } else {
-            validate_candidates_with_targets(
+            validate_candidates_with_target_once(
                 xray,
                 &xray_validation_candidates,
-                targets,
+                prefilter_target,
                 settings.workers.max(1),
                 settings.batch_size,
                 settings.timeout_seconds,
+                settings.timeout_seconds * 1000.0,
             )
             .await
         }
@@ -1574,13 +1578,14 @@ async fn validate_light_batch(
             )
             .await?
         } else {
-            validate_candidates_with_targets(
+            validate_candidates_with_target_once(
                 xray,
                 &fallback_retry,
-                targets,
+                prefilter_target,
                 settings.workers.max(1),
                 settings.batch_size,
                 settings.timeout_seconds,
+                settings.timeout_seconds * 1000.0,
             )
             .await?
         };
@@ -1589,11 +1594,16 @@ async fn validate_light_batch(
 
     let verified = merge_light_metadata(xray_metadata, singbox_metadata);
 
+    let stage = if settings.strict {
+        "VALIDATION"
+    } else {
+        "PREFILTER"
+    };
     println!(
-        "[INFO] ✅ [LIGHT VALIDATION] {}/{} CANDIDATES VERIFIED | TARGETS: {}",
+        "[INFO] ✅ [LIGHT {stage}] {}/{} CANDIDATES VERIFIED | TARGETS: {}",
         verified.len(),
         candidates.len(),
-        targets.len()
+        if settings.strict { targets.len() } else { 1 }
     );
 
     Ok(verified)

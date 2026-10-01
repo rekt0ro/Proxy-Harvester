@@ -438,20 +438,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut scheme_counts: HashMap<String, usize> = HashMap::new();
 
     for config in &configs {
-        *scheme_counts.entry(config_scheme(config)).or_insert(0usize) += 1;
+        let scheme = config_scheme(config);
+        let scheme = if scheme == "hy2" {
+            "hysteria2".to_string()
+        } else {
+            scheme
+        };
+
+        *scheme_counts.entry(scheme).or_insert(0usize) += 1;
     }
 
     let mut scheme_counts = scheme_counts.into_iter().collect::<Vec<_>>();
     scheme_counts.sort();
 
-    for chunk in scheme_counts.chunks(4) {
-        let summary = chunk
-            .iter()
-            .map(|(scheme, count)| format!("{} {count}", scheme.to_ascii_uppercase()))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        println!("[INFO] 📊 [PROTOCOLS] {summary}");
-    }
+    let summary = scheme_counts
+        .iter()
+        .map(|(scheme, count)| format!("{} {count}", scheme.to_ascii_uppercase()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    println!("[INFO] 📊 [PROTOCOLS] {summary}");
 
     let all_path = output_dir.join("all.txt");
 

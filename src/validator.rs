@@ -32,12 +32,12 @@ pub const MIN_RESPONSE_BYTES: usize = 1;
 pub const STABILITY_ATTEMPTS: usize = 3;
 pub const MIN_SUCCESSFUL_ATTEMPTS: usize = 2;
 pub const MIN_SUCCESSFUL_TARGETS: usize = 2;
-pub const STRICT_STABILITY_ATTEMPTS: usize = 8;
-pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 5;
+pub const STRICT_STABILITY_ATTEMPTS: usize = 6;
+pub const STRICT_MIN_SUCCESSFUL_ATTEMPTS: usize = 4;
 pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
-pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
-pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
-pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
+pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_secs(1);
+pub const STRICT_LATE_SUCCESS_STREAK: usize = 2;
+pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3];
 pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1030,6 +1030,12 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
+    if !matches!(
+        flow.as_str(),
+        "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+    ) {
+        return Err(format!("unsupported VLESS flow: {flow}"));
+    }
     if !flow.is_empty() {
         user["flow"] = json!(flow);
     }
@@ -1614,6 +1620,14 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
                 if password.is_empty() {
                     return false;
                 }
+            }
+
+            let flow = first_query(&url, &["flow"], Some(""));
+            if !matches!(
+                flow.as_str(),
+                "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+            ) {
+                return false;
             }
 
             let transport =
@@ -3802,6 +3816,19 @@ mod tests {
     }
 
     #[test]
+    fn cheap_compatibility_rejects_unsupported_vless_flow() {
+        assert!(!is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-legacy"
+        ));
+        assert!(is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision"
+        ));
+        assert!(is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-udp443"
+        ));
+    }
+
+    #[test]
     fn cheap_compatibility_rejects_hysteria2_without_password() {
         assert!(!is_cheaply_supported_config("hy2://example.com:443"));
     }
@@ -3848,6 +3875,20 @@ mod tests {
     fn local_compatibility_rejects_unsupported_vless_transport() {
         assert!(!is_locally_supported_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_unsupported_vless_flow() {
+        assert!(!is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision-legacy"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_accepts_supported_vless_flow() {
+        assert!(is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?flow=xtls-rprx-vision"
         ));
     }
 
@@ -3979,6 +4020,16 @@ mod tests {
     }
 
     #[test]
+    fn strict_validation_policy_balances_reliability_and_runtime() {
+        assert_eq!(STRICT_STABILITY_ATTEMPTS, 6);
+        assert_eq!(STRICT_MIN_SUCCESSFUL_ATTEMPTS, 4);
+        assert_eq!(STRICT_MIN_SUCCESSFUL_TARGETS, 2);
+        assert_eq!(STRICT_INTER_ATTEMPT_DELAY, Duration::from_secs(1));
+        assert_eq!(STRICT_LATE_SUCCESS_STREAK, 2);
+        assert_eq!(STRICT_RECONNECT_AFTER_ATTEMPTS, &[3]);
+    }
+
+    #[test]
     fn rejects_unsupported_grpc_mode() {
         let config =
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=grpc&serviceName=Tun&mode=guna";
@@ -4031,15 +4082,25 @@ mod tests {
     }
 
     #[test]
-    fn preserves_vless_flow_for_core_validation() {
-        let parsed = parse_vless(
+    fn rejects_vless_flow_unsupported_by_xray() {
+        let error = parse_vless(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-direct-udp443",
         )
-        .expect("VLESS flow should be preserved for core validation");
+        .expect_err("unsupported VLESS flow should be rejected");
+
+        assert!(error.contains("unsupported VLESS flow"));
+    }
+
+    #[test]
+    fn preserves_supported_vless_flow_for_core_validation() {
+        let parsed = parse_vless(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-vision",
+        )
+        .expect("supported VLESS flow should be preserved");
 
         assert_eq!(
             parsed["settings"]["vnext"][0]["users"][0]["flow"],
-            "xtls-rprx-direct-udp443"
+            "xtls-rprx-vision"
         );
     }
 }
