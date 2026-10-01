@@ -1665,9 +1665,7 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             }
             true
         }
-        "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => {
-            true
-        }
+        "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => true,
         _ => false,
     }
 }
