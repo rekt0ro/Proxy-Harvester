@@ -980,7 +980,7 @@ async fn validate_light_batch(
     }
 
     println!(
-        "[INFO] Light backend routing: Xray-only {}, sing-box {}, fallback {}.",
+        "[INFO] 🔄 [LIGHT ROUTING] XRAY-ONLY {} | SING-BOX {} | FALLBACK {}",
         xray_candidates.len(),
         singbox_candidates.len(),
         fallback_candidates.len()
@@ -1056,7 +1056,7 @@ async fn validate_light_batch(
 
     if !fallback_retry.is_empty() {
         println!(
-            "[INFO] Light backend fallback: retrying {} candidates with Xray after sing-box did not accept them.",
+            "[INFO] 🔄 [LIGHT FALLBACK] RETRYING {} CANDIDATES WITH XRAY"
             fallback_retry.len()
         );
         let fallback_xray = if settings.strict {
@@ -1086,7 +1086,7 @@ async fn validate_light_batch(
     let verified = merge_light_metadata(xray_metadata, singbox_metadata);
 
     println!(
-        "[INFO] Multi-target Light validation: {}/{} candidates verified across {} validation targets.",
+        "[INFO] ✅ [LIGHT VALIDATION] {}/{} CANDIDATES VERIFIED | {} VALIDATION TARGETS",
         verified.len(),
         candidates.len(),
         targets.len()
@@ -1203,7 +1203,7 @@ async fn main() -> Result<(), String> {
         let wave = chunk_index + 1;
 
         println!(
-            "[INFO] Global Light discovery {wave}/{chunk_count}: testing {} candidates; {} verified so far.",
+            "[INFO] 🔎 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | TESTING {} CANDIDATES | {} VERIFIED SO FAR",
             chunk.len(),
             global_verified.len()
         );
@@ -1309,7 +1309,7 @@ async fn main() -> Result<(), String> {
                 selected.len(),
             )?;
             println!(
-                "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; all published entries passed the 10 MiB gate.",
+                "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | ALL PASSED THE MANDATORY 10 MiB GATE",
                 selected.len()
             );
             return Ok(());
@@ -1347,7 +1347,7 @@ async fn main() -> Result<(), String> {
         }
 
         println!(
-            "[INFO] Strict recheck wave {wave}: testing {} candidates.",
+            "[INFO] 🔎 [LIGHT RECHECK] WAVE {wave} | TESTING {} CANDIDATES",
             final_candidates.len()
         );
 
@@ -1405,7 +1405,7 @@ async fn main() -> Result<(), String> {
 
         if selected.len() >= selection_limit {
             println!(
-                "[INFO] Light strict pool reached {} configs; starting the final 10 MiB gate immediately.",
+                "[INFO] 🎯 [LIGHT] STRICT POOL READY: {}/{} | STARTING 10 MiB TRANSFER GATE",
                 selected.len()
             );
 
@@ -1543,7 +1543,7 @@ async fn main() -> Result<(), String> {
     println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
     println!("[INFO] Light backend distribution: {:?}", backend_counts);
     println!(
-        "[INFO] Light quality-first selection: {} configs ready; no protocol quota.",
+        "[INFO] 🎯 [LIGHT SELECTION] {} CONFIGS READY | NO PROTOCOL QUOTA",
         selected.len()
     );
 
@@ -1556,7 +1556,7 @@ async fn main() -> Result<(), String> {
         &final_metadata,
     )?;
     println!(
-        "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; discovery candidates {}; strict checks {}; 10 MiB passes {}.",
+        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY {} | STRICT CHECKS {} | 10 MiB PASSES {}",
         selected.len(),
         candidates.len(),
         final_attempts.values().copied().sum::<usize>(),
