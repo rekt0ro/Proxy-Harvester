@@ -20,8 +20,8 @@ Each JSONL row contains:
 - `observation_id`: unique run/candidate observation identifier.
 - `observed_at`: Unix timestamp for the observation.
 - `run_id`: GitHub Actions run ID when available.
-- `candidate_fingerprint`: stable non-reversible candidate identity used for
-  linking observations without storing the raw proxy URL.
+- `candidate_fingerprint`: stable candidate identity used for linking
+  observations without storing the raw proxy URL.
 - `features`: values known before strict validation starts.
 - `label.strict_pass`: whether the candidate survived strict validation.
 - `label.strict_checks`: number of strict recheck rounds applied.
