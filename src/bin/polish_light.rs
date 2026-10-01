@@ -12,7 +12,7 @@ use proxyrift::validator::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 const DISCOVERY_CHUNK_SIZE: usize = 1000;
@@ -24,7 +24,8 @@ const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 const TRANSFER_SELECTION_HEADROOM: usize = 80;
-const FINAL_TRANSFER_BATCH_LIMIT: usize = 300;
+const FINAL_TRANSFER_BATCH_SIZE: usize = 32;
+const FINAL_TRANSFER_WORKERS: usize = 16;
 const FINAL_TRANSFER_TEST_LIMIT: usize = 600;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
@@ -590,7 +591,6 @@ async fn fill_transfer_gate(
     selection_limit: usize,
     max_per_endpoint: usize,
     max_per_family: usize,
-    workers: usize,
 ) -> Result<usize, String> {
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
@@ -623,17 +623,8 @@ async fn fill_transfer_gate(
         }
 
         let remaining = selection_limit.saturating_sub(selected.len());
-        let tested = transfer_tested.len();
-        let observed_rate = if tested < 20 {
-            0.60
-        } else {
-            ((transfer_verified.len() as f64 + 2.0) / (tested as f64 + 4.0)).clamp(0.05, 1.0)
-        };
-        let estimated = ((remaining as f64 / observed_rate) * 1.25).ceil() as usize;
-        let exploration_floor = remaining.saturating_mul(2).saturating_add(20);
-        let batch_limit = estimated
-            .max(exploration_floor)
-            .min(FINAL_TRANSFER_BATCH_LIMIT)
+        let batch_limit = remaining
+            .min(FINAL_TRANSFER_BATCH_SIZE)
             .min(FINAL_TRANSFER_TEST_LIMIT.saturating_sub(transfer_tested.len()))
             .max(1);
 
@@ -650,9 +641,26 @@ async fn fill_transfer_gate(
             batch.len()
         );
 
-        let metadata = validate_light_transfer_batch(xray, singbox, &batch, workers).await?;
-
+        let batch_started = Instant::now();
+        let metadata =
+            validate_light_transfer_batch(xray, singbox, &batch, FINAL_TRANSFER_WORKERS).await?;
+        let batch_elapsed = batch_started.elapsed().as_secs();
+        let batch_passed = metadata.len();
         transfer_verified.extend(metadata);
+
+        println!(
+            "[INFO] LIGHT TRANSFER: batch complete {}/{} passed in {}s; {} total passed; {} slots remaining.",
+            batch_passed,
+            batch.len(),
+            batch_elapsed,
+            transfer_verified.len(),
+            selection_limit.saturating_sub(select_verified_configs(
+                &transfer_verified.keys().cloned().collect::<Vec<_>>(),
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            ).len()),
+        );
     }
 }
 
@@ -1249,7 +1257,6 @@ async fn main() -> Result<(), String> {
                     selection_limit,
                     max_per_endpoint,
                     max_per_family,
-                    final_workers,
                 )
                 .await?
             } else {
@@ -1411,7 +1418,6 @@ async fn main() -> Result<(), String> {
                 selection_limit,
                 max_per_endpoint,
                 max_per_family,
-                final_workers,
             )
             .await?;
 
