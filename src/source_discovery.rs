@@ -670,10 +670,15 @@ fn likely_source_url(url: &str) -> bool {
     let extension_ok = SOURCE_EXTENSIONS
         .iter()
         .any(|extension| path.ends_with(extension));
+    let has_extension = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains('.'));
     let hint_ok = PATH_HINTS.iter().any(|hint| path.contains(hint));
 
-    extension_ok || hint_ok
+    extension_ok || (!has_extension && hint_ok)
 }
+
 
 fn is_source_path(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
@@ -685,10 +690,15 @@ fn is_source_path(path: &str) -> bool {
     let extension_ok = SOURCE_EXTENSIONS
         .iter()
         .any(|extension| lowered.ends_with(extension));
+    let has_extension = lowered
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains('.'));
     let hint_ok = PATH_HINTS.iter().any(|hint| lowered.contains(hint));
 
-    extension_ok || hint_ok
+    extension_ok || (!has_extension && hint_ok)
 }
+
 
 fn percent_encode(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -794,6 +804,8 @@ mod tests {
     fn recognizes_source_paths() {
         assert!(is_source_path("configs/vless.txt"));
         assert!(is_source_path("subscriptions/all.yaml"));
+        assert!(is_source_path("sub"));
+        assert!(!is_source_path("src/config.rs"));
         assert!(!is_source_path("src/main.rs"));
     }
 
