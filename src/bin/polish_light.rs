@@ -1877,13 +1877,6 @@ async fn main() -> Result<(), String> {
                 &global_positions,
                 &history,
             );
-            let transfer_selected_after = select_verified_configs(
-                &transfer_ranked_after,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            )
-            .len();
             let strict_untested_after = final_verified
                 .iter()
                 .filter(|config| !transfer_tested.contains(*config))
