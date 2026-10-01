@@ -1446,6 +1446,13 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
+        if let Some(message) = intelligence.anomaly_message(
+            final_attempts.values().copied().sum(),
+            final_metadata.len(),
+        ) {
+            println!("[WARN] {message}");
+        }
+
         sort_ranked(
             &mut final_verified,
             &final_metadata,
