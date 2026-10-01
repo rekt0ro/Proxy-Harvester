@@ -1210,21 +1210,21 @@ async fn main() -> Result<(), String> {
                 )
                 .await?
             } else {
-            let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
-            sort_ranked(
-                &mut transfer_ranked,
-                &transfer_verified,
-                &global_positions,
-                &history,
-            );
-            select_verified_configs(
-                &transfer_ranked,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            )
-            .len()
-        };
+                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+                sort_ranked(
+                    &mut transfer_ranked,
+                    &transfer_verified,
+                    &global_positions,
+                    &history,
+                );
+                select_verified_configs(
+                    &transfer_ranked,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                )
+                .len()
+            };
 
         if transfer_selected >= selection_limit {
             let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
