@@ -19,7 +19,7 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light.txt
 **Light · Base64**
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light_base64.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/light-base64.txt
 ```
 
 **All**
@@ -31,7 +31,7 @@ https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt
 **All · Base64**
 
 ```text
-https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all_base64.txt
+https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all-base64.txt
 ```
 
 ## ⚙️ Pipeline
