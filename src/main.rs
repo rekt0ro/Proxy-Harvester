@@ -333,7 +333,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
 
-                Vec::new()
             }
         })
         .buffer_unordered(DOWNLOAD_CONCURRENCY.min(sources.len()).max(1));
