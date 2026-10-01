@@ -38,7 +38,7 @@ pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
-pub const MAX_LATENCY_MS: f64 = 1200.0;
+pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TARGET_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1549,6 +1549,182 @@ fn parse_basic(config: &str) -> Result<Value, String> {
             "servers": [server],
         }
     }))
+}
+
+pub fn is_cheaply_supported_config(config: &str) -> bool {
+    let config = clean(config);
+    let scheme = scheme_of(config);
+
+    match scheme.as_str() {
+        "vless" | "trojan" => {
+            let Ok(url) = Url::parse(config) else {
+                return false;
+            };
+            if url.host().is_none() || url.port().is_none() || url.port() == Some(0) {
+                return false;
+            }
+
+            if scheme == "vless" && url.username().is_empty() {
+                return false;
+            }
+            if scheme == "trojan" {
+                let password = url
+                    .password()
+                    .filter(|password| !password.is_empty())
+                    .unwrap_or(url.username());
+                if password.is_empty() {
+                    return false;
+                }
+            }
+
+            let transport =
+                normalize_transport(&first_query(&url, &["type", "network"], Some("tcp")));
+            if !matches!(
+                transport.as_str(),
+                "raw" | "ws" | "http" | "grpc" | "httpupgrade" | "xhttp"
+            ) {
+                return false;
+            }
+
+            let security = first_query(&url, &["security"], Some("none"))
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            if !matches!(security.as_str(), "none" | "tls" | "t" | "tl" | "reality") {
+                return false;
+            }
+
+            if security == "reality"
+                && matches!(transport.as_str(), "raw" | "xhttp" | "grpc")
+                && first_query(&url, &["pbk", "publicKey"], Some("")).is_empty()
+            {
+                return false;
+            }
+
+            true
+        }
+        "hysteria" => {
+            let Ok(url) = Url::parse(config) else {
+                return false;
+            };
+            if url.host().is_none() || url.port().is_none() || url.port() == Some(0) {
+                return false;
+            }
+
+            let protocol = first_query(&url, &["protocol"], Some("udp"));
+            if !protocol.eq_ignore_ascii_case("udp") {
+                return false;
+            }
+
+            let parse_positive = |name: &str| {
+                first_query(&url, &[name], Some(""))
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|value| value > 0)
+            };
+            if !parse_positive("upmbps") || !parse_positive("downmbps") {
+                return false;
+            }
+
+            let obfs = first_query(&url, &["obfs"], Some("")).to_ascii_lowercase();
+            let obfs_param = first_query(&url, &["obfsparam"], Some(""));
+            if !obfs.is_empty() && obfs != "xplus" {
+                return false;
+            }
+            if obfs == "xplus" && obfs_param.trim().is_empty() {
+                return false;
+            }
+            if obfs.is_empty() && !obfs_param.trim().is_empty() {
+                return false;
+            }
+
+            true
+        }
+        "hysteria2" | "hy2" => {
+            let Some((host, _, auth_raw)) = hysteria2_parts(config) else {
+                return false;
+            };
+            !host.is_empty()
+                && percent_decode_str(&auth_raw)
+                    .decode_utf8()
+                    .map(|password| !password.is_empty())
+                    .unwrap_or(false)
+        }
+        "ss" => {
+            let Ok(url) = Url::parse(config) else {
+                return false;
+            };
+            if url
+                .query_pairs()
+                .any(|(key, value)| !supported_ss_plugin(&key, &value))
+            {
+                return false;
+            }
+            if url.password().is_some_and(str::is_empty) {
+                return false;
+            }
+            true
+        }
+        "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => true,
+        _ => false,
+    }
+}
+
+pub fn is_locally_supported_config(config: &str) -> bool {
+    let scheme = scheme_of(clean(config));
+
+    if scheme == "hysteria" {
+        let Ok(url) = Url::parse(clean(config)) else {
+            return false;
+        };
+        if endpoint(config).is_none() {
+            return false;
+        }
+
+        let protocol = first_query(&url, &["protocol"], Some("udp"));
+        if !protocol.eq_ignore_ascii_case("udp") {
+            return false;
+        }
+
+        let parse_positive = |name: &str| {
+            first_query(&url, &[name], Some(""))
+                .parse::<u32>()
+                .ok()
+                .is_some_and(|value| value > 0)
+        };
+
+        if !parse_positive("upmbps") || !parse_positive("downmbps") {
+            return false;
+        }
+
+        let obfs = first_query(&url, &["obfs"], Some("")).to_ascii_lowercase();
+        let obfs_param = first_query(&url, &["obfsparam"], Some(""))
+            .trim()
+            .to_string();
+        if !obfs.is_empty() && obfs != "xplus" {
+            return false;
+        }
+        if obfs == "xplus" && obfs_param.is_empty() {
+            return false;
+        }
+        if obfs.is_empty() && !obfs_param.is_empty() {
+            return false;
+        }
+
+        return true;
+    }
+
+    let Ok(parsed) = parse_config(config) else {
+        return false;
+    };
+
+    if scheme == "ss" {
+        return parsed["settings"]["servers"][0]["password"]
+            .as_str()
+            .is_some_and(|password| !password.is_empty());
+    }
+
+    true
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
@@ -3541,6 +3717,81 @@ mod tests {
         assert!(client_for_port(1080, f64::NAN, false).is_err());
         assert!(client_for_port(1080, 3.0, false).is_ok());
         assert!(timeout_duration(f64::MAX).is_err());
+    }
+
+    #[test]
+    fn cheap_compatibility_accepts_plain_vless_tcp() {
+        assert!(is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_unsupported_vless_transport() {
+        assert!(!is_cheaply_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_hysteria2_without_password() {
+        assert!(!is_cheaply_supported_config("hy2://example.com:443"));
+    }
+
+    #[test]
+    fn cheap_compatibility_preserves_trojan_username_fallback() {
+        assert!(is_cheaply_supported_config(
+            "trojan://user:@example.com:443?security=tls"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_keeps_passwordless_http_proxy() {
+        assert!(is_cheaply_supported_config(
+            "socks5://user@example.com:1080"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_accepts_plain_vless_tcp() {
+        assert!(is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_unsupported_vless_transport() {
+        assert!(!is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_hysteria2_without_password() {
+        assert!(!is_locally_supported_config("hy2://example.com:443"));
+    }
+
+    #[test]
+    fn local_compatibility_keeps_legacy_hysteria_for_special_handling() {
+        assert!(is_locally_supported_config(
+            "hysteria://example.com:443?upmbps=100&downmbps=100"
+        ));
+        assert!(!is_locally_supported_config(
+            "hysteria://example.com:443?protocol=tcp&upmbps=100&downmbps=100"
+        ));
+        assert!(!is_locally_supported_config(
+            "hysteria://example.com:443?upmbps=0&downmbps=100"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_empty_shadowsocks_password() {
+        assert!(!is_locally_supported_config(
+            "ss://aes-256-gcm:@example.com:8388"
+        ));
+        assert!(is_locally_supported_config(
+            "ss://aes-256-gcm:pass@example.com:8388"
+        ));
     }
 
     #[test]

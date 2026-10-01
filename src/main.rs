@@ -2,7 +2,10 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
-use proxyrift::validator::{config_label, endpoint, is_public_ip, resolve_public_host};
+use proxyrift::validator::{
+    config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
+    resolve_public_host,
+};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
@@ -410,11 +413,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut seen_keys = HashSet::new();
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
 
+    let before_cheap_compatibility = configs.len();
+    configs.retain(|config| is_cheaply_supported_config(config));
+    let cheaply_rejected = before_cheap_compatibility.saturating_sub(configs.len());
+    if cheaply_rejected > 0 {
+        println!(
+            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} COLLECTED CONFIGS BY CHEAP COMPATIBILITY SCREENING",
+            cheaply_rejected
+        );
+    }
+
     configs = assign_config_names(configs);
 
     let special_hysteria_candidates = configs
         .iter()
         .filter(|config| needs_core_validation_only(config))
+        .filter(|config| is_locally_supported_config(config))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -467,7 +481,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
-            "[WARN] ⚠️ No usable configs remained after transport-aware reachability screening."
+            "[WARN] ⚠️ No usable configs remained after transport-aware reachability and compatibility screening."
         );
 
         diagnose_configs(&configs).await;
