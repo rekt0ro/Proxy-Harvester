@@ -1246,7 +1246,7 @@ async fn main() -> Result<(), String> {
     let history_path = "subscriptions/light-history.json";
     let history = load_history(history_path)?;
     let intelligence_path = "subscriptions/light-ai.json";
-    let mut intelligence = IntelligenceModel::load(intelligence_path);
+    let intelligence = IntelligenceModel::load(intelligence_path);
 
     if candidates.is_empty() {
         return Err("no Light candidates available".to_string());
