@@ -1594,7 +1594,11 @@ async fn validate_light_batch(
 
     let verified = merge_light_metadata(xray_metadata, singbox_metadata);
 
-    let stage = if settings.strict { "VALIDATION" } else { "PREFILTER" };
+    let stage = if settings.strict {
+        "VALIDATION"
+    } else {
+        "PREFILTER"
+    };
     println!(
         "[INFO] ✅ [LIGHT {stage}] {}/{} CANDIDATES VERIFIED | TARGETS: {}",
         verified.len(),
