@@ -340,7 +340,7 @@ jobs:
           light_elapsed=$((SECONDS - light_started))
           set -e
           echo "LIGHT_ELAPSED=$light_elapsed" >> "$GITHUB_ENV"
-          echo "[INFO] ✅ [LIGHT] VALIDATION COMPLETE | $light_elapseds"
+          echo "[INFO] ✅ [LIGHT] VALIDATION COMPLETE | $light_elapsed"
 
           if [ "$status" -ne 0 ]; then
             echo "[WARN] ⚠️ [LIGHT] VALIDATION FAILED | PRESERVING PREVIOUS SUBSCRIPTION" >&2
