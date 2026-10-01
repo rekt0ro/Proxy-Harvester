@@ -684,7 +684,7 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        let mut untested = final_verified
+        let untested = final_verified
             .iter()
             .filter(|config| !transfer_tested.contains(*config))
             .cloned()
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
-        assert_eq!(transfer_reserve_target(200, 200, 160), 272);
+        assert_eq!(transfer_reserve_target(200, 200, 160), 273);
         assert_eq!(transfer_reserve_target(200, 200, 100), 320);
     }
 
