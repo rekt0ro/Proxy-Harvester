@@ -1571,11 +1571,8 @@ async fn main() -> Result<(), String> {
             transfer_tested.len(),
             transfer_verified.len(),
         );
-        let transfer_eligible = selection_eligible_count(
-            &transfer_verified.keys().cloned().collect::<Vec<_>>(),
-            max_per_endpoint,
-            max_per_family,
-        );
+        let transfer_eligible =
+            selection_eligible_count(&transfer_ranked, max_per_endpoint, max_per_family);
         let transfer_slots_remaining = selection_limit.saturating_sub(transfer_eligible);
 
         println!(
