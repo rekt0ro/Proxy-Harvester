@@ -105,14 +105,9 @@ fn selection_additional_potential_count(
     combined.extend_from_slice(selected);
     combined.extend_from_slice(candidates);
 
-    select_verified_configs(
-        &combined,
-        selection_limit,
-        max_per_endpoint,
-        max_per_family,
-    )
-    .len()
-    .saturating_sub(selected.len())
+    select_verified_configs(&combined, selection_limit, max_per_endpoint, max_per_family)
+        .len()
+        .saturating_sub(selected.len())
 }
 
 fn transfer_reserve_target(
