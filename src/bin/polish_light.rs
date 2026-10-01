@@ -1393,9 +1393,63 @@ async fn main() -> Result<(), String> {
 
         if selected.len() >= selection_limit {
             println!(
-                "[INFO] Light strict pool reached {} configs; deferring publication to the final 10 MiB gate.",
+                "[INFO] Light strict pool reached {} configs; starting the final 10 MiB gate immediately.",
                 selected.len()
             );
+
+            let transfer_selected = fill_transfer_gate(
+                &xray,
+                &singbox,
+                &final_verified,
+                &mut transfer_verified,
+                &mut transfer_tested,
+                &global_positions,
+                &history,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+                final_workers,
+            )
+            .await?;
+
+            if transfer_selected >= selection_limit {
+                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+                sort_ranked(
+                    &mut transfer_ranked,
+                    &transfer_verified,
+                    &global_positions,
+                    &history,
+                );
+                let selected = select_verified_configs(
+                    &transfer_ranked,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                );
+
+                persist_light_result(
+                    &output,
+                    &selected,
+                    history_path,
+                    &history,
+                    &final_attempts,
+                    &final_metadata,
+                )?;
+                write_light_stats(
+                    &stats_path,
+                    input_candidate_count,
+                    security_rejected,
+                    final_metadata.len(),
+                    transfer_tested.len(),
+                    transfer_verified.len(),
+                    selected.len(),
+                )?;
+                println!(
+                    "[INFO] Published {} Light configs after mandatory 10 MiB transfer validation; all published entries passed the 10 MiB gate.",
+                    selected.len()
+                );
+                return Ok(());
+            }
         }
     }
 
