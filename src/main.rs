@@ -114,7 +114,9 @@ async fn safe_source_client(current_url: &Url) -> Result<Client, &'static str> {
         builder = builder.resolve(host, SocketAddr::new(ip, port));
     }
 
-    builder.build().map_err(|_| "failed to build source HTTP client")
+    builder
+        .build()
+        .map_err(|_| "failed to build source HTTP client")
 }
 
 async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
@@ -1568,8 +1570,7 @@ mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
         normalize_config, parse_source_redirect, safe_source_client, safe_source_redirect,
-        select_all_candidates,
-        split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
+        select_all_candidates, split_concatenated_configs, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
