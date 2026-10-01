@@ -2041,8 +2041,9 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        light_training_features, merge_light_metadata, normalize_light_config, select_verified_configs,
-        selection_eligible_count, transfer_reserve_target, LightBackend, ProxyMetrics,
+        light_training_features, merge_light_metadata, normalize_light_config,
+        select_verified_configs, selection_eligible_count, transfer_reserve_target, LightBackend,
+        ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2391,7 +2392,9 @@ mod tests {
             Some("tls")
         );
         assert_eq!(
-            features.get("tls_enabled").and_then(serde_json::Value::as_bool),
+            features
+                .get("tls_enabled")
+                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
     }
