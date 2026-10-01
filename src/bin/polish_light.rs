@@ -855,7 +855,6 @@ async fn fill_transfer_gate(
     }
 }
 
-
 fn select_verified_configs(
     configs: &[String],
     limit: usize,
