@@ -655,13 +655,17 @@ async fn fill_transfer_gate(
         let rate_limits_after = rate_limit_events();
         let rate_limits = rate_limits_after.saturating_sub(rate_limits_before);
         if rate_limits >= 4 {
-            transfer_workers = transfer_workers.saturating_sub(4).max(FINAL_TRANSFER_MIN_WORKERS);
+            transfer_workers = transfer_workers
+                .saturating_sub(4)
+                .max(FINAL_TRANSFER_MIN_WORKERS);
             println!(
                 "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
                 rate_limits, transfer_workers
             );
         } else if rate_limits > 0 {
-            transfer_workers = transfer_workers.saturating_sub(2).max(FINAL_TRANSFER_MIN_WORKERS);
+            transfer_workers = transfer_workers
+                .saturating_sub(2)
+                .max(FINAL_TRANSFER_MIN_WORKERS);
             println!(
                 "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
                 rate_limits, transfer_workers
