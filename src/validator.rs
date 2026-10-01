@@ -1610,6 +1610,70 @@ fn allocated_ports(count: usize) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
+fn split_hysteria2_endpoint_conflicts(entries: &[(String, Value)]) -> Vec<Vec<(String, Value)>> {
+    let mut non_hysteria2 = Vec::new();
+    let mut groups = Vec::<(HashSet<(String, u16)>, Vec<(String, Value)>)>::new();
+
+    for entry in entries {
+        let scheme = scheme_of(clean(&entry.0));
+        if !matches!(scheme.as_str(), "hysteria2" | "hy2") {
+            non_hysteria2.push(entry.clone());
+            continue;
+        }
+
+        let endpoint = entry
+            .1
+            .get("settings")
+            .and_then(|settings| settings.get("address"))
+            .and_then(Value::as_str)
+            .zip(
+                entry
+                    .1
+                    .get("settings")
+                    .and_then(|settings| settings.get("port"))
+                    .and_then(Value::as_u64),
+            )
+            .and_then(|(host, port)| {
+                u16::try_from(port)
+                    .ok()
+                    .map(|port| (host.to_ascii_lowercase(), port))
+            });
+
+        let Some(endpoint) = endpoint else {
+            non_hysteria2.push(entry.clone());
+            continue;
+        };
+
+        if let Some((_, group)) = groups
+            .iter_mut()
+            .find(|(endpoints, _)| !endpoints.contains(&endpoint))
+        {
+            group.push(entry.clone());
+            continue;
+        }
+
+        let mut endpoints = HashSet::new();
+        endpoints.insert(endpoint);
+        groups.push((endpoints, vec![entry.clone()]));
+    }
+
+    if groups.is_empty() {
+        return vec![non_hysteria2];
+    }
+
+    let mut batches = Vec::with_capacity(groups.len());
+
+    if let Some((_, first_group)) = groups.first_mut() {
+        let mut batch = Vec::with_capacity(non_hysteria2.len() + first_group.len());
+        batch.append(&mut non_hysteria2);
+        batch.append(first_group);
+        batches.push(batch);
+    }
+
+    batches.extend(groups.into_iter().skip(1).map(|(_, group)| group));
+    batches
+}
+
 fn xray_config(entries: &[(String, Value)]) -> Result<(Value, Vec<u16>), String> {
     let ports = allocated_ports(entries.len())?;
     let mut inbounds = Vec::with_capacity(entries.len());
@@ -1924,6 +1988,19 @@ async fn check_batch(
             continue;
         }
 
+        let split_batches = split_hysteria2_endpoint_conflicts(&batch_entries);
+        if split_batches.len() > 1 {
+            for split in split_batches.into_iter().rev() {
+                pending_batches.push(split);
+            }
+            continue;
+        }
+
+        let batch_entries = split_batches
+            .into_iter()
+            .next()
+            .expect("split helper always returns at least one batch");
+
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
         let log_path = work.join("xray.log");
@@ -2121,9 +2198,13 @@ pub(crate) fn adaptive_batch_size(requested: usize, total: usize, workers: usize
     requested.max(1).min(worker_scaled).min(total).max(1)
 }
 
+fn target_status_is_healthy(status: u16) -> bool {
+    (200..300).contains(&status) && status != 429
+}
+
 pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
-    if targets.len() <= minimum {
-        return targets.to_vec();
+    if targets.is_empty() {
+        return Vec::new();
     }
 
     let client = match Client::builder()
@@ -2141,8 +2222,7 @@ pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url>
             let client = client.clone();
             async move {
                 let healthy = match client.get(target.as_str()).send().await {
-                    Ok(response) if response.status().as_u16() == 429 => true,
-                    Ok(response) => response.status().is_success(),
+                    Ok(response) => target_status_is_healthy(response.status().as_u16()),
                     Err(_) => false,
                 };
                 (target, healthy)
@@ -2155,10 +2235,14 @@ pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url>
     let healthy = checks
         .into_iter()
         .filter_map(|(target, healthy)| healthy.then_some(target))
-        .collect::<Vec<_>>();
+        .collect::<HashSet<_>>();
 
     if healthy.len() >= minimum {
-        healthy
+        targets
+            .iter()
+            .filter(|target| healthy.contains(*target))
+            .cloned()
+            .collect()
     } else {
         targets.to_vec()
     }
@@ -2404,6 +2488,19 @@ async fn check_batch_targets(
         if batch_entries.is_empty() {
             continue;
         }
+
+        let split_batches = split_hysteria2_endpoint_conflicts(&batch_entries);
+        if split_batches.len() > 1 {
+            for split in split_batches.into_iter().rev() {
+                pending_batches.push(split);
+            }
+            continue;
+        }
+
+        let batch_entries = split_batches
+            .into_iter()
+            .next()
+            .expect("split helper always returns at least one batch");
 
         let work = make_temp_dir()?;
         let config_path = work.join("xray.json");
@@ -2753,6 +2850,55 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
 
+    #[test]
+    fn separates_hysteria2_configs_sharing_an_endpoint() {
+        let entries = vec![
+            (
+                "hy2://first@example.com:443".to_string(),
+                parse_config("hy2://first@example.com:443").unwrap(),
+            ),
+            (
+                "hy2://second@example.com:443".to_string(),
+                parse_config("hy2://second@example.com:443").unwrap(),
+            ),
+            (
+                "vless://00000000-0000-0000-0000-000000000001@example.net:443".to_string(),
+                parse_config("vless://00000000-0000-0000-0000-000000000001@example.net:443")
+                    .unwrap(),
+            ),
+        ];
+
+        let mut aliased_entries = entries.clone();
+        aliased_entries[0].1["settings"]["address"] = Value::String("203.0.113.10".to_string());
+        aliased_entries[1].1["settings"]["address"] = Value::String("203.0.113.10".to_string());
+
+        let batches = split_hysteria2_endpoint_conflicts(&aliased_entries);
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].len(), 2);
+        assert_eq!(batches[1].len(), 1);
+        assert_eq!(
+            batches[0]
+                .iter()
+                .filter(|(config, _)| matches!(
+                    scheme_of(clean(config)).as_str(),
+                    "hysteria2" | "hy2"
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            batches[1]
+                .iter()
+                .filter(|(config, _)| matches!(
+                    scheme_of(clean(config)).as_str(),
+                    "hysteria2" | "hy2"
+                ))
+                .count(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn reuses_cached_xray_endpoint() {
         let entries = vec![
@@ -2796,6 +2942,15 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn target_health_rejects_rate_limits_and_failures() {
+        assert!(target_status_is_healthy(200));
+        assert!(target_status_is_healthy(204));
+        assert!(!target_status_is_healthy(429));
+        assert!(!target_status_is_healthy(500));
+        assert!(!target_status_is_healthy(404));
     }
 
     #[test]
