@@ -1030,7 +1030,10 @@ fn parse_vless(config: &str) -> Result<Value, String> {
         "encryption": first_query(&url, &["encryption"], Some("none")),
     });
     let flow = first_query(&url, &["flow"], Some(""));
-    if !matches!(flow.as_str(), "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443") {
+    if !matches!(
+        flow.as_str(),
+        "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+    ) {
         return Err(format!("unsupported VLESS flow: {flow}"));
     }
     if !flow.is_empty() {
