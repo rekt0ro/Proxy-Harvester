@@ -2196,6 +2196,10 @@ pub(crate) fn adaptive_batch_size(requested: usize, total: usize, workers: usize
     requested.max(1).min(worker_scaled).min(total).max(1)
 }
 
+fn target_status_is_healthy(status: u16) -> bool {
+    (200..300).contains(&status) && status != 429
+}
+
 pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
     if targets.is_empty() {
         return Vec::new();
@@ -2216,7 +2220,7 @@ pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url>
             let client = client.clone();
             async move {
                 let healthy = match client.get(target.as_str()).send().await {
-                    Ok(response) => response.status().is_success() && response.status().as_u16() != 429,
+                    Ok(response) => target_status_is_healthy(response.status().as_u16()),
                     Err(_) => false,
                 };
                 (target, healthy)
@@ -2938,6 +2942,15 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn target_health_rejects_rate_limits_and_failures() {
+        assert!(target_status_is_healthy(200));
+        assert!(target_status_is_healthy(204));
+        assert!(!target_status_is_healthy(429));
+        assert!(!target_status_is_healthy(500));
+        assert!(!target_status_is_healthy(404));
     }
 
     #[test]
