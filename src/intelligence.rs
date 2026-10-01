@@ -48,9 +48,13 @@ impl IntelligenceModel {
                     .unwrap_or(0)
                     .min(attempts);
                 if attempts > 0 {
-                    model
-                        .features
-                        .insert(key.clone(), FeatureStats { attempts, successes });
+                    model.features.insert(
+                        key.clone(),
+                        FeatureStats {
+                            attempts,
+                            successes,
+                        },
+                    );
                 }
             }
         }
@@ -138,8 +142,8 @@ impl IntelligenceModel {
         }
 
         let observed = successes as f64 / attempts as f64;
-        let expected = (self.total_successes as f64 + 2.0)
-            / (self.total_attempts as f64 + 4.0);
+        let expected =
+            (self.total_successes as f64 + 2.0) / (self.total_attempts as f64 + 4.0);
 
         if (observed - expected).abs() < 0.20 {
             return None;
@@ -185,8 +189,6 @@ fn feature_key(config: &str, metrics: Option<&ProxyMetrics>) -> String {
 
     format!("{scheme}|latency:{latency_bucket}")
 }
-
-
 #[cfg(test)]
 mod tests {
     use super::IntelligenceModel;
@@ -228,12 +230,7 @@ mod tests {
     fn learned_score_can_be_trained_without_external_services() {
         let mut model = IntelligenceModel::default();
         for _ in 0..60 {
-            model.update(
-                "vless://a@example.com:443",
-                Some(&metrics(50.0)),
-                1,
-                true,
-            );
+            model.update("vless://a@example.com:443", Some(&metrics(50.0)), 1, true);
         }
         for _ in 0..60 {
             model.update(
