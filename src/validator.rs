@@ -4072,15 +4072,25 @@ mod tests {
     }
 
     #[test]
-    fn preserves_vless_flow_for_core_validation() {
-        let parsed = parse_vless(
+    fn rejects_vless_flow_unsupported_by_xray() {
+        let error = parse_vless(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-direct-udp443",
         )
-        .expect("VLESS flow should be preserved for core validation");
+        .expect_err("unsupported VLESS flow should be rejected");
+
+        assert!(error.contains("unsupported VLESS flow"));
+    }
+
+    #[test]
+    fn preserves_supported_vless_flow_for_core_validation() {
+        let parsed = parse_vless(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&flow=xtls-rprx-vision",
+        )
+        .expect("supported VLESS flow should be preserved");
 
         assert_eq!(
             parsed["settings"]["vnext"][0]["users"][0]["flow"],
-            "xtls-rprx-direct-udp443"
+            "xtls-rprx-vision"
         );
     }
 }
