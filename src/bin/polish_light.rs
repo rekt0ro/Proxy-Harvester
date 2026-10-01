@@ -574,6 +574,7 @@ async fn validate_light_transfer_batch(
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
     singbox: &str,
