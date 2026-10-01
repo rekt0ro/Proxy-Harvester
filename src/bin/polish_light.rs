@@ -1769,7 +1769,7 @@ async fn main() -> Result<(), String> {
             max_per_endpoint,
             max_per_family,
         );
-        let transfer_selected = transfer_selected_configs.len();
+        let mut transfer_selected = transfer_selected_configs.len();
 
         let strict_untested = final_verified
             .iter()
