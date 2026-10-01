@@ -111,8 +111,8 @@ fn transfer_reserve_target(
         ((transfer_passed as f64 + 2.0) / (transfer_tested as f64 + 4.0)).clamp(0.60, 0.95)
     };
 
-    let estimated = ((remaining as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR)
-        .ceil() as usize;
+    let estimated =
+        ((remaining as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR).ceil() as usize;
     let minimum = remaining.saturating_add(8);
     let maximum = remaining.saturating_add(TRANSFER_RESERVE_MAX_HEADROOM);
 
