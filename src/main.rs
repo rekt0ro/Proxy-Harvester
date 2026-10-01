@@ -320,10 +320,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         unique.extend(configs);
     }
 
-    if let Ok(mut warnings) = Arc::try_unwrap(source_http_warnings)
-        .map_err(|_| ())
-        .and_then(|mutex| mutex.into_inner().map_err(|_| ()))
-    {
+    let mut warnings = source_http_warnings
+        .lock()
+        .map(|warnings| warnings.clone())
+        .unwrap_or_default();
+
+    if !warnings.is_empty() {
         warnings.sort_unstable();
 
         let mut grouped = HashMap::<u16, Vec<usize>>::new();
