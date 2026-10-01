@@ -469,7 +469,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .saturating_sub(sampled_transport_count);
 
     println!(
-        "[INFO] 🧠 [LIGHT] CANDIDATE SAMPLING | {} TRANSPORT-REACHABLE | {} HYSTERIA/HYSTERIA2 RETAINED",
+        "[INFO] 🧠 [LIGHT INTELLIGENCE] PRIORITIZING {} CANDIDATES | {} HYSTERIA/HYSTERIA2 RETAINED",
         sampled_transport_count,
         special_count
     );
