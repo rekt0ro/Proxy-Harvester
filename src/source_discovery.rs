@@ -255,12 +255,28 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
 
-    let mut repos = search_repositories(&client, token.as_deref()).await?;
+    let mut repos = match search_repositories(&client, token.as_deref()).await {
+        Ok(repos) => repos,
+        Err(error) => {
+            if registry.active_urls().is_empty() {
+                return Err(error);
+            }
+
+            println!(
+                "[WARN] 🔭 [DISCOVERY] GitHub search unavailable: {error}; using the persisted registry"
+            );
+            Vec::new()
+        }
+    };
     repos.sort();
     repos.dedup();
     repos.truncate(MAX_DISCOVERY_REPOS);
 
-    let mut discovered = discover_from_repos(&client, &repos).await?;
+    let mut discovered = if repos.is_empty() {
+        Vec::new()
+    } else {
+        discover_from_repos(&client, &repos).await?
+    };
     let mut unique = HashMap::<String, Candidate>::new();
 
     for candidate in discovered.drain(..) {
