@@ -349,9 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            println!(
-                "[WARN] ⚠️ [SOURCES] HTTP {status_code} {reason} | SOURCES: {sources}"
-            );
+            println!("[WARN] ⚠️ [SOURCES] HTTP {status_code} {reason} | SOURCES: {sources}");
         }
     }
 
