@@ -189,8 +189,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 };
 
-                for redirect_count in 0..=MAX_SOURCE_REDIRECTS {
-                    let mut attempt = 0usize;
+                let mut redirect_count = 0usize;
+                let mut attempt = 0usize;
+                loop {
                     loop {
                         match client.get(current_url.clone()).send().await {
                         Ok(response) => {
@@ -231,6 +232,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             MAX_SOURCE_REDIRECTS
                                         );
                                         current_url = next_url;
+                                        redirect_count += 1;
+                                        attempt = 0;
                                         continue;
                                     }
 
@@ -327,7 +330,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 "[WARN] Failed to download source #{source_number}: {error}"
                             );
                             return Vec::new();
-                        }
                         }
                     }
                 }
