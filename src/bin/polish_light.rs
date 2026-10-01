@@ -1056,7 +1056,7 @@ async fn validate_light_batch(
 
     if !fallback_retry.is_empty() {
         println!(
-            "[INFO] 🔄 [LIGHT FALLBACK] RETRYING {} CANDIDATES WITH XRAY"
+            "[INFO] 🔄 [LIGHT FALLBACK] RETRYING {} CANDIDATES WITH XRAY",
             fallback_retry.len()
         );
         let fallback_xray = if settings.strict {
@@ -1406,7 +1406,8 @@ async fn main() -> Result<(), String> {
         if selected.len() >= selection_limit {
             println!(
                 "[INFO] 🎯 [LIGHT] STRICT POOL READY: {}/{} | STARTING 10 MiB TRANSFER GATE",
-                selected.len()
+                selected.len(),
+                selection_limit
             );
 
             let transfer_selected = fill_transfer_gate(
