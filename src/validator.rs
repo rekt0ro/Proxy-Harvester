@@ -45,7 +45,7 @@ pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
 pub const RATE_LIMIT_MIN_WAIT: Duration = Duration::from_secs(1);
 pub const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(300);
 
-static RATE_LIMIT_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+static RATE_LIMIT_EVENTS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct ProxyMetrics {
@@ -1749,33 +1749,17 @@ pub(crate) fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Duration 
         .min(RATE_LIMIT_MAX_WAIT)
 }
 
-pub(crate) fn extend_rate_limit(wait: Duration) {
-    let wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
-    let target = unix_now_ms().saturating_add(wait_ms);
-    let mut current = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
+pub(crate) fn extend_rate_limit(_wait: Duration) {
+    RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
+}
 
-    while target > current {
-        match RATE_LIMIT_UNTIL_MS.compare_exchange_weak(
-            current,
-            target,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => break,
-            Err(observed) => current = observed,
-        }
-    }
+pub(crate) fn rate_limit_events() -> u64 {
+    RATE_LIMIT_EVENTS.load(Ordering::Acquire)
 }
 
 pub(crate) async fn wait_for_rate_limit() {
-    loop {
-        let now = unix_now_ms();
-        let until = RATE_LIMIT_UNTIL_MS.load(Ordering::Acquire);
-        if until <= now {
-            return;
-        }
-        sleep(Duration::from_millis(until - now)).await;
-    }
+    // Rate limits are handled per request. A 429 must not freeze every
+    // concurrent validator in the process behind one global cooldown.
 }
 
 pub(crate) fn timeout_duration(seconds: f64) -> Result<Duration, String> {
