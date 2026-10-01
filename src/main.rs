@@ -387,7 +387,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
-        println!("[WARN] ⚠️ No usable configs remained after transport-aware reachability screening.");
+        println!(
+            "[WARN] ⚠️ No usable configs remained after transport-aware reachability screening."
+        );
 
         diagnose_configs(&configs).await;
         return Err("no usable configs remained after transport-aware screening".into());
