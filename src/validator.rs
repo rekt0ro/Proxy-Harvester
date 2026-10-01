@@ -1595,18 +1595,17 @@ pub fn is_locally_supported_config(config: &str) -> bool {
         return true;
     }
 
-    if matches!(
-        scheme.as_str(),
-        "http" | "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
-    ) {
-        if let Ok(url) = Url::parse(clean(config)) {
-            if !url.username().is_empty() && url.password().is_none() {
-                return false;
-            }
-        }
+    let Ok(parsed) = parse_config(config) else {
+        return false;
+    };
+
+    if scheme == "ss" {
+        return parsed["settings"]["servers"][0]["password"]
+            .as_str()
+            .is_some_and(|password| !password.is_empty());
     }
 
-    parse_config(config).is_ok()
+    true
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
@@ -3634,13 +3633,12 @@ mod tests {
     }
 
     #[test]
-    fn local_compatibility_rejects_basic_proxy_without_password() {
+    fn local_compatibility_rejects_empty_shadowsocks_password() {
         assert!(!is_locally_supported_config(
-            "socks5://user@example.com:1080"
+            "ss://aes-256-gcm:@example.com:8388"
         ));
-        assert!(!is_locally_supported_config("http://user@example.com:8080"));
         assert!(is_locally_supported_config(
-            "socks5://user:pass@example.com:1080"
+            "ss://aes-256-gcm:pass@example.com:8388"
         ));
     }
 
