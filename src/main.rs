@@ -198,7 +198,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut source_results = stream::iter(sources.iter().cloned().enumerate())
         .map(|(source_index, url)| {
-            let client = client.clone();
             let source_http_warnings = Arc::clone(&source_http_warnings);
 
             async move {
