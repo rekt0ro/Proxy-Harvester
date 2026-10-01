@@ -77,6 +77,10 @@ fn persist_at(path: &str, rows: &[TrainingRow], now: u64) -> Result<DatasetStats
 
     let mut new_rows = 0usize;
     for row in rows {
+        if row.observed_at.saturating_add(RETENTION_SECS) < now {
+            continue;
+        }
+
         let value = row.to_value();
         if by_id.insert(row.observation_id.clone(), value).is_none() {
             new_rows += 1;
