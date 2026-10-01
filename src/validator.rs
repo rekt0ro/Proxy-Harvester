@@ -2100,7 +2100,7 @@ pub(crate) fn adaptive_batch_size(requested: usize, total: usize, workers: usize
     requested.max(1).min(worker_scaled).min(total).max(1)
 }
 
-async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
+pub(crate) async fn healthy_targets(targets: &[Url], minimum: usize) -> Vec<Url> {
     if targets.len() <= minimum {
         return targets.to_vec();
     }
