@@ -552,6 +552,10 @@ async fn validate_light_transfer_batch(
     let singbox_metadata = singbox_result?;
     let mut xray_metadata = xray_result?;
 
+    // Fallback candidates are intentionally sent to sing-box first. A candidate
+    // already accepted by sing-box is finished; only the ones not accepted there
+    // are retried through Xray. No candidate is intentionally validated by both
+    // cores once the first supported core has accepted it.
     let fallback_retry = fallback_candidates
         .into_iter()
         .filter(|config| !singbox_metadata.contains_key(config))
@@ -704,8 +708,11 @@ struct ValidationSettings {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LightBackend {
+    // Default backend for configurations not known to require Xray.
     SingBox,
+    // Direct route for configurations with known Xray-specific features.
     Xray,
+    // Ambiguous/feature-sensitive route: try sing-box first, then Xray only if sing-box does not accept it.
     Fallback,
 }
 
@@ -927,6 +934,8 @@ fn light_backend(config: &str) -> LightBackend {
         }
     }
 
+    // Plain Reality is feature-sensitive: let sing-box have the first attempt,
+    // then fall back to Xray only when sing-box does not accept the candidate.
     if security == "reality" {
         return LightBackend::Fallback;
     }
@@ -963,9 +972,9 @@ async fn validate_light_batch(
     }
 
     println!(
-        "[INFO] Light backend routing: sing-box {}, Xray {}, fallback {}.",
-        singbox_candidates.len(),
+        "[INFO] Light backend routing: Xray-only {}, sing-box {}, fallback {}.",
         xray_candidates.len(),
+        singbox_candidates.len(),
         fallback_candidates.len()
     );
 
