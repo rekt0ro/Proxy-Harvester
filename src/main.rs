@@ -2,7 +2,9 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
-use proxyrift::validator::{config_label, endpoint, is_public_ip, resolve_public_host};
+use proxyrift::validator::{
+    config_label, endpoint, is_locally_supported_config, is_public_ip, resolve_public_host,
+};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
@@ -415,6 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let special_hysteria_candidates = configs
         .iter()
         .filter(|config| needs_core_validation_only(config))
+        .filter(|config| is_locally_supported_config(config))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -465,9 +468,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ranked_working_configs.extend(working);
     }
 
+    let reachable_before_filter = ranked_working_configs.len();
+    ranked_working_configs.retain(|(config, _)| is_locally_supported_config(config));
+    let locally_rejected = reachable_before_filter.saturating_sub(ranked_working_configs.len());
+    if locally_rejected > 0 {
+        println!(
+            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} TRANSPORT-REACHABLE CONFIGS WITH LOCAL PARSER/BACKEND ERRORS",
+            locally_rejected
+        );
+    }
+
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
-            "[WARN] ⚠️ No usable configs remained after transport-aware reachability screening."
+            "[WARN] ⚠️ No usable configs remained after transport-aware reachability and compatibility screening."
         );
 
         diagnose_configs(&configs).await;

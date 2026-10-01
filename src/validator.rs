@@ -38,7 +38,7 @@ pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_millis(2500);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 3;
 pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3, 6];
-pub const MAX_LATENCY_MS: f64 = 1200.0;
+pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TARGET_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1549,6 +1549,27 @@ fn parse_basic(config: &str) -> Result<Value, String> {
             "servers": [server],
         }
     }))
+}
+
+pub fn is_locally_supported_config(config: &str) -> bool {
+    let scheme = scheme_of(clean(config));
+
+    if scheme == "hysteria" {
+        return true;
+    }
+
+    if matches!(
+        scheme.as_str(),
+        "http" | "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
+    ) {
+        if let Ok(url) = Url::parse(clean(config)) {
+            if !url.username().is_empty() && url.password().is_none() {
+                return false;
+            }
+        }
+    }
+
+    parse_config(config).is_ok()
 }
 
 pub(crate) fn parse_config(config: &str) -> Result<Value, String> {
@@ -3541,6 +3562,43 @@ mod tests {
         assert!(client_for_port(1080, f64::NAN, false).is_err());
         assert!(client_for_port(1080, 3.0, false).is_ok());
         assert!(timeout_duration(f64::MAX).is_err());
+    }
+
+    #[test]
+    fn local_compatibility_accepts_plain_vless_tcp() {
+        assert!(is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_unsupported_vless_transport() {
+        assert!(!is_locally_supported_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?type=madeup"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_hysteria2_without_password() {
+        assert!(!is_locally_supported_config("hy2://example.com:443"));
+    }
+
+    #[test]
+    fn local_compatibility_keeps_legacy_hysteria_for_special_handling() {
+        assert!(is_locally_supported_config(
+            "hysteria://example.com:443?upmbps=100&downmbps=100"
+        ));
+    }
+
+    #[test]
+    fn local_compatibility_rejects_basic_proxy_without_password() {
+        assert!(!is_locally_supported_config(
+            "socks5://user@example.com:1080"
+        ));
+        assert!(!is_locally_supported_config("http://user@example.com:8080"));
+        assert!(is_locally_supported_config(
+            "socks5://user:pass@example.com:1080"
+        ));
     }
 
     #[test]
