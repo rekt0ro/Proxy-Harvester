@@ -19,7 +19,6 @@ jobs:
   collect:
     name: "🔎 Collect & Validate"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     outputs:
       rust_toolchain_key: ${{ steps.keys.outputs.rust-toolchain }}
       registry_key: ${{ steps.keys.outputs.registry }}
@@ -308,13 +307,11 @@ jobs:
         env:
           LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_MIN_PUBLISH: "200"
-          LIGHT_BUILD_TIMEOUT_MINUTES: "10"
         run: |
           mkdir -p /tmp/proxyrift
           echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
           light_started=$SECONDS
-          set +e
-          timeout --foreground "${LIGHT_BUILD_TIMEOUT_MINUTES}m" ./target/release/polish_light \
+          ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxyrift/light.next.txt \
             --workers 48 \
@@ -330,9 +327,7 @@ jobs:
             --max-per-endpoint 1 \
             --max-per-family 3 \
             --stats /tmp/proxyrift/light-stats.json
-          status=$?
           light_elapsed=$((SECONDS - light_started))
-          set -e
           echo "Light validation elapsed: ${light_elapsed}s"
 
           if [ "$status" -ne 0 ]; then
