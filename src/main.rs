@@ -297,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Vec::new()
             }
         })
-        .buffer_unordered(DOWNLOAD_CONCURRENCY);
+        .buffer_unordered(DOWNLOAD_CONCURRENCY.min(sources.len()).max(1));
 
     while let Some(configs) = source_results.next().await {
         unique.extend(configs);
@@ -340,9 +340,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
+    let transport_chunk_count = configs.len().div_ceil(CHUNK_SIZE);
+    let test_concurrency = TEST_CONCURRENCY.min(transport_chunk_count).max(1);
+
     let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
         .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
-        .buffer_unordered(TEST_CONCURRENCY)
+        .buffer_unordered(test_concurrency)
         .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
         .await?;
 
