@@ -1390,10 +1390,16 @@ async fn main() -> Result<(), String> {
             max_per_family,
         );
 
+        let fill_percent = if selection_limit == 0 {
+            0
+        } else {
+            selected.len().saturating_mul(100) / selection_limit
+        };
         println!(
-            "[INFO] Light fill progress: {}/{} configs ready; strict checks {}.",
+            "\n[INFO] ===== LIGHT FILL PROGRESS: {}/{} READY ({}%) | STRICT CHECKS: {} =====\n",
             selected.len(),
             selection_limit,
+            fill_percent,
             final_attempts.values().copied().sum::<usize>()
         );
 
