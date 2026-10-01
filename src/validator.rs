@@ -2027,7 +2027,11 @@ async fn check_batch(
 
             // A core crash is a backend failure, not a proxy-quality verdict. Split the
             // batch and retry the pieces so one bad config cannot poison unrelated candidates.
-            if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+            if child
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
                 if batch_entries.len() > 1 {
                     let mid = batch_entries.len() / 2;
                     pending_batches.push(batch_entries[..mid].to_vec());
