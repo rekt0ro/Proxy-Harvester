@@ -185,3 +185,81 @@ fn feature_key(config: &str, metrics: Option<&ProxyMetrics>) -> String {
 
     format!("{scheme}|latency:{latency_bucket}")
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::IntelligenceModel;
+    use crate::validator::ProxyMetrics;
+    use std::collections::HashMap;
+
+    fn metrics(latency: f64) -> ProxyMetrics {
+        ProxyMetrics {
+            successes: 1,
+            attempts: 1,
+            median_ms: latency,
+            min_ms: latency,
+            jitter_ms: 1.0,
+            throughput_kbps: 1000.0,
+        }
+    }
+
+    #[test]
+    fn remains_inert_until_enough_training_data() {
+        let mut model = IntelligenceModel::default();
+        let mut configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "trojan://b@example.com:443".to_string(),
+        ];
+        let mut metadata = HashMap::new();
+        metadata.insert(configs[0].clone(), metrics(50.0));
+        metadata.insert(configs[1].clone(), metrics(900.0));
+        let positions = configs
+            .iter()
+            .enumerate()
+            .map(|(index, config)| (config.clone(), index))
+            .collect::<HashMap<_, _>>();
+
+        model.rank(&mut configs, &metadata, &positions);
+        assert_eq!(configs[0], "vless://a@example.com:443");
+    }
+
+    #[test]
+    fn learned_score_can_be_trained_without_external_services() {
+        let mut model = IntelligenceModel::default();
+        for _ in 0..60 {
+            model.update(
+                "vless://a@example.com:443",
+                Some(&metrics(50.0)),
+                1,
+                true,
+            );
+        }
+        for _ in 0..60 {
+            model.update(
+                "trojan://b@example.com:443",
+                Some(&metrics(900.0)),
+                1,
+                false,
+            );
+        }
+
+        assert!(model.is_mature());
+
+        let mut configs = vec![
+            "trojan://b@example.com:443".to_string(),
+            "vless://a@example.com:443".to_string(),
+        ];
+        let mut metadata = HashMap::new();
+        metadata.insert(configs[0].clone(), metrics(900.0));
+        metadata.insert(configs[1].clone(), metrics(50.0));
+        let positions = configs
+            .iter()
+            .enumerate()
+            .map(|(index, config)| (config.clone(), index))
+            .collect::<HashMap<_, _>>();
+
+        model.rank(&mut configs, &metadata, &positions);
+        assert_eq!(configs[0], "vless://a@example.com:443");
+    }
+}
