@@ -435,13 +435,125 @@ jobs:
 
           collect_elapsed="$COLLECT_ELAPSED"
           light_elapsed="$LIGHT_ELAPSED"
-          generation_elapsed="$GENERATION_ELAPSED"
-          publish_elapsed="$PUBLISH_ELAPSED"
 
           [ -n "$collect_elapsed" ] || collect_elapsed="unknown"
           [ -n "$light_elapsed" ] || light_elapsed="unknown"
-          [ -n "$generation_elapsed" ] || generation_elapsed="unknown"
-          [ -n "$publish_elapsed" ] || publish_elapsed="unknown"
+
+          format_minutes() {
+            local seconds="$1"
+            if [[ "$seconds" =~ ^[0-9]+$ ]]; then
+              awk -v seconds="$seconds" 'BEGIN { printf "%.1f min", seconds / 60 }'
+            else
+              printf '%s' "unknown"
+            fi
+          }
+
+          format_delta() {
+            local current="$1"
+            local previous="$2"
+            if [[ "$current" =~ ^[0-9]+$ && "$previous" =~ ^[0-9]+$ ]]; then
+              awk -v current="$current" -v previous="$previous" '
+                BEGIN {
+                  delta = current - previous
+                  pct = previous > 0 ? (delta / previous) * 100 : 0
+                  printf "%+.1f min (%+.1f%%)", delta / 60, pct
+                }'
+            else
+              printf '%s' "unknown"
+            fi
+          }
+
+          previous_run_id=""
+          previous_run_number=""
+          previous_total_elapsed="unknown"
+          previous_collect_elapsed="unknown"
+          previous_light_elapsed="unknown"
+
+          if previous_runs="$(
+            gh api --method GET \
+              "/repos/$GH_REPOSITORY/actions/workflows/update.yml/runs?per_page=30" \
+              2>/dev/null
+          )"; then
+            previous_run_id="$(
+              jq -r --argjson current_run "${{ github.run_number }}" '
+                [.workflow_runs[]
+                 | select(.status == "completed" and .run_number < $current_run)]
+                | sort_by(.run_number)
+                | last
+                | .id // empty' <<< "$previous_runs"
+            )"
+
+            previous_run_number="$(
+              jq -r --argjson current_run "${{ github.run_number }}" '
+                [.workflow_runs[]
+                 | select(.status == "completed" and .run_number < $current_run)]
+                | sort_by(.run_number)
+                | last
+                | .run_number // empty' <<< "$previous_runs"
+            )"
+          fi
+
+          if [ -n "$previous_run_id" ]; then
+            if previous_jobs="$(
+              gh api --method GET \
+                "/repos/$GH_REPOSITORY/actions/runs/$previous_run_id/jobs?per_page=100" \
+                2>/dev/null
+            )"; then
+              previous_collect_elapsed="$(
+                jq -r \
+                  --arg step "🔎 Collect & transport-test configs" \
+                  '.jobs[]
+                   | .steps[]
+                   | select(.name == $step and .started_at != null and .completed_at != null)
+                   | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+                   | tostring' <<< "$previous_jobs" | head -n 1
+              )"
+
+              previous_light_elapsed="$(
+                jq -r \
+                  --arg step "💡 Build Light subscription" \
+                  '.jobs[]
+                   | .steps[]
+                   | select(.name == $step and .started_at != null and .completed_at != null)
+                   | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+                   | tostring' <<< "$previous_jobs" | head -n 1
+              )"
+
+              previous_summary_epoch="$(
+                jq -r \
+                  '.jobs[]
+                   | select(.name == "🔎 Collect & Validate")
+                   | .steps[]
+                   | select(.name == "📊 Write run summary" and .completed_at != null)
+                   | (.completed_at | fromdateiso8601)
+                   | tostring' <<< "$previous_jobs" | head -n 1
+              )"
+
+              previous_job_started="$(
+                jq -r \
+                  '.jobs[]
+                   | select(.name == "🔎 Collect & Validate")
+                   | .started_at
+                   | select(. != null)
+                   | fromdateiso8601
+                   | tostring' <<< "$previous_jobs" | head -n 1
+              )"
+
+              if [[ "$previous_summary_epoch" =~ ^[0-9]+$ && "$previous_job_started" =~ ^[0-9]+$ ]]; then
+                previous_total_elapsed="$(( previous_summary_epoch - previous_job_started ))"
+              fi
+            fi
+          fi
+
+          current_total_display="$(format_minutes "$pipeline_elapsed")"
+          current_collect_display="$(format_minutes "$collect_elapsed")"
+          current_light_display="$(format_minutes "$light_elapsed")"
+          previous_total_display="$(format_minutes "$previous_total_elapsed")"
+          previous_collect_display="$(format_minutes "$previous_collect_elapsed")"
+          previous_light_display="$(format_minutes "$previous_light_elapsed")"
+          total_delta_display="$(format_delta "$pipeline_elapsed" "$previous_total_elapsed")"
+          collect_delta_display="$(format_delta "$collect_elapsed" "$previous_collect_elapsed")"
+          light_delta_display="$(format_delta "$light_elapsed" "$previous_light_elapsed")"
 
           {
             echo "## 🔄 ProxyRift Update"
@@ -453,13 +565,21 @@ jobs:
             echo
             echo "### ⏱️ Benchmark"
             echo
-            echo "| Stage | Seconds |"
-            echo "|---|---:|"
-            echo "| Total pipeline | $pipeline_elapsed |"
-            echo "| Collection & transport | $collect_elapsed |"
-            echo "| Light validation | $light_elapsed |"
-            echo "| Base64 generation | $generation_elapsed |"
-            echo "| Publish | $publish_elapsed |"
+            echo "| Stage | This run | Previous run | Δ |"
+            echo "|---|---:|---:|---:|"
+            if [ -n "$previous_run_number" ]; then
+              echo "| Total pipeline | $current_total_display | #$previous_run_number: $previous_total_display | $total_delta_display |"
+              echo "| Collection & transport | $current_collect_display | #$previous_run_number: $previous_collect_display | $collect_delta_display |"
+              echo "| Light validation | $current_light_display | #$previous_run_number: $previous_light_display | $light_delta_display |"
+              echo
+              echo "_Comparison is against the immediately preceding completed update run (#$previous_run_number)._"
+            else
+              echo "| Total pipeline | $current_total_display | — | — |"
+              echo "| Collection & transport | $current_collect_display | — | — |"
+              echo "| Light validation | $current_light_display | — | — |"
+              echo
+              echo "_No preceding completed update run was found._"
+            fi
             echo
             echo "### 🔬 Light validation"
             echo
