@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::net::{TcpStream, UdpSocket};
@@ -113,21 +113,14 @@ async fn test_chunk(
     total_chunks: usize,
     configs: &[String],
 ) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
-    println!(
-        "[INFO] 🔎 [TRANSPORT] CHUNK {}/{} | TESTING {} CONFIGS",
-        index + 1,
-        total_chunks,
-        configs.len()
-    );
-
     let working = test_transport_configs(configs).await;
 
     println!(
-        "[INFO] ✅ [TRANSPORT] CHUNK {}/{} COMPLETE | {}/{} REACHABLE",
+        "[INFO] ✅ [TRANSPORT] CHUNK {}/{} | {} TESTED | {} REACHABLE",
         index + 1,
         total_chunks,
-        working.len(),
-        configs.len()
+        configs.len(),
+        working.len()
     );
 
     Ok((index, working))
@@ -172,10 +165,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build()?;
 
     let mut unique = HashSet::new();
+    let source_http_warnings = Arc::new(Mutex::new(Vec::<(usize, u16)>::new()));
 
     let mut source_results = stream::iter(sources.iter().cloned().enumerate())
         .map(|(source_index, url)| {
             let client = client.clone();
+            let source_http_warnings = Arc::clone(&source_http_warnings);
 
             async move {
                 let source_number = source_index + 1;
@@ -257,9 +252,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     continue;
                                 }
 
-                                println!(
-                                    "[WARN] ⚠️ Source #{source_number} returned HTTP status {status}"
-                                );
+                                if let Ok(mut warnings) = source_http_warnings.lock() {
+                                    warnings.push((source_number, status.as_u16()));
+                                }
                                 return Vec::new();
                             }
 
@@ -323,6 +318,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     while let Some(configs) = source_results.next().await {
         unique.extend(configs);
+    }
+
+    if let Ok(mut warnings) = Arc::try_unwrap(source_http_warnings)
+        .map_err(|_| ())
+        .and_then(|mutex| mutex.into_inner().map_err(|_| ()))
+    {
+        warnings.sort_unstable();
+
+        let mut grouped = HashMap::<u16, Vec<usize>>::new();
+        for (source_number, status_code) in warnings {
+            grouped.entry(status_code).or_default().push(source_number);
+        }
+
+        let mut groups = grouped.into_iter().collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|(status_code, _)| *status_code);
+
+        for (status_code, mut source_numbers) in groups {
+            source_numbers.sort_unstable();
+            let reason = reqwest::StatusCode::from_u16(status_code)
+                .ok()
+                .and_then(|status| status.canonical_reason())
+                .unwrap_or("UNKNOWN")
+                .to_ascii_uppercase();
+            let sources = source_numbers
+                .iter()
+                .map(|number| format!("#{number}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            println!(
+                "[WARN] ⚠️ [SOURCES] HTTP {status_code} {reason} | SOURCES: {sources}"
+            );
+        }
     }
 
     let mut configs: Vec<String> = unique.into_iter().collect();
@@ -2212,7 +2240,7 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
 
     if tcp_config_count > 0 {
         println!(
-            "[INFO] TCP endpoint deduplication: {} configs -> {} unique endpoints.",
+            "[INFO] 🔎 [TRANSPORT] TCP ENDPOINTS | {} CONFIGS → {} UNIQUE",
             tcp_config_count,
             tcp_by_endpoint.len()
         );
@@ -2243,7 +2271,7 @@ async fn test_transport_configs(configs: &[String]) -> Vec<(String, u64)> {
 
     if !transport_indices.is_empty() {
         println!(
-            "[INFO] Protocol-aware UDP probing: {} transport configs.",
+            "[INFO] 🔎 [TRANSPORT] UDP PROBES | {} TRANSPORT CONFIGS",
             transport_indices.len()
         );
 
