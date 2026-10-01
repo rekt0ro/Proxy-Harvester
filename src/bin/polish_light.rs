@@ -758,9 +758,6 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        // final_verified is kept ranked before entering the transfer gate,
-        // so retaining this order tests the most likely winners first.
-
         let remaining = selection_limit.saturating_sub(selected.len());
         let dynamic_test_limit = adaptive_transfer_test_limit(
             selection_limit,
@@ -859,3 +856,1688 @@ async fn fill_transfer_gate(
 }
 
 
+fn select_verified_configs(
+    configs: &[String],
+    limit: usize,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> Vec<String> {
+    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut family_counts = HashMap::<String, usize>::new();
+    let mut result = Vec::with_capacity(limit.min(configs.len()));
+
+    for config in configs {
+        if result.len() >= limit {
+            break;
+        }
+
+        if let Some(endpoint) = endpoint(config) {
+            if endpoint_counts.get(&endpoint).copied().unwrap_or(0) >= max_per_endpoint {
+                continue;
+            }
+
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                continue;
+            }
+
+            *endpoint_counts.entry(endpoint).or_insert(0) += 1;
+            *family_counts.entry(family).or_insert(0) += 1;
+            result.push(config.clone());
+        } else {
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                continue;
+            }
+
+            *family_counts.entry(family).or_insert(0) += 1;
+            result.push(config.clone());
+        }
+    }
+
+    result
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ValidationSettings {
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    strict: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightBackend {
+    // Default backend for configurations not known to require Xray.
+    SingBox,
+    // Direct route for configurations with known Xray-specific features.
+    Xray,
+    // Ambiguous/feature-sensitive route: try sing-box first, then Xray only if sing-box does not accept it.
+    Fallback,
+}
+
+fn query_value(url: &Url, names: &[&str]) -> String {
+    url.query_pairs()
+        .find(|(key, value)| {
+            names.iter().any(|name| key.eq_ignore_ascii_case(name)) && !value.is_empty()
+        })
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default()
+}
+
+fn has_query_key(url: &Url, names: &[&str]) -> bool {
+    url.query_pairs()
+        .any(|(key, _)| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
+}
+
+fn value_boolish(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_u64().unwrap_or(0) != 0,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        _ => false,
+    }
+}
+
+fn has_disabled_tls_verification(config: &str) -> bool {
+    let cleaned = config.split('#').next().unwrap_or(config);
+    let Ok(url) = Url::parse(cleaned) else {
+        return true;
+    };
+
+    let scheme = url.scheme().to_ascii_lowercase();
+
+    if scheme == "vmess" {
+        let Some(encoded) = cleaned.split_once("://").map(|(_, rest)| rest) else {
+            return true;
+        };
+        let payload = encoded.trim();
+        let mut padded = payload.to_string();
+        while !padded.len().is_multiple_of(4) {
+            padded.push('=');
+        }
+
+        for candidate in [payload, padded.as_str()] {
+            for bytes in [
+                STANDARD.decode(candidate),
+                URL_SAFE.decode(candidate),
+                URL_SAFE_NO_PAD.decode(candidate),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                    let tls_enabled = match value.get("tls") {
+                        Some(Value::Bool(value)) => *value,
+                        Some(Value::Number(value)) => value.as_u64().unwrap_or(0) != 0,
+                        Some(Value::String(value)) => !matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "" | "0" | "false" | "none" | "off"
+                        ),
+                        _ => false,
+                    };
+                    let insecure = value.get("allowInsecure").is_some_and(value_boolish);
+                    if tls_enabled && insecure {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    url.query_pairs().any(|(key, value)| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "insecure" | "allowinsecure"
+        ) && matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn xray_only_tls_extensions(url: &Url) -> bool {
+    let pcs = query_value(url, &["pcs", "pinnedPeerCertSha256"]);
+    let vcn = query_value(url, &["vcn", "verifyPeerCertByName"]);
+    let ech = query_value(url, &["ech"]);
+    !pcs.is_empty() || !vcn.is_empty() || ech.contains("://")
+}
+
+fn light_backend(config: &str) -> LightBackend {
+    let Ok(url) = Url::parse(config.split('#').next().unwrap_or(config)) else {
+        return LightBackend::SingBox;
+    };
+
+    let transport = query_value(&url, &["type", "network"]).to_ascii_lowercase();
+    let security = query_value(&url, &["security"]).to_ascii_lowercase();
+
+    let scheme = url.scheme().to_ascii_lowercase();
+    if matches!(scheme.as_str(), "socks4" | "socks4a") {
+        return LightBackend::SingBox;
+    }
+
+    if matches!(scheme.as_str(), "http" | "socks" | "socks5" | "socks5h") {
+        return LightBackend::Xray;
+    }
+
+    if scheme == "vmess" {
+        if let Some(encoded) = config.split_once("://").map(|(_, rest)| rest) {
+            let payload = encoded.split('#').next().unwrap_or("").trim();
+            let mut padded = payload.to_string();
+            while !padded.len().is_multiple_of(4) {
+                padded.push('=');
+            }
+
+            for candidate in [payload, padded.as_str()] {
+                for bytes in [
+                    STANDARD.decode(candidate),
+                    URL_SAFE.decode(candidate),
+                    URL_SAFE_NO_PAD.decode(candidate),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                        let network = value
+                            .get("net")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+
+                        if matches!(network.as_str(), "xhttp" | "splithttp") {
+                            return LightBackend::Xray;
+                        }
+
+                        if network == "grpc" {
+                            let mode = value
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let has_authority = ["authority", "host"].iter().any(|key| {
+                                value
+                                    .get(*key)
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|item| !item.is_empty())
+                            });
+
+                            if mode == "multi" || has_authority {
+                                return LightBackend::Xray;
+                            }
+                        }
+
+                        let has_certificate_extension = ["pcs", "vcn"].iter().any(|key| {
+                            value
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|item| !item.is_empty())
+                        });
+                        let ech = value
+                            .get("ech")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .replace(' ', "+");
+                        if has_certificate_extension || ech.contains("://") {
+                            return LightBackend::Xray;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let legacy_raw_http = (transport.is_empty() || transport == "tcp" || transport == "raw")
+        && query_value(&url, &["headerType"]).eq_ignore_ascii_case("http");
+
+    if legacy_raw_http && !xray_only_tls_extensions(&url) {
+        return LightBackend::SingBox;
+    }
+
+    if matches!(transport.as_str(), "xhttp" | "splithttp") {
+        return LightBackend::Xray;
+    }
+
+    if transport == "grpc"
+        && (has_query_key(&url, &["authority", "host"])
+            || query_value(&url, &["mode"]).eq_ignore_ascii_case("multi"))
+    {
+        return LightBackend::Xray;
+    }
+
+    if xray_only_tls_extensions(&url) {
+        return LightBackend::Xray;
+    }
+
+    if matches!(scheme.as_str(), "hysteria2" | "hy2") && has_query_key(&url, &["pinSHA256"]) {
+        return LightBackend::Xray;
+    }
+
+    if url.scheme().eq_ignore_ascii_case("vless") {
+        let flow = query_value(&url, &["flow"]).to_ascii_lowercase();
+        if !flow.is_empty() && flow != "xtls-rprx-vision" {
+            return LightBackend::Xray;
+        }
+
+        if has_query_key(&url, &["fm", "finalmask"])
+            || {
+                let encryption = query_value(&url, &["encryption"]);
+                !encryption.is_empty() && !encryption.eq_ignore_ascii_case("none")
+            }
+            || !query_value(&url, &["extra"]).is_empty()
+        {
+            return LightBackend::Xray;
+        }
+    }
+
+    // Plain Reality is feature-sensitive: let sing-box have the first attempt,
+    // then fall back to Xray only when sing-box does not accept the candidate.
+    if security == "reality" {
+        return LightBackend::Fallback;
+    }
+
+    LightBackend::SingBox
+}
+
+fn vmess_payload(config: &str) -> Option<Value> {
+    let encoded = config.split_once("://").map(|(_, rest)| rest)?;
+    let payload = encoded.split('#').next().unwrap_or("").trim();
+    let mut padded = payload.to_string();
+    while !padded.len().is_multiple_of(4) {
+        padded.push('=');
+    }
+
+    for candidate in [payload, padded.as_str()] {
+        for bytes in [
+            STANDARD.decode(candidate),
+            URL_SAFE.decode(candidate),
+            URL_SAFE_NO_PAD.decode(candidate),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
+fn json_u64(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::Number(number)) => number.as_u64().unwrap_or(0),
+        Some(Value::String(string)) => string.trim().parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn training_number(value: f64) -> Value {
+    serde_json::Number::from_f64(value)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn light_training_features(
+    config: &str,
+    early_metadata: Option<&ProxyMetrics>,
+    history_rate: f64,
+    history_checks: u64,
+) -> BTreeMap<String, Value> {
+    let cleaned = config.split('#').next().unwrap_or(config);
+    let url = Url::parse(cleaned).ok();
+    let protocol = url
+        .as_ref()
+        .map(|value| value.scheme().to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+    let vmess = if protocol == "vmess" {
+        vmess_payload(config)
+    } else {
+        None
+    };
+
+    let transport = if let Some(payload) = vmess.as_ref() {
+        payload
+            .get("net")
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "vmess-default".to_string())
+    } else {
+        url.as_ref()
+            .map(|value| query_value(value, &["type", "network"]).to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    };
+
+    let security = if let Some(payload) = vmess.as_ref() {
+        let tls_enabled = match payload.get("tls") {
+            Some(Value::String(value)) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "tls" | "1" | "true" | "yes" | "on"
+            ),
+            Some(value) => value_boolish(value),
+            None => false,
+        };
+        if tls_enabled {
+            "tls".to_string()
+        } else {
+            "none".to_string()
+        }
+    } else {
+        url.as_ref()
+            .map(|value| query_value(value, &["security"]).to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    };
+
+    let port = if let Some(payload) = vmess.as_ref() {
+        json_u64(payload.get("port"))
+    } else {
+        url.as_ref().and_then(Url::port).map(u64::from).unwrap_or(0)
+    };
+
+    let query_parameter_count = url
+        .as_ref()
+        .map(|value| value.query_pairs().count() as u64)
+        .unwrap_or(0);
+
+    let has_sni = if let Some(payload) = vmess.as_ref() {
+        ["sni", "serverName", "servername"].iter().any(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["sni", "serverName", "servername"]))
+    };
+
+    let has_host = if let Some(payload) = vmess.as_ref() {
+        ["host", "Host"].iter().any(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["host", "authority"]))
+    };
+
+    let has_path = if let Some(payload) = vmess.as_ref() {
+        payload
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    } else {
+        url.as_ref()
+            .is_some_and(|value| has_query_key(value, &["path"]))
+    };
+
+    let tls_enabled = if vmess.is_some() {
+        security == "tls"
+    } else {
+        matches!(security.as_str(), "tls" | "reality" | "xtls")
+    };
+    let reality_enabled = security == "reality";
+
+    let early_attempts = early_metadata.map(|metrics| metrics.attempts).unwrap_or(0);
+    let early_success_rate = early_metadata
+        .filter(|metrics| metrics.attempts > 0)
+        .map(|metrics| metrics.successes as f64 / metrics.attempts as f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+
+    let mut features = BTreeMap::new();
+    features.insert("protocol".to_string(), Value::String(protocol));
+    features.insert(
+        "backend".to_string(),
+        Value::String(
+            match light_backend(config) {
+                LightBackend::SingBox => "sing-box",
+                LightBackend::Xray => "xray",
+                LightBackend::Fallback => "fallback",
+            }
+            .to_string(),
+        ),
+    );
+    features.insert("transport".to_string(), Value::String(transport));
+    features.insert("security".to_string(), Value::String(security));
+    features.insert("port".to_string(), Value::from(port));
+    features.insert(
+        "query_parameter_count".to_string(),
+        Value::from(query_parameter_count),
+    );
+    features.insert("has_sni".to_string(), Value::Bool(has_sni));
+    features.insert("has_host".to_string(), Value::Bool(has_host));
+    features.insert("has_path".to_string(), Value::Bool(has_path));
+    features.insert("tls_enabled".to_string(), Value::Bool(tls_enabled));
+    features.insert("reality_enabled".to_string(), Value::Bool(reality_enabled));
+    features.insert("early_attempts".to_string(), Value::from(early_attempts));
+    features.insert(
+        "early_success_rate".to_string(),
+        training_number(early_success_rate),
+    );
+
+    let metrics = early_metadata;
+    features.insert(
+        "early_median_ms".to_string(),
+        training_number(metrics.map(|value| value.median_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_min_ms".to_string(),
+        training_number(metrics.map(|value| value.min_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_jitter_ms".to_string(),
+        training_number(metrics.map(|value| value.jitter_ms).unwrap_or(0.0)),
+    );
+    features.insert(
+        "early_throughput_kbps".to_string(),
+        training_number(metrics.map(|value| value.throughput_kbps).unwrap_or(0.0)),
+    );
+    features.insert("history_checks".to_string(), Value::from(history_checks));
+    features.insert(
+        "history_pass_rate".to_string(),
+        training_number(history_rate.clamp(0.0, 1.0)),
+    );
+
+    features
+}
+
+fn persist_light_training_data(
+    history: &HashMap<String, HistoryEntry>,
+    final_attempts: &HashMap<String, usize>,
+    final_metadata: &HashMap<String, ProxyMetrics>,
+    global_metadata: &HashMap<String, ProxyMetrics>,
+    transfer_tested: &HashSet<String>,
+    transfer_verified: &HashMap<String, ProxyMetrics>,
+) -> Result<DatasetStats, String> {
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let run_id = env::var("GITHUB_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let mut rows = Vec::with_capacity(final_attempts.len());
+    for (config, attempts) in final_attempts {
+        let (history_rate, history_checks) = historical_score(config, history);
+        let candidate_fingerprint = history_fingerprint(config);
+        let observation_id = if let Some(run_id) = run_id.as_deref() {
+            format!("{run_id}:{candidate_fingerprint}")
+        } else {
+            format!("local:{observed_at}:{candidate_fingerprint}")
+        };
+        let transfer_was_tested = transfer_tested.contains(config);
+
+        rows.push(TrainingRow {
+            observed_at,
+            run_id: run_id.clone(),
+            candidate_fingerprint,
+            observation_id,
+            features: light_training_features(
+                config,
+                global_metadata.get(config),
+                history_rate,
+                history_checks,
+            ),
+            strict_pass: final_metadata.contains_key(config),
+            strict_checks: *attempts as u64,
+            transfer_tested: transfer_was_tested,
+            transfer_pass: transfer_was_tested.then(|| transfer_verified.contains_key(config)),
+        });
+    }
+
+    let stats = persist_light_training(LIGHT_TRAINING_PATH, &rows)?;
+    let strict_rate = if stats.rows == 0 {
+        0.0
+    } else {
+        stats.strict_passes as f64 / stats.rows as f64
+    };
+
+    println!(
+        "[INFO] 🧠 [LIGHT ML DATA] +{} ROWS | TOTAL: {} | FEATURES: {} | STRICT PASS RATE: {:.1}% | TRANSFER: {}/{}",
+        stats.new_rows,
+        stats.rows,
+        rows.first().map(|row| row.features.len()).unwrap_or(0),
+        strict_rate * 100.0,
+        stats.transfer_passes,
+        stats.transfer_tests
+    );
+
+    Ok(stats)
+}
+
+fn merge_light_metadata(
+    xray_metadata: HashMap<String, ProxyMetrics>,
+    singbox_metadata: HashMap<String, ProxyMetrics>,
+) -> HashMap<String, ProxyMetrics> {
+    let mut verified = singbox_metadata;
+    verified.extend(xray_metadata);
+    verified
+}
+
+async fn validate_light_batch(
+    xray: &str,
+    singbox: &str,
+    candidates: &[String],
+    targets: &[&str],
+    settings: ValidationSettings,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let mut singbox_candidates = Vec::new();
+    let mut xray_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for config in candidates {
+        match light_backend(config) {
+            LightBackend::SingBox => singbox_candidates.push(config.clone()),
+            LightBackend::Xray => xray_candidates.push(config.clone()),
+            LightBackend::Fallback => fallback_candidates.push(config.clone()),
+        }
+    }
+
+    let mut singbox_validation_candidates = singbox_candidates;
+    singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
+    let xray_validation_candidates = xray_candidates;
+
+    let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
+        .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
+
+    let singbox_future = async {
+        if singbox_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else if settings.strict {
+            validate_singbox_targets_strict(
+                singbox,
+                &singbox_validation_candidates,
+                targets,
+                settings.workers.clamp(1, 40),
+                request_timeout,
+                settings.timeout_seconds * 1000.0,
+            )
+            .await
+        } else {
+            validate_singbox_targets(
+                singbox,
+                &singbox_validation_candidates,
+                targets,
+                settings.workers.clamp(1, 40),
+                request_timeout,
+                settings.timeout_seconds * 1000.0,
+            )
+            .await
+        }
+    };
+
+    let xray_future = async {
+        if xray_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else if settings.strict {
+            validate_candidates_with_targets_strict(
+                xray,
+                &xray_validation_candidates,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await
+        } else {
+            validate_candidates_with_targets(
+                xray,
+                &xray_validation_candidates,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await
+        }
+    };
+
+    let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+    let singbox_metadata = singbox_result?;
+    let mut xray_metadata = xray_result?;
+
+    let fallback_retry = fallback_candidates
+        .into_iter()
+        .filter(|config| !singbox_metadata.contains_key(config))
+        .collect::<Vec<_>>();
+
+    if !fallback_retry.is_empty() {
+        println!(
+            "[INFO] 🔄 [LIGHT FALLBACK] RETRYING {} CANDIDATES WITH XRAY",
+            fallback_retry.len()
+        );
+        let fallback_xray = if settings.strict {
+            validate_candidates_with_targets_strict(
+                xray,
+                &fallback_retry,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await?
+        } else {
+            validate_candidates_with_targets(
+                xray,
+                &fallback_retry,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await?
+        };
+        xray_metadata.extend(fallback_xray);
+    }
+
+    let verified = merge_light_metadata(xray_metadata, singbox_metadata);
+
+    println!(
+        "[INFO] ✅ [LIGHT VALIDATION] {}/{} CANDIDATES VERIFIED | TARGETS: {}",
+        verified.len(),
+        candidates.len(),
+        targets.len()
+    );
+
+    Ok(verified)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), String> {
+    let args: Vec<String> = env::args().collect();
+
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "Usage: polish_light --candidates FILE --output FILE [--workers N]              [--batch-size N] [--timeout SECONDS] [--selected-recheck-limit N]              [--max-candidates N] [--selected-workers N] [--selected-batch-size N]              [--primary-target URL] [--selection-limit N] [--max-per-endpoint N]              [--max-per-family N] [--xray PATH] [--singbox PATH] [--stats PATH]"
+        );
+        return Ok(());
+    }
+
+    let candidates_path = required(&args, "--candidates")?;
+    let output = required(&args, "--output")?;
+    let stats_path = value(&args, "--stats", "");
+    let workers = value(&args, "--workers", "32")
+        .parse::<usize>()
+        .map_err(|_| "invalid --workers".to_string())?;
+    let batch_size = value(&args, "--batch-size", "1000")
+        .parse::<usize>()
+        .map_err(|_| "invalid --batch-size".to_string())?;
+    let timeout = value(&args, "--timeout", "5")
+        .parse::<f64>()
+        .map_err(|_| "invalid --timeout".to_string())?;
+    if !timeout.is_finite() || timeout <= 0.0 {
+        return Err("invalid --timeout: must be a positive finite number".to_string());
+    }
+    let final_recheck_limit = value(
+        &args,
+        "--selected-recheck-limit",
+        FINAL_RECHECK_LIMIT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --selected-recheck-limit".to_string())?;
+    let max_candidates = value(
+        &args,
+        "--max-candidates",
+        MAX_DISCOVERY_CANDIDATES.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-candidates".to_string())?
+    .clamp(1, MAX_DISCOVERY_CANDIDATES);
+    let final_workers = value(&args, "--selected-workers", "16")
+        .parse::<usize>()
+        .map_err(|_| "invalid --selected-workers".to_string())?;
+    let final_batch_size = value(&args, "--selected-batch-size", "500")
+        .parse::<usize>()
+        .map_err(|_| "invalid --selected-batch-size".to_string())?;
+    let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
+    let light_targets = [primary_target.as_str(), LIGHT_TARGETS[2]];
+    let early_targets = light_targets;
+    let strict_targets = light_targets;
+    let xray = value(&args, "--xray", "xray");
+    let selection_limit = value(
+        &args,
+        "--selection-limit",
+        DEFAULT_SELECTION_LIMIT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --selection-limit".to_string())?
+    .max(1);
+    let max_per_endpoint = value(
+        &args,
+        "--max-per-endpoint",
+        DEFAULT_MAX_PER_ENDPOINT.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-per-endpoint".to_string())?
+    .max(1);
+    let max_per_family = value(
+        &args,
+        "--max-per-family",
+        DEFAULT_MAX_PER_FAMILY.to_string().as_str(),
+    )
+    .parse::<usize>()
+    .map_err(|_| "invalid --max-per-family".to_string())?
+    .max(1);
+    let singbox = value(&args, "--singbox", "sing-box");
+
+    let raw_candidates = read_lines(&candidates_path)?;
+    let input_candidate_count = raw_candidates.len().min(max_candidates);
+    let candidates = raw_candidates
+        .into_iter()
+        .take(max_candidates)
+        .filter(|config| !has_disabled_tls_verification(config))
+        .collect::<Vec<_>>();
+    let security_rejected = input_candidate_count.saturating_sub(candidates.len());
+    let history_path = "subscriptions/light-history.json";
+    let history = load_history(history_path)?;
+    let intelligence_path = "subscriptions/light-ai.json";
+    let intelligence = IntelligenceModel::load(intelligence_path);
+
+    if candidates.is_empty() {
+        return Err("no Light candidates available".to_string());
+    }
+
+    let mut global_verified = Vec::<String>::new();
+    let mut global_positions = HashMap::<String, usize>::new();
+    let mut global_metadata = HashMap::<String, ProxyMetrics>::new();
+    let mut final_verified = Vec::<String>::new();
+    let mut final_attempts = HashMap::<String, usize>::new();
+    let mut final_metadata = HashMap::<String, ProxyMetrics>::new();
+    let mut transfer_verified = HashMap::<String, ProxyMetrics>::new();
+    let mut transfer_tested = HashSet::<String>::new();
+
+    let chunk_count = candidates.len().div_ceil(DISCOVERY_CHUNK_SIZE);
+
+    println!(
+        "[INFO] 🔬 [LIGHT] VALIDATION STARTED | {} CANDIDATES | TARGETS: {}",
+        candidates.len(),
+        early_targets.len()
+    );
+
+    for (chunk_index, chunk) in candidates.chunks(DISCOVERY_CHUNK_SIZE).enumerate() {
+        let wave = chunk_index + 1;
+
+        println!(
+            "[INFO] 🔎 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | TESTING {} CANDIDATES | VERIFIED SO FAR: {}",
+            chunk.len(),
+            global_verified.len()
+        );
+
+        let chunk_metadata = validate_light_batch(
+            &xray,
+            &singbox,
+            chunk,
+            &early_targets,
+            ValidationSettings {
+                workers,
+                batch_size,
+                timeout_seconds: timeout,
+                strict: false,
+            },
+        )
+        .await?;
+
+        for config in chunk_metadata.keys() {
+            if !global_positions.contains_key(config) {
+                let position = global_verified.len();
+                global_verified.push(config.clone());
+                global_positions.insert(config.clone(), position);
+            }
+        }
+        global_metadata.extend(chunk_metadata);
+
+        sort_ranked(
+            &mut global_verified,
+            &global_metadata,
+            &global_positions,
+            &history,
+        );
+        sort_ranked(
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
+
+        let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked,
+            &transfer_verified,
+            &global_positions,
+            &history,
+        );
+        let mut transfer_selected = select_verified_configs(
+            &transfer_ranked,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        )
+        .len();
+
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
+
+        if transfer_selected >= selection_limit {
+            println!(
+                "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | PUBLISH READY",
+                transfer_selected, selection_limit
+            );
+
+            let selected = select_verified_configs(
+                &transfer_ranked,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            );
+            persist_light_result(
+                &output,
+                &selected,
+                history_path,
+                &history,
+                &final_attempts,
+                &final_metadata,
+                &intelligence,
+                &global_metadata,
+                intelligence_path,
+                &transfer_tested,
+                &transfer_verified,
+            )?;
+            write_light_stats(
+                &stats_path,
+                input_candidate_count,
+                security_rejected,
+                final_metadata.len(),
+                transfer_tested.len(),
+                transfer_verified.len(),
+                selected.len(),
+            )?;
+            println!(
+                "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
+                selected.len()
+            );
+            return Ok(());
+        }
+
+        if strict_untested_eligible >= reserve_target {
+            println!(
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
+                strict_untested_eligible, reserve_target, transfer_selected
+            );
+
+            transfer_selected = fill_transfer_gate(
+                &xray,
+                &singbox,
+                &final_verified,
+                &mut transfer_verified,
+                &mut transfer_tested,
+                &global_positions,
+                &history,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            )
+            .await?;
+
+            if transfer_selected >= selection_limit {
+                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+                sort_ranked(
+                    &mut transfer_ranked,
+                    &transfer_verified,
+                    &global_positions,
+                    &history,
+                );
+                let selected = select_verified_configs(
+                    &transfer_ranked,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                );
+
+                persist_light_result(
+                    &output,
+                    &selected,
+                    history_path,
+                    &history,
+                    &final_attempts,
+                    &final_metadata,
+                    &intelligence,
+                    &global_metadata,
+                    intelligence_path,
+                    &transfer_tested,
+                    &transfer_verified,
+                )?;
+                write_light_stats(
+                    &stats_path,
+                    input_candidate_count,
+                    security_rejected,
+                    final_metadata.len(),
+                    transfer_tested.len(),
+                    transfer_verified.len(),
+                    selected.len(),
+                )?;
+                println!(
+                    "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
+                    selected.len()
+                );
+                return Ok(());
+            }
+        }
+
+        let remaining = selection_limit.saturating_sub(transfer_selected);
+
+        let strict_attempts = final_attempts.values().copied().sum::<usize>();
+        let dynamic_limit = adaptive_recheck_limit(
+            remaining,
+            final_recheck_limit,
+            strict_attempts,
+            final_metadata.len(),
+        );
+
+        let untested = global_verified
+            .iter()
+            .filter(|config| {
+                !final_metadata.contains_key(*config)
+                    && final_attempts.get(*config).copied().unwrap_or(0)
+                        < MAX_FINAL_RECHECK_ATTEMPTS
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut ai_ranked = untested;
+        intelligence.rank(&mut ai_ranked, &global_metadata, &global_positions);
+        let final_candidates =
+            diversify_recheck_candidates(&ai_ranked, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
+
+        if final_candidates.is_empty() {
+            continue;
+        }
+
+        for config in &final_candidates {
+            *final_attempts.entry(config.clone()).or_default() += 1;
+        }
+
+        println!(
+            "[INFO] 🔎 [LIGHT RECHECK] WAVE {wave} | TESTING {} CANDIDATES",
+            final_candidates.len()
+        );
+
+        let primary_metadata = validate_light_batch(
+            &xray,
+            &singbox,
+            &final_candidates,
+            &strict_targets,
+            ValidationSettings {
+                workers: final_workers,
+                batch_size: final_batch_size,
+                timeout_seconds: timeout,
+                strict: true,
+            },
+        )
+        .await?;
+
+        for (config, mut metrics) in primary_metadata {
+            if metrics.throughput_kbps <= 0.0 {
+                if let Some(early) = global_metadata.get(&config) {
+                    metrics.throughput_kbps = early.throughput_kbps;
+                }
+            }
+            if !final_metadata.contains_key(&config) {
+                final_verified.push(config.clone());
+            }
+            final_metadata.insert(config, metrics);
+        }
+
+        if let Some(message) = intelligence
+            .anomaly_message(final_attempts.values().copied().sum(), final_metadata.len())
+        {
+            println!("[WARN] ⚠️ {message}");
+        }
+
+        sort_ranked(
+            &mut final_verified,
+            &final_metadata,
+            &global_positions,
+            &history,
+        );
+        let selected = select_verified_configs(
+            &final_verified,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
+
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
+        let mut transfer_ranked_after = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked_after,
+            &transfer_verified,
+            &global_positions,
+            &history,
+        );
+        let transfer_eligible =
+            selection_eligible_count(&transfer_ranked_after, max_per_endpoint, max_per_family);
+        let transfer_slots_remaining = selection_limit.saturating_sub(transfer_eligible);
+
+        println!(
+            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | UNTESTED STRICT ELIGIBLE: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
+            selected.len(),
+            selection_limit,
+            strict_untested_eligible,
+            transfer_eligible,
+            transfer_slots_remaining,
+            reserve_target,
+            final_attempts.values().copied().sum::<usize>()
+        );
+
+        if strict_untested_eligible >= reserve_target {
+            println!(
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {}",
+                strict_untested_eligible, reserve_target
+            );
+        } else {
+            println!(
+                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | NEED {} MORE",
+                strict_untested_eligible,
+                reserve_target,
+                reserve_target.saturating_sub(strict_untested_eligible)
+            );
+        }
+    }
+
+    sort_ranked(
+        &mut final_verified,
+        &final_metadata,
+        &global_positions,
+        &history,
+    );
+    let _ = fill_transfer_gate(
+        &xray,
+        &singbox,
+        &final_verified,
+        &mut transfer_verified,
+        &mut transfer_tested,
+        &global_positions,
+        &history,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    )
+    .await?;
+
+    let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+    sort_ranked(
+        &mut transfer_ranked,
+        &transfer_verified,
+        &global_positions,
+        &history,
+    );
+    let selected = select_verified_configs(
+        &transfer_ranked,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    );
+
+    if selected.is_empty() {
+        return Err(
+            "selected Light validation produced no configs after the 10 MiB gate".to_string(),
+        );
+    }
+
+    if selected.len() < selection_limit {
+        println!(
+            "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {}",
+            selected.len(),
+            selection_limit
+        );
+    }
+
+    write_light_stats(
+        &stats_path,
+        input_candidate_count,
+        security_rejected,
+        final_metadata.len(),
+        transfer_tested.len(),
+        transfer_verified.len(),
+        selected.len(),
+    )?;
+
+    let mut protocol_counts = BTreeMap::<String, usize>::new();
+    let mut backend_counts = BTreeMap::<&str, usize>::new();
+    for config in &selected {
+        let scheme = config
+            .split_once("://")
+            .map(|(scheme, _)| scheme.to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        *protocol_counts.entry(scheme).or_default() += 1;
+        match light_backend(config) {
+            LightBackend::SingBox => *backend_counts.entry("sing-box").or_default() += 1,
+            LightBackend::Xray => *backend_counts.entry("xray").or_default() += 1,
+            LightBackend::Fallback => *backend_counts.entry("fallback").or_default() += 1,
+        }
+    }
+    for chunk in protocol_counts
+        .iter()
+        .map(|(scheme, count)| format!("{scheme} {count}"))
+        .collect::<Vec<_>>()
+        .chunks(4)
+    {
+        println!("[INFO] 📊 [LIGHT PROTOCOLS] {}", chunk.join(" | "));
+    }
+
+    let backend_summary = backend_counts
+        .iter()
+        .map(|(backend, count)| format!("{backend} {count}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    println!("[INFO] 📊 [LIGHT BACKENDS] {backend_summary}");
+
+    println!(
+        "[INFO] 🎯 [LIGHT SELECTION] {} CONFIGS READY | NO PROTOCOL QUOTA",
+        selected.len()
+    );
+
+    persist_light_result(
+        &output,
+        &selected,
+        history_path,
+        &history,
+        &final_attempts,
+        &final_metadata,
+        &intelligence,
+        &global_metadata,
+        intelligence_path,
+        &transfer_tested,
+        &transfer_verified,
+    )?;
+    println!(
+        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY: {} | STRICT CHECKS: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {}",
+        selected.len(),
+        candidates.len(),
+        final_attempts.values().copied().sum::<usize>(),
+        transfer_tested.len(),
+        transfer_verified.len()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
+        history_fingerprint, light_backend, light_training_features, merge_light_metadata,
+        normalize_light_config,
+        select_verified_configs, selection_eligible_count, transfer_reserve_target, LightBackend,
+        ProxyMetrics,
+    };
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use std::collections::HashMap;
+
+    #[test]
+    fn rejects_explicit_tls_verification_bypass() {
+        assert!(has_disabled_tls_verification(
+            "trojan://password@example.com:443?security=tls&allowInsecure=1"
+        ));
+        assert!(has_disabled_tls_verification(
+            "hysteria2://password@example.com:443?insecure=true"
+        ));
+        assert!(!has_disabled_tls_verification(
+            "vless://uuid@example.com:443?security=tls&allowInsecure=0"
+        ));
+        assert!(!has_disabled_tls_verification(
+            "vless://uuid@example.com:443?security=none"
+        ));
+    }
+
+    #[test]
+    fn rejects_vmess_tls_verification_bypass() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "tls": "tls",
+            "allowInsecure": true
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(has_disabled_tls_verification(&format!("vmess://{encoded}")));
+    }
+
+    #[test]
+    fn allows_vmess_tls_with_certificate_verification() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "tls": "tls",
+            "allowInsecure": false
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(!has_disabled_tls_verification(&format!(
+            "vmess://{encoded}"
+        )));
+    }
+
+    #[test]
+    fn adaptive_recheck_expands_when_yield_is_low() {
+        assert_eq!(adaptive_recheck_limit(100, 500, 0, 0), 500);
+        assert_eq!(adaptive_recheck_limit(100, 500, 100, 50), 250);
+        assert_eq!(adaptive_recheck_limit(100, 500, 100, 20), 500);
+    }
+
+    #[test]
+    fn transfer_reserve_is_conservative_at_start() {
+        assert_eq!(transfer_reserve_target(200, 0, 0), 270);
+        assert_eq!(transfer_reserve_target(200, 200, 190), 260);
+    }
+
+    #[test]
+    fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
+        assert_eq!(transfer_reserve_target(200, 200, 160), 273);
+        assert_eq!(transfer_reserve_target(200, 200, 100), 320);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_uses_remaining_slots_and_pass_rate() {
+        assert_eq!(adaptive_transfer_test_limit(200, 180, 0, 0, 100), 210);
+        assert_eq!(adaptive_transfer_test_limit(200, 180, 100, 50, 100), 148);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_respects_hard_limit_and_candidate_headroom() {
+        assert_eq!(adaptive_transfer_test_limit(200, 0, 300, 240, 50), 320);
+        assert_eq!(adaptive_transfer_test_limit(200, 190, 300, 240, 3), 303);
+    }
+
+    #[test]
+    fn adaptive_transfer_budget_stops_when_target_is_already_met() {
+        assert_eq!(adaptive_transfer_test_limit(200, 200, 320, 280, 20), 320);
+    }
+
+    #[test]
+    fn selection_eligible_count_respects_endpoint_limit() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "vless://c@example.net:443".to_string(),
+        ];
+        assert_eq!(selection_eligible_count(&configs, 1, 3), 2);
+    }
+
+    #[test]
+    fn history_fingerprint_ignores_vmess_ps_label() {
+        let a = format!(
+            "vmess://{}",
+            STANDARD.encode(br#"{"ps":"A 01","add":"example.com","port":443}"#)
+        );
+        let b = format!(
+            "vmess://{}",
+            STANDARD.encode(br#"{"ps":"B 01","add":"example.com","port":443}"#)
+        );
+        assert_eq!(history_fingerprint(&a), history_fingerprint(&b));
+    }
+
+    #[test]
+    fn routes_basic_proxy_schemes_to_xray() {
+        for config in [
+            "http://proxy.example:8080",
+            "socks://proxy.example:1080",
+            "socks5://proxy.example:1080",
+            "socks5h://proxy.example:1080",
+        ] {
+            assert_eq!(light_backend(config), LightBackend::Xray);
+        }
+    }
+
+    #[test]
+    fn routes_reality_to_backend_fallback() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=tcp&pbk=public&sid=01&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::Fallback);
+    }
+
+    #[test]
+    fn routes_grpc_authority_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&authority=grpc.example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_grpc_host_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=grpc&serviceName=Tun&host=grpc.example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_legacy_raw_http_to_singbox() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=tcp&headerType=http&host=example.com&path=%2Fproxy";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_vmess_xhttp_to_xray_only() {
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"xhttp"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vmess_splithttp_to_xray_only() {
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"splithttp"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_url_splithttp_to_xray_only() {
+        let config = "vless://uuid@example.com:443?security=tls&type=splithttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vmess_grpc_host_to_xray() {
+        let payload = r#"{"v":"2","add":"example.com","port":"443","id":"00000000-0000-0000-0000-000000000001","net":"grpc","type":"gun","host":"grpc.example.com"}"#;
+        let config = format!("vmess://{}", STANDARD.encode(payload));
+        assert_eq!(light_backend(&config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_grpc_multi_to_xray() {
+        let config =
+            "trojan://pass@example.com:443?security=tls&type=grpc&serviceName=Tun&mode=multi";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_xhttp_to_xray_only() {
+        let config = "vless://uuid@example.com:443?security=none&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_non_vless_xhttp_to_xray() {
+        let config = "trojan://pass@example.com:443?security=tls&type=xhttp";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_reality_xhttp_to_xray_only() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=xhttp&pbk=public&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_reality_vision_udp443_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=reality&type=tcp&flow=xtls-rprx-vision-udp443";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vision_udp443_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=tcp&flow=xtls-rprx-vision-udp443";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vless_ech_dns_resolver_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=ws&ech=example.com%2Bhttps%3A%2F%2Fdns.example%2Fdns-query";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_vless_certificate_pinning_to_xray() {
+        let config =
+            "vless://uuid@example.com:443?security=tls&type=ws&pcs=0000000000000000000000000000000000000000000000000000000000000000";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&vcn=example.com";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn keeps_raw_vless_ech_on_singbox() {
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&ech=YWJj";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_hysteria2_pin_sha256_to_xray() {
+        let config = "hysteria2://password@example.com:443?pinSHA256=AA%3ABB%3ACC%3ADD";
+        assert_eq!(light_backend(config), LightBackend::Xray);
+    }
+
+    #[test]
+    fn routes_normal_vless_to_singbox() {
+        let config = "vless://uuid@example.com:443?security=tls&type=ws&path=%2F&sni=example.com";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn routes_socks4_to_singbox() {
+        assert_eq!(
+            light_backend("socks4://127.0.0.1:1080"),
+            LightBackend::SingBox
+        );
+        assert_eq!(
+            light_backend("socks4a://127.0.0.1:1080"),
+            LightBackend::SingBox
+        );
+    }
+
+    #[test]
+    fn explicit_tcp_transport_is_supported_by_light_parser() {
+        let config =
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=tcp";
+        assert_eq!(light_backend(config), LightBackend::SingBox);
+    }
+
+    #[test]
+    fn defaults_trojan_security_in_published_light_links() {
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?sni=example.com#Trojan"),
+            "trojan://pass@example.com:443?sni=example.com&security=tls#Trojan"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?#Trojan"),
+            "trojan://pass@example.com:443?security=tls#Trojan"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?security=tls"),
+            "trojan://pass@example.com:443?security=tls"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?security="),
+            "trojan://pass@example.com:443?security=tls"
+        );
+        assert_eq!(
+            normalize_light_config("trojan://pass@example.com:443?path=%2Fa%3Fb&security="),
+            "trojan://pass@example.com:443?path=%2Fa%3Fb&security=tls"
+        );
+    }
+
+    #[test]
+    fn light_training_features_are_precheck_only() {
+        let metrics = ProxyMetrics {
+            successes: 2,
+            attempts: 3,
+            median_ms: 120.0,
+            min_ms: 80.0,
+            jitter_ms: 10.0,
+            throughput_kbps: 900.0,
+        };
+
+        let features = super::light_training_features(
+            "vless://uuid@example.com:443?security=tls&type=ws&sni=example.com&path=%2F",
+            Some(&metrics),
+            0.75,
+            4,
+        );
+
+        assert_eq!(features.len(), proxyrift::light_training::FEATURE_COUNT);
+        assert_eq!(
+            features.get("protocol"),
+            Some(&serde_json::Value::String("vless".to_string()))
+        );
+        assert_eq!(
+            features
+                .get("transport")
+                .and_then(serde_json::Value::as_str),
+            Some("ws")
+        );
+        assert_eq!(
+            features.get("security").and_then(serde_json::Value::as_str),
+            Some("tls")
+        );
+        assert_eq!(
+            features
+                .get("early_attempts")
+                .and_then(serde_json::Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            features
+                .get("history_checks")
+                .and_then(serde_json::Value::as_u64),
+            Some(4)
+        );
+        assert!(!features.values().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text.contains("uuid@example.com"))
+        }));
+    }
+
+    #[test]
+    fn light_training_features_recognize_vmess_tls_string() {
+        let payload = serde_json::json!({
+            "v": "2",
+            "add": "example.com",
+            "port": "443",
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "ws",
+            "tls": "tls",
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        let config = format!("vmess://{encoded}");
+
+        let features = light_training_features(&config, None, 0.5, 0);
+
+        assert_eq!(
+            features.get("security").and_then(serde_json::Value::as_str),
+            Some("tls")
+        );
+        assert_eq!(
+            features
+                .get("tls_enabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn backend_metadata_accepts_either_core() {
+        let xray = HashMap::from([(
+            "xray-only".to_string(),
+            ProxyMetrics {
+                successes: 5,
+                attempts: 8,
+                median_ms: 10.0,
+                min_ms: 4.0,
+                jitter_ms: 2.0,
+                throughput_kbps: 80.0,
+            },
+        )]);
+        let singbox = HashMap::from([(
+            "singbox-only".to_string(),
+            ProxyMetrics {
+                successes: 5,
+                attempts: 6,
+                median_ms: 12.0,
+                min_ms: 6.0,
+                jitter_ms: 1.5,
+                throughput_kbps: 70.0,
+            },
+        )]);
+
+        let merged = merge_light_metadata(xray, singbox);
+
+        assert!(merged.contains_key("xray-only"));
+        assert!(merged.contains_key("singbox-only"));
+    }
+
+    #[test]
+    fn recheck_diversity_limits_are_not_relaxed_by_fallback() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "vless://c@example.net:443".to_string(),
+        ];
+
+        let selected = super::diversify_recheck_candidates(&configs, 3, 1);
+
+        assert_eq!(
+            selected,
+            vec![
+                "vless://a@example.com:443".to_string(),
+                "vless://c@example.net:443".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn quality_first_preserves_rank_and_endpoint_limit() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "trojan://c@example.net:8443".to_string(),
+            "vmess://encoded@example.org:9443".to_string(),
+        ];
+
+        let selected = select_verified_configs(&configs, 4, 1, 3);
+
+        assert_eq!(
+            selected,
+            vec![configs[0].clone(), configs[2].clone(), configs[3].clone()]
+        );
+    }
+}
