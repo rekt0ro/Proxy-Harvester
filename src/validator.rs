@@ -1610,9 +1610,7 @@ fn allocated_ports(count: usize) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
-fn split_hysteria2_endpoint_conflicts(
-    entries: &[(String, Value)],
-) -> Vec<Vec<(String, Value)>> {
+fn split_hysteria2_endpoint_conflicts(entries: &[(String, Value)]) -> Vec<Vec<(String, Value)>> {
     let mut non_hysteria2 = Vec::new();
     let mut groups = Vec::<(HashSet<(String, u16)>, Vec<(String, Value)>)>::new();
 
@@ -2865,10 +2863,8 @@ mod tests {
             ),
             (
                 "vless://00000000-0000-0000-0000-000000000001@example.net:443".to_string(),
-                parse_config(
-                    "vless://00000000-0000-0000-0000-000000000001@example.net:443",
-                )
-                .unwrap(),
+                parse_config("vless://00000000-0000-0000-0000-000000000001@example.net:443")
+                    .unwrap(),
             ),
         ];
 
