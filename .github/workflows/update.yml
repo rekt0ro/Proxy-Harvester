@@ -19,6 +19,8 @@ jobs:
   collect:
     name: "🔎 Collect & Validate"
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       rust_toolchain_key: ${{ steps.keys.outputs.rust-toolchain }}
       registry_key: ${{ steps.keys.outputs.registry }}
@@ -29,8 +31,6 @@ jobs:
     steps:
       - name: "Checkout source"
         uses: actions/checkout@v7
-        with:
-          persist-credentials: false
 
       - name: "🔐 Load proxy sources"
         env:
@@ -390,18 +390,11 @@ jobs:
       - name: "🧬 Generate Base64 subscriptions"
         run: ./target/release/encode_subscriptions
 
-      - name: "📤 Upload subscriptions"
-        uses: actions/upload-artifact@v7
-        with:
-          name: subscriptions
-          path: |
-            subscriptions/all.txt
-            subscriptions/light.txt
-            subscriptions/all-base64.txt
-            subscriptions/light-base64.txt
-            subscriptions/light-history.json
-          if-no-files-found: error
-          retention-days: 1
+      - name: "📦 Prepare published outputs"
+        run: |
+          for f in subscriptions/all.txt subscriptions/light.txt subscriptions/all-base64.txt subscriptions/light-base64.txt; do
+            test -s "$f"
+          done
 
       - name: "📊 Write run summary"
         if: always()
@@ -466,28 +459,10 @@ jobs:
           rm -rf /tmp/proxyrift /tmp/xray-download /tmp/singbox-download
           rm -f sources.txt subscriptions/.light-candidates.txt subscriptions/.all.txt subscriptions/.all.txt.next subscriptions/.light.txt.next subscriptions/light-history.json.tmp
 
-  publish:
-    name: "🚀 Publish Subscriptions"
-    needs: collect
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: "Checkout source"
-        uses: actions/checkout@v7
-
-      - name: "📦 Download subscriptions"
-        uses: actions/download-artifact@v8
-        with:
-          name: subscriptions
-          path: ${{ runner.temp }}/subscriptions
-
-      - name: "🚀 Commit & publish changes"
+      - name: "🚀 Publish generated changes"
         run: |
           set -euo pipefail
 
-          src="${RUNNER_TEMP}/subscriptions"
           files="all.txt light.txt all-base64.txt light-base64.txt"
 
           git config user.name "rekt0ro"
@@ -496,27 +471,21 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "Publishing generated subscriptions (attempt ${attempt}/5)."
 
-            # Subscription files are generated artifacts owned by this workflow.
-            # Rebase onto the latest main by resetting to it, then reapply the
-            # freshly generated artifact so concurrent subscription updates cannot
-            # turn into content conflicts.
             git fetch origin main
             git reset --hard origin/main
 
             for f in $files; do
-              test -s "${src}/${f}"
-              cp "${src}/${f}" "subscriptions/${f}"
+              test -s "subscriptions/${f}"
             done
 
-            if [ -s "${src}/light-history.json" ]; then
-              cp "${src}/light-history.json" "subscriptions/light-history.json"
-            fi
+            git add -- \
+              subscriptions/all.txt \
+              subscriptions/light.txt \
+              subscriptions/all-base64.txt \
+              subscriptions/light-base64.txt
 
-            for f in $files; do
-              git add -- "subscriptions/${f}"
-            done
-            if [ -s "${src}/light-history.json" ]; then
-              git add -- "subscriptions/light-history.json"
+            if [ -s "subscriptions/light-history.json" ]; then
+              git add -- subscriptions/light-history.json
             fi
 
             if git diff --cached --quiet; then
