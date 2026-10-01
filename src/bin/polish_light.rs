@@ -645,9 +645,9 @@ async fn fill_transfer_gate(
         transfer_tested.extend(batch.iter().cloned());
 
         println!(
-            "[INFO] Light 10 MiB gate: testing {} candidates for {} remaining slots.",
-            batch.len(),
-            remaining
+            "[INFO] LIGHT TRANSFER: {} SLOTS REMAINING | testing {} candidates",
+            remaining,
+            batch.len()
         );
 
         let metadata = validate_light_transfer_batch(xray, singbox, &batch, workers).await?;
@@ -1340,9 +1340,12 @@ async fn main() -> Result<(), String> {
         }
 
         println!(
-            "[INFO] Final Light recheck wave {wave}: {} candidates ({} slots remaining).",
-            final_candidates.len(),
-            remaining
+            "[INFO] LIGHT SLOTS REMAINING: {} / {}",
+            remaining, selection_limit
+        );
+        println!(
+            "[INFO] Strict recheck wave {wave}: testing {} candidates.",
+            final_candidates.len()
         );
 
         let primary_metadata = validate_light_batch(
