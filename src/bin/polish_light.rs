@@ -1390,11 +1390,11 @@ async fn main() -> Result<(), String> {
             max_per_family,
         );
 
-        let fill_percent = if selection_limit == 0 {
-            0
-        } else {
-            selected.len().saturating_mul(100) / selection_limit
-        };
+        let fill_percent = selected
+            .len()
+            .saturating_mul(100)
+            .checked_div(selection_limit)
+            .unwrap_or(0);
         println!(
             "\n[INFO] ===== LIGHT FILL PROGRESS: {}/{} READY ({}%) | STRICT CHECKS: {} =====\n",
             selected.len(),
