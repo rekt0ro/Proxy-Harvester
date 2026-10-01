@@ -533,6 +533,45 @@ fn ss_legacy_decode(payload: &str) -> Option<String> {
     String::from_utf8(b64decode(&decode_component(encoded))?).ok()
 }
 
+fn ss_has_nonempty_password(config: &str) -> bool {
+    let config = clean(config);
+    let Ok(url) = Url::parse(config) else {
+        return false;
+    };
+
+    if let Some(password) = url.password() {
+        return !decode_component(password).is_empty();
+    }
+
+    let payload = config
+        .split_once("://")
+        .map(|(_, payload)| payload)
+        .unwrap_or_default();
+
+    if let Some((credentials, _remote)) = payload.rsplit_once('@') {
+        let decoded = b64decode(&decode_component(credentials))
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let Some(credentials) = decoded else {
+            return false;
+        };
+
+        return credentials
+            .split_once(':')
+            .is_some_and(|(_, password)| !password.is_empty());
+    }
+
+    let Some(decoded) = ss_legacy_decode(payload) else {
+        return false;
+    };
+    let Some((credentials, _remote)) = decoded.rsplit_once('@') else {
+        return false;
+    };
+
+    credentials
+        .split_once(':')
+        .is_some_and(|(_, password)| !password.is_empty())
+}
+
 pub fn endpoint(config: &str) -> Option<(String, u16)> {
     let config = clean(config);
     let scheme = scheme_of(config);
@@ -1660,10 +1699,7 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             {
                 return false;
             }
-            if url.password().is_some_and(str::is_empty) {
-                return false;
-            }
-            true
+            ss_has_nonempty_password(config)
         }
         "http" | "socks" | "socks5" | "socks5h" | "wg" | "vmess" => true,
         _ => false,
@@ -3749,6 +3785,23 @@ mod tests {
     fn cheap_compatibility_keeps_passwordless_http_proxy() {
         assert!(is_cheaply_supported_config(
             "socks5://user@example.com:1080"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_empty_sip002_shadowsocks_password() {
+        assert!(!is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206@example.com:8388"
+        ));
+        assert!(is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:8388"
+        ));
+    }
+
+    #[test]
+    fn cheap_compatibility_rejects_empty_legacy_shadowsocks_password() {
+        assert!(!is_cheaply_supported_config(
+            "ss://YWVzLTI1Ni1nY206QGV4YW1wbGUuY29tOjgzODg="
         ));
     }
 
