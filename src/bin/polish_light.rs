@@ -24,11 +24,16 @@ const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 1;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
-const TRANSFER_SELECTION_HEADROOM: usize = 80;
+const TRANSFER_RESERVE_MIN_HEADROOM: usize = 60;
+const TRANSFER_RESERVE_DEFAULT_PASS_RATE: f64 = 0.80;
+const TRANSFER_RESERVE_SAFETY_FACTOR: f64 = 1.08;
+const TRANSFER_RESERVE_MAX_HEADROOM: usize = 120;
 const FINAL_TRANSFER_BATCH_SIZE: usize = 32;
-const FINAL_TRANSFER_WORKERS: usize = 16;
-const FINAL_TRANSFER_INITIAL_WORKERS: usize = 10;
+const FINAL_TRANSFER_WORKERS: usize = 12;
+const FINAL_TRANSFER_INITIAL_WORKERS: usize = 6;
 const FINAL_TRANSFER_MIN_WORKERS: usize = 4;
+const FINAL_TRANSFER_QUEUE_MULTIPLIER: usize = 3;
+const FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP: usize = 2;
 const FINAL_TRANSFER_TEST_LIMIT: usize = 600;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
@@ -59,6 +64,37 @@ fn adaptive_recheck_limit(
     };
 
     estimated.max(exploration_floor).min(configured_limit)
+}
+
+fn selection_eligible_count(
+    configs: &[String],
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> usize {
+    select_verified_configs(configs, configs.len(), max_per_endpoint, max_per_family).len()
+}
+
+fn transfer_reserve_target(
+    selection_limit: usize,
+    transfer_tested: usize,
+    transfer_passed: usize,
+) -> usize {
+    if selection_limit == 0 {
+        return 0;
+    }
+
+    let observed_rate = if transfer_tested < 16 {
+        TRANSFER_RESERVE_DEFAULT_PASS_RATE
+    } else {
+        ((transfer_passed as f64 + 2.0) / (transfer_tested as f64 + 4.0)).clamp(0.60, 0.95)
+    };
+
+    let estimated =
+        ((selection_limit as f64 / observed_rate) * TRANSFER_RESERVE_SAFETY_FACTOR).ceil() as usize;
+    let minimum = selection_limit.saturating_add(TRANSFER_RESERVE_MIN_HEADROOM);
+    let maximum = selection_limit.saturating_add(TRANSFER_RESERVE_MAX_HEADROOM);
+
+    estimated.clamp(minimum, maximum)
 }
 
 fn write_light_stats(
@@ -627,6 +663,7 @@ async fn fill_transfer_gate(
     max_per_family: usize,
 ) -> Result<usize, String> {
     let mut transfer_workers = FINAL_TRANSFER_INITIAL_WORKERS;
+    let mut clean_batches = 0usize;
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
         sort_ranked(
@@ -657,9 +694,16 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
+        // final_verified is kept ranked before entering the transfer gate,
+        // so retaining this order tests the most likely winners first.
+
         let remaining = selection_limit.saturating_sub(selected.len());
+        let queue_window = transfer_workers
+            .saturating_mul(FINAL_TRANSFER_QUEUE_MULTIPLIER)
+            .max(8);
         let batch_limit = remaining
             .min(FINAL_TRANSFER_BATCH_SIZE)
+            .min(queue_window)
             .min(FINAL_TRANSFER_TEST_LIMIT.saturating_sub(transfer_tested.len()))
             .max(1);
 
@@ -688,22 +732,28 @@ async fn fill_transfer_gate(
         let rate_limits = rate_limits_after.saturating_sub(rate_limits_before);
         if rate_limits >= 4 {
             transfer_workers = transfer_workers
-                .saturating_sub(4)
+                .saturating_sub(2)
                 .max(FINAL_TRANSFER_MIN_WORKERS);
+            clean_batches = 0;
             println!(
                 "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
                 rate_limits, transfer_workers
             );
         } else if rate_limits > 0 {
             transfer_workers = transfer_workers
-                .saturating_sub(2)
+                .saturating_sub(1)
                 .max(FINAL_TRANSFER_MIN_WORKERS);
+            clean_batches = 0;
             println!(
                 "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
                 rate_limits, transfer_workers
             );
         } else {
-            transfer_workers = (transfer_workers + 2).min(FINAL_TRANSFER_WORKERS);
+            clean_batches += 1;
+            if clean_batches >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
+                transfer_workers = (transfer_workers + 1).min(FINAL_TRANSFER_WORKERS);
+                clean_batches = 0;
+            }
         }
 
         println!(
@@ -1306,53 +1356,46 @@ async fn main() -> Result<(), String> {
             &history,
         );
 
-        let transfer_selected =
-            if final_verified.len() >= selection_limit + TRANSFER_SELECTION_HEADROOM {
-                fill_transfer_gate(
-                    &xray,
-                    &singbox,
-                    &final_verified,
-                    &mut transfer_verified,
-                    &mut transfer_tested,
-                    &global_positions,
-                    &history,
-                    selection_limit,
-                    max_per_endpoint,
-                    max_per_family,
-                )
-                .await?
-            } else {
-                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
-                sort_ranked(
-                    &mut transfer_ranked,
-                    &transfer_verified,
-                    &global_positions,
-                    &history,
-                );
-                select_verified_configs(
-                    &transfer_ranked,
-                    selection_limit,
-                    max_per_endpoint,
-                    max_per_family,
-                )
-                .len()
-            };
+        let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked,
+            &transfer_verified,
+            &global_positions,
+            &history,
+        );
+        let mut transfer_selected = select_verified_configs(
+            &transfer_ranked,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        )
+        .len();
+
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
 
         if transfer_selected >= selection_limit {
-            let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
-            sort_ranked(
-                &mut transfer_ranked,
-                &transfer_verified,
-                &global_positions,
-                &history,
+            println!(
+                "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | PUBLISH READY",
+                transfer_selected, selection_limit
             );
+
             let selected = select_verified_configs(
                 &transfer_ranked,
                 selection_limit,
                 max_per_endpoint,
                 max_per_family,
             );
-
             persist_light_result(
                 &output,
                 &selected,
@@ -1374,10 +1417,73 @@ async fn main() -> Result<(), String> {
                 selected.len(),
             )?;
             println!(
-                "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | ALL PASSED THE MANDATORY 10 MiB GATE",
+                "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
                 selected.len()
             );
             return Ok(());
+        }
+
+        if strict_untested_eligible >= reserve_target {
+            println!(
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | TRANSFER QUALIFIED: {}",
+                strict_untested_eligible, reserve_target, transfer_selected
+            );
+
+            transfer_selected = fill_transfer_gate(
+                &xray,
+                &singbox,
+                &final_verified,
+                &mut transfer_verified,
+                &mut transfer_tested,
+                &global_positions,
+                &history,
+                selection_limit,
+                max_per_endpoint,
+                max_per_family,
+            )
+            .await?;
+
+            if transfer_selected >= selection_limit {
+                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+                sort_ranked(
+                    &mut transfer_ranked,
+                    &transfer_verified,
+                    &global_positions,
+                    &history,
+                );
+                let selected = select_verified_configs(
+                    &transfer_ranked,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                );
+
+                persist_light_result(
+                    &output,
+                    &selected,
+                    history_path,
+                    &history,
+                    &final_attempts,
+                    &final_metadata,
+                    &intelligence,
+                    &global_metadata,
+                    intelligence_path,
+                )?;
+                write_light_stats(
+                    &stats_path,
+                    input_candidate_count,
+                    security_rejected,
+                    final_metadata.len(),
+                    transfer_tested.len(),
+                    transfer_verified.len(),
+                    selected.len(),
+                )?;
+                println!(
+                    "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
+                    selected.len()
+                );
+                return Ok(());
+            }
         }
 
         let remaining = selection_limit.saturating_sub(transfer_selected);
@@ -1463,81 +1569,52 @@ async fn main() -> Result<(), String> {
             max_per_family,
         );
 
-        let fill_percent = selected
-            .len()
-            .saturating_mul(100)
-            .checked_div(selection_limit)
-            .unwrap_or(0);
+        let strict_untested = final_verified
+            .iter()
+            .filter(|config| !transfer_tested.contains(*config))
+            .cloned()
+            .collect::<Vec<_>>();
+        let strict_untested_eligible =
+            selection_eligible_count(&strict_untested, max_per_endpoint, max_per_family);
+        let reserve_target = transfer_reserve_target(
+            selection_limit,
+            transfer_tested.len(),
+            transfer_verified.len(),
+        );
+        let mut transfer_ranked_after = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut transfer_ranked_after,
+            &transfer_verified,
+            &global_positions,
+            &history,
+        );
+        let transfer_eligible =
+            selection_eligible_count(&transfer_ranked_after, max_per_endpoint, max_per_family);
+        let transfer_slots_remaining = selection_limit.saturating_sub(transfer_eligible);
+
         println!(
-            "[INFO] 📈 [LIGHT FILL] {}/{} READY ({}%) | STRICT CHECKS: {}",
+            "[INFO] 📈 [LIGHT FILL] STRICT POOL: {}/{} | UNTESTED STRICT ELIGIBLE: {} | TRANSFER QUALIFIED: {} | TRANSFER SLOTS REMAINING: {} | RESERVE TARGET: {} | STRICT CHECKS: {}",
             selected.len(),
             selection_limit,
-            fill_percent,
+            strict_untested_eligible,
+            transfer_eligible,
+            transfer_slots_remaining,
+            reserve_target,
             final_attempts.values().copied().sum::<usize>()
         );
 
-        if selected.len() >= selection_limit {
+        if strict_untested_eligible >= reserve_target {
             println!(
-                "[INFO] 🎯 [LIGHT] STRICT POOL READY | {}/{} | NEXT: 10 MiB TRANSFER GATE",
-                selected.len(),
-                selection_limit
+                "[INFO] 🎯 [LIGHT] TRANSFER RESERVE READY | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {}",
+                strict_untested_eligible, reserve_target
             );
-
-            let transfer_selected = fill_transfer_gate(
-                &xray,
-                &singbox,
-                &final_verified,
-                &mut transfer_verified,
-                &mut transfer_tested,
-                &global_positions,
-                &history,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            )
-            .await?;
-
-            if transfer_selected >= selection_limit {
-                let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
-                sort_ranked(
-                    &mut transfer_ranked,
-                    &transfer_verified,
-                    &global_positions,
-                    &history,
-                );
-                let selected = select_verified_configs(
-                    &transfer_ranked,
-                    selection_limit,
-                    max_per_endpoint,
-                    max_per_family,
-                );
-
-                persist_light_result(
-                    &output,
-                    &selected,
-                    history_path,
-                    &history,
-                    &final_attempts,
-                    &final_metadata,
-                    &intelligence,
-                    &global_metadata,
-                    intelligence_path,
-                )?;
-                write_light_stats(
-                    &stats_path,
-                    input_candidate_count,
-                    security_rejected,
-                    final_metadata.len(),
-                    transfer_tested.len(),
-                    transfer_verified.len(),
-                    selected.len(),
-                )?;
-                println!(
-                    "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
-                    selected.len()
-                );
-                return Ok(());
-            }
+        } else {
+            println!(
+                "[INFO] ⏭️ [LIGHT] DISCOVER MORE | UNTESTED STRICT ELIGIBLE: {} | RESERVE TARGET: {} | NEED {} MORE",
+                strict_untested_eligible,
+                reserve_target,
+                reserve_target.saturating_sub(strict_untested_eligible)
+            );
         }
     }
 
@@ -1650,10 +1727,11 @@ async fn main() -> Result<(), String> {
         intelligence_path,
     )?;
     println!(
-        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY: {} | STRICT CHECKS: {} | 10 MiB PASSES: {}",
+        "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY: {} | STRICT CHECKS: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {}",
         selected.len(),
         candidates.len(),
         final_attempts.values().copied().sum::<usize>(),
+        transfer_tested.len(),
         transfer_verified.len()
     );
     Ok(())
@@ -1663,8 +1741,8 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, has_disabled_tls_verification, history_fingerprint, light_backend,
-        merge_light_metadata, normalize_light_config, select_verified_configs, LightBackend,
-        ProxyMetrics,
+        merge_light_metadata, normalize_light_config, select_verified_configs,
+        selection_eligible_count, transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -1719,6 +1797,28 @@ mod tests {
         assert_eq!(adaptive_recheck_limit(100, 500, 0, 0), 500);
         assert_eq!(adaptive_recheck_limit(100, 500, 100, 50), 250);
         assert_eq!(adaptive_recheck_limit(100, 500, 100, 20), 500);
+    }
+
+    #[test]
+    fn transfer_reserve_is_conservative_at_start() {
+        assert_eq!(transfer_reserve_target(200, 0, 0), 270);
+        assert_eq!(transfer_reserve_target(200, 200, 190), 260);
+    }
+
+    #[test]
+    fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
+        assert_eq!(transfer_reserve_target(200, 200, 160), 273);
+        assert_eq!(transfer_reserve_target(200, 200, 100), 320);
+    }
+
+    #[test]
+    fn selection_eligible_count_respects_endpoint_limit() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.com:443".to_string(),
+            "vless://c@example.net:443".to_string(),
+        ];
+        assert_eq!(selection_eligible_count(&configs, 1, 3), 2);
     }
 
     #[test]
