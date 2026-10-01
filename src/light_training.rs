@@ -41,11 +41,7 @@ pub fn persist(path: &str, rows: &[TrainingRow]) -> Result<DatasetStats, String>
     persist_at(path, rows, now)
 }
 
-fn persist_at(
-    path: &str,
-    rows: &[TrainingRow],
-    now: u64,
-) -> Result<DatasetStats, String> {
+fn persist_at(path: &str, rows: &[TrainingRow], now: u64) -> Result<DatasetStats, String> {
     let mut by_id = BTreeMap::<String, Value>::new();
 
     if let Ok(file) = File::open(path) {
@@ -97,7 +93,11 @@ fn persist_at(
                 a.get("observation_id")
                     .and_then(Value::as_str)
                     .unwrap_or("")
-                    .cmp(b.get("observation_id").and_then(Value::as_str).unwrap_or(""))
+                    .cmp(
+                        b.get("observation_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    )
             })
     });
     values.truncate(MAX_ROWS);
@@ -159,11 +159,11 @@ fn persist_at(
 impl TrainingRow {
     fn to_value(&self) -> Value {
         let mut root = Map::new();
+        root.insert("schema_version".to_string(), Value::from(DATASET_VERSION));
         root.insert(
-            "schema_version".to_string(),
-            Value::from(DATASET_VERSION),
+            "observation_id".to_string(),
+            Value::from(self.observation_id.clone()),
         );
-        root.insert("observation_id".to_string(), Value::from(self.observation_id.clone()));
         root.insert("observed_at".to_string(), Value::from(self.observed_at));
         root.insert(
             "candidate_fingerprint".to_string(),
@@ -309,7 +309,7 @@ mod tests {
         let mut rows = vec![row("fresh", 1_000, true, None)];
         rows.push(row("old", 1, true, None));
 
-        persist_at(&path, &rows, 1_000 + 45 * 24 * 60 * 60)
+        persist_at(&path, &rows, 1_000 + 45 * 60 * 60)
             .expect("persist retained rows");
 
         let body = fs::read_to_string(&path).expect("read dataset");
