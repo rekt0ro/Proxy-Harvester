@@ -499,22 +499,21 @@ async fn validate_light_transfer_batch(
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut singbox_candidates = Vec::new();
     let mut xray_candidates = Vec::new();
-    let mut dual_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
 
     for config in candidates {
         match light_backend(config) {
             LightBackend::SingBox => singbox_candidates.push(config.clone()),
             LightBackend::Xray => xray_candidates.push(config.clone()),
-            LightBackend::Dual => dual_candidates.push(config.clone()),
+            LightBackend::Fallback => fallback_candidates.push(config.clone()),
         }
     }
 
     let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS);
 
     let mut singbox_validation_candidates = singbox_candidates;
-    singbox_validation_candidates.extend(dual_candidates.iter().cloned());
-    let mut xray_validation_candidates = xray_candidates;
-    xray_validation_candidates.extend(dual_candidates.iter().cloned());
+    singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
+    let xray_validation_candidates = xray_candidates;
 
     let singbox_future = async {
         if singbox_validation_candidates.is_empty() {
@@ -550,15 +549,31 @@ async fn validate_light_transfer_batch(
     };
 
     let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+    let singbox_metadata = singbox_result?;
+    let mut xray_metadata = xray_result?;
 
-    Ok(merge_light_metadata(
-        xray_result?,
-        singbox_result?,
-        &dual_candidates,
-    ))
+    let fallback_retry = fallback_candidates
+        .into_iter()
+        .filter(|config| !singbox_metadata.contains_key(config))
+        .collect::<Vec<_>>();
+
+    if !fallback_retry.is_empty() {
+        let fallback_xray = proxyrift::validator::validate_candidates_with_target_once(
+            xray,
+            &fallback_retry,
+            proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+            workers,
+            1000,
+            FINAL_TRANSFER_TIMEOUT_SECS,
+            FINAL_TRANSFER_LATENCY_LIMIT_MS,
+        )
+        .await?;
+        xray_metadata.extend(fallback_xray);
+    }
+
+    Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
     singbox: &str,
@@ -912,33 +927,17 @@ fn light_backend(config: &str) -> LightBackend {
     }
 
     if security == "reality" {
-        return LightBackend::Dual;
+        return LightBackend::Fallback;
     }
 
     LightBackend::SingBox
 }
 
 fn merge_light_metadata(
-    mut xray_metadata: HashMap<String, ProxyMetrics>,
-    mut singbox_metadata: HashMap<String, ProxyMetrics>,
-    dual_candidates: &[String],
+    xray_metadata: HashMap<String, ProxyMetrics>,
+    singbox_metadata: HashMap<String, ProxyMetrics>,
 ) -> HashMap<String, ProxyMetrics> {
-    let mut verified = HashMap::with_capacity(xray_metadata.len() + singbox_metadata.len());
-
-    for config in dual_candidates {
-        let xray_metrics = xray_metadata.remove(config);
-        let singbox_metrics = singbox_metadata.remove(config);
-
-        if let (Some(mut metrics), Some(singbox)) = (xray_metrics, singbox_metrics) {
-            metrics.successes = metrics.successes.min(singbox.successes);
-            metrics.attempts = metrics.attempts.min(singbox.attempts);
-            metrics.median_ms = metrics.median_ms.max(singbox.median_ms);
-            metrics.min_ms = metrics.min_ms.max(singbox.min_ms);
-            verified.insert(config.clone(), metrics);
-        }
-    }
-
-    verified.extend(singbox_metadata);
+    let mut verified = singbox_metadata;
     verified.extend(xray_metadata);
     verified
 }
@@ -952,27 +951,26 @@ async fn validate_light_batch(
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut singbox_candidates = Vec::new();
     let mut xray_candidates = Vec::new();
-    let mut dual_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
 
     for config in candidates {
         match light_backend(config) {
             LightBackend::SingBox => singbox_candidates.push(config.clone()),
             LightBackend::Xray => xray_candidates.push(config.clone()),
-            LightBackend::Dual => dual_candidates.push(config.clone()),
+            LightBackend::Fallback => fallback_candidates.push(config.clone()),
         }
     }
 
     println!(
-        "[INFO] Light backend routing: sing-box {}, Xray {}, dual {}.",
+        "[INFO] Light backend routing: sing-box {}, Xray {}, fallback {}.",
         singbox_candidates.len(),
         xray_candidates.len(),
-        dual_candidates.len()
+        fallback_candidates.len()
     );
 
     let mut singbox_validation_candidates = singbox_candidates;
-    singbox_validation_candidates.extend(dual_candidates.iter().cloned());
-    let mut xray_validation_candidates = xray_candidates;
-    xray_validation_candidates.extend(dual_candidates.iter().cloned());
+    singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
+    let xray_validation_candidates = xray_candidates;
 
     let request_timeout = std::time::Duration::try_from_secs_f64(settings.timeout_seconds)
         .map_err(|_| "invalid validation timeout: value overflows Duration".to_string())?;
@@ -1031,9 +1029,43 @@ async fn validate_light_batch(
 
     let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
     let singbox_metadata = singbox_result?;
-    let xray_metadata = xray_result?;
+    let mut xray_metadata = xray_result?;
 
-    let verified = merge_light_metadata(xray_metadata, singbox_metadata, &dual_candidates);
+    let fallback_retry = fallback_candidates
+        .into_iter()
+        .filter(|config| !singbox_metadata.contains_key(config))
+        .collect::<Vec<_>>();
+
+    if !fallback_retry.is_empty() {
+        println!(
+            "[INFO] Light backend fallback: retrying {} candidates with Xray after sing-box did not accept them.",
+            fallback_retry.len()
+        );
+        let fallback_xray = if settings.strict {
+            validate_candidates_with_targets_strict(
+                xray,
+                &fallback_retry,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await?
+        } else {
+            validate_candidates_with_targets(
+                xray,
+                &fallback_retry,
+                targets,
+                settings.workers.max(1),
+                settings.batch_size,
+                settings.timeout_seconds,
+            )
+            .await?
+        };
+        xray_metadata.extend(fallback_xray);
+    }
+
+    let verified = merge_light_metadata(xray_metadata, singbox_metadata);
 
     println!(
         "[INFO] Multi-target Light validation: {}/{} candidates verified across {} validation targets.",
@@ -1431,7 +1463,7 @@ async fn main() -> Result<(), String> {
         match light_backend(config) {
             LightBackend::SingBox => *backend_counts.entry("sing-box").or_default() += 1,
             LightBackend::Xray => *backend_counts.entry("xray").or_default() += 1,
-            LightBackend::Dual => *backend_counts.entry("dual").or_default() += 1,
+            LightBackend::Fallback => *backend_counts.entry("fallback").or_default() += 1,
         }
     }
     println!("[INFO] Light protocol distribution: {:?}", protocol_counts);
@@ -1547,10 +1579,10 @@ mod tests {
     }
 
     #[test]
-    fn routes_reality_to_both_cores() {
+    fn routes_reality_to_backend_fallback() {
         let config =
             "vless://uuid@example.com:443?security=reality&type=tcp&pbk=public&sid=01&sni=example.com";
-        assert_eq!(light_backend(config), LightBackend::Dual);
+        assert_eq!(light_backend(config), LightBackend::Fallback);
     }
 
     #[test]
@@ -1720,64 +1752,32 @@ mod tests {
     }
 
     #[test]
-    fn dual_metadata_preserves_intersection_and_exclusive_results() {
-        let dual = vec!["dual".to_string()];
-        let xray = HashMap::from([
-            (
-                "dual".to_string(),
-                ProxyMetrics {
-                    successes: 6,
-                    attempts: 8,
-                    median_ms: 20.0,
-                    min_ms: 8.0,
-                    jitter_ms: 1.0,
-                    throughput_kbps: 100.0,
-                },
-            ),
-            (
-                "xray-only".to_string(),
-                ProxyMetrics {
-                    successes: 5,
-                    attempts: 8,
-                    median_ms: 10.0,
-                    min_ms: 4.0,
-                    jitter_ms: 2.0,
-                    throughput_kbps: 80.0,
-                },
-            ),
-        ]);
-        let singbox = HashMap::from([
-            (
-                "dual".to_string(),
-                ProxyMetrics {
-                    successes: 4,
-                    attempts: 7,
-                    median_ms: 15.0,
-                    min_ms: 12.0,
-                    jitter_ms: 3.0,
-                    throughput_kbps: 90.0,
-                },
-            ),
-            (
-                "singbox-only".to_string(),
-                ProxyMetrics {
-                    successes: 5,
-                    attempts: 6,
-                    median_ms: 12.0,
-                    min_ms: 6.0,
-                    jitter_ms: 1.5,
-                    throughput_kbps: 70.0,
-                },
-            ),
-        ]);
+    fn backend_metadata_accepts_either_core() {
+        let xray = HashMap::from([(
+            "xray-only".to_string(),
+            ProxyMetrics {
+                successes: 5,
+                attempts: 8,
+                median_ms: 10.0,
+                min_ms: 4.0,
+                jitter_ms: 2.0,
+                throughput_kbps: 80.0,
+            },
+        )]);
+        let singbox = HashMap::from([(
+            "singbox-only".to_string(),
+            ProxyMetrics {
+                successes: 5,
+                attempts: 6,
+                median_ms: 12.0,
+                min_ms: 6.0,
+                jitter_ms: 1.5,
+                throughput_kbps: 70.0,
+            },
+        )]);
 
-        let merged = merge_light_metadata(xray, singbox, &dual);
+        let merged = merge_light_metadata(xray, singbox);
 
-        assert_eq!(merged["dual"].successes, 4);
-        assert_eq!(merged["dual"].attempts, 7);
-        assert_eq!(merged["dual"].median_ms, 20.0);
-        assert_eq!(merged["dual"].min_ms, 12.0);
-        assert_eq!(merged["dual"].throughput_kbps, 100.0);
         assert!(merged.contains_key("xray-only"));
         assert!(merged.contains_key("singbox-only"));
     }
