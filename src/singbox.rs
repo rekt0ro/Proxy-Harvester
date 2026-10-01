@@ -1318,11 +1318,11 @@ async fn check_batch_targets(
                 .rev()
                 .collect::<String>();
             println!(
-                "[WARN] sing-box failed to start: {}",
+                "[WARN] ⚠️ [SING-BOX] CORE START FAILED | {}",
                 config_label(&batch_entries[0].0)
             );
             if !tail.is_empty() {
-                println!("[WARN] sing-box log: {tail}");
+                println!("[WARN] ⚠️ [SING-BOX] CORE LOG | {tail}");
             }
             let _ = fs::remove_dir_all(&work);
             continue;
@@ -1395,7 +1395,7 @@ async fn check_batch_targets(
                     pending.push(batch_entries[mid..].to_vec());
                 } else {
                     println!(
-                        "[WARN] sing-box core exited during validation: {}",
+                        "[WARN] ⚠️ [SING-BOX] CORE EXITED | {}",
                         config_label(&batch_entries[0].0)
                     );
                 }
@@ -1592,11 +1592,11 @@ async fn check_batch(
                 .rev()
                 .collect::<String>();
             println!(
-                "[WARN] sing-box failed to start: {}",
+                "[WARN] ⚠️ [SING-BOX] CORE START FAILED | {}",
                 config_label(&batch_entries[0].0)
             );
             if !tail.is_empty() {
-                println!("[WARN] sing-box log: {tail}");
+                println!("[WARN] ⚠️ [SING-BOX] CORE LOG | {tail}");
             }
             let _ = fs::remove_dir_all(&work);
             continue;
@@ -1790,14 +1790,17 @@ async fn validate_candidates_with_targets_policy(
     }
 
     println!(
-        "loaded {} input URLs, accepted {} for sing-box, rejected {}",
+        "[INFO] 🔬 [SING-BOX] INPUT | {} CONFIGS | ACCEPTED: {} | REJECTED: {}",
         candidates.len(),
         parsed.len(),
         rejected.len()
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {} :: {reason}", config_label(config));
+        println!(
+            "[WARN] ⚠️ [SING-BOX] REJECTED | {} | {reason}",
+            config_label(config)
+        );
     }
 
     if parsed.is_empty() {
@@ -1819,33 +1822,33 @@ async fn validate_candidates_with_targets_policy(
     let mut endpoint_cache = SingBoxEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
+        let batch_metadata = check_batch_targets(
+            binary,
+            batch,
+            &target_values,
+            workers.max(1),
+            request_timeout,
+            policy,
+            &mut endpoint_cache,
+        )
+        .await?;
+
         println!(
-            "targets {:?}: batch {}/{} testing {} configs with sing-box; requiring {}/{} successful attempts across at least {} destinations",
-            target_values,
+            "[INFO] ✅ [SING-BOX] BATCH {}/{} | {} TESTED | {} VERIFIED | REQUIREMENT: {}/{} | DESTINATIONS: {}",
             index + 1,
             total_batches,
             batch.len(),
+            batch_metadata.len(),
             policy.min_successful_attempts,
             policy.stability_attempts,
             policy.min_successful_targets
         );
 
-        metadata.extend(
-            check_batch_targets(
-                binary,
-                batch,
-                &target_values,
-                workers.max(1),
-                request_timeout,
-                policy,
-                &mut endpoint_cache,
-            )
-            .await?,
-        );
+        metadata.extend(batch_metadata);
     }
 
     println!(
-        "{}/{} verified by sing-box against {} targets with {}/{} successful GET attempts and at least {} distinct successful destinations",
+        "[INFO] ✅ [SING-BOX] COMPLETE | {}/{} VERIFIED | TARGETS: {} | REQUIREMENT: {}/{} | DESTINATIONS: {}",
         metadata.len(),
         candidates.len(),
         targets.len(),
@@ -1882,14 +1885,17 @@ pub async fn validate_candidates_with_target(
     }
 
     println!(
-        "loaded {} input URLs, accepted {} for sing-box, rejected {}",
+        "[INFO] 🔬 [SING-BOX] INPUT | {} CONFIGS | ACCEPTED: {} | REJECTED: {}",
         candidates.len(),
         parsed.len(),
         rejected.len()
     );
 
     for (config, reason) in rejected.iter().take(8) {
-        println!("sing-box rejected: {} :: {reason}", config_label(config));
+        println!(
+            "[WARN] ⚠️ [SING-BOX] REJECTED | {} | {reason}",
+            config_label(config)
+        );
     }
 
     if parsed.is_empty() {
@@ -1902,31 +1908,35 @@ pub async fn validate_candidates_with_target(
     let mut endpoint_cache = SingBoxEndpointCache::new();
 
     for (index, batch) in parsed.chunks(batch_size).enumerate() {
+        let batch_metadata = check_batch(
+            binary,
+            batch,
+            target,
+            workers.max(1),
+            request_timeout,
+            max_latency_ms,
+            &mut endpoint_cache,
+        )
+        .await?;
+
         println!(
-            "target {target}: batch {}/{} testing {} configs with sing-box; requiring {MIN_SUCCESSFUL_ATTEMPTS}/{} attempts",
+            "[INFO] ✅ [SING-BOX] BATCH {}/{} | {} TESTED | {} VERIFIED | REQUIREMENT: {}/{} | TARGETS: 1",
             index + 1,
             total_batches,
             batch.len(),
+            batch_metadata.len(),
+            MIN_SUCCESSFUL_ATTEMPTS,
             STABILITY_ATTEMPTS
         );
-        metadata.extend(
-            check_batch(
-                binary,
-                batch,
-                target,
-                workers.max(1),
-                request_timeout,
-                max_latency_ms,
-                &mut endpoint_cache,
-            )
-            .await?,
-        );
+
+        metadata.extend(batch_metadata);
     }
 
     println!(
-        "{}/{} verified by sing-box against {target} with {MIN_SUCCESSFUL_ATTEMPTS}/{} successful GET attempts and every measured latency <= {}ms",
+        "[INFO] ✅ [SING-BOX] COMPLETE | {}/{} VERIFIED | TARGETS: 1 | REQUIREMENT: {}/{} | LATENCY ≤ {}ms",
         metadata.len(),
         candidates.len(),
+        MIN_SUCCESSFUL_ATTEMPTS,
         STABILITY_ATTEMPTS,
         max_latency_ms
     );
