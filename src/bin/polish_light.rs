@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use proxyrift::intelligence::IntelligenceModel;
 use proxyrift::singbox::{
     validate_candidates_with_targets as validate_singbox_targets,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
@@ -92,8 +93,22 @@ fn persist_light_result(
     history: &HashMap<String, HistoryEntry>,
     final_attempts: &HashMap<String, usize>,
     final_metadata: &HashMap<String, ProxyMetrics>,
+    intelligence: &IntelligenceModel,
+    global_metadata: &HashMap<String, ProxyMetrics>,
+    intelligence_path: &str,
 ) -> Result<(), String> {
     write_light_lines(output, selected)?;
+
+    let mut model = intelligence.clone();
+    for (config, attempts) in final_attempts {
+        model.update(
+            config,
+            global_metadata.get(config),
+            *attempts,
+            final_metadata.contains_key(config),
+        );
+    }
+    model.save(intelligence_path)?;
     persist_history(history_path, history, final_attempts, final_metadata)
 }
 
@@ -1230,6 +1245,8 @@ async fn main() -> Result<(), String> {
     let security_rejected = input_candidate_count.saturating_sub(candidates.len());
     let history_path = "subscriptions/light-history.json";
     let history = load_history(history_path)?;
+    let intelligence_path = "subscriptions/light-ai.json";
+    let mut intelligence = IntelligenceModel::load(intelligence_path);
 
     if candidates.is_empty() {
         return Err("no Light candidates available".to_string());
@@ -1345,6 +1362,9 @@ async fn main() -> Result<(), String> {
                 &history,
                 &final_attempts,
                 &final_metadata,
+                &intelligence,
+                &global_metadata,
+                intelligence_path,
             )?;
             write_light_stats(
                 &stats_path,
@@ -1382,8 +1402,10 @@ async fn main() -> Result<(), String> {
             .cloned()
             .collect::<Vec<_>>();
 
+        let mut ai_ranked = untested;
+        intelligence.rank(&mut ai_ranked, &global_metadata, &global_positions);
         let final_candidates =
-            diversify_recheck_candidates(&untested, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
+            diversify_recheck_candidates(&ai_ranked, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
 
         if final_candidates.is_empty() {
             continue;
@@ -1493,6 +1515,9 @@ async fn main() -> Result<(), String> {
                     &history,
                     &final_attempts,
                     &final_metadata,
+                    &intelligence,
+                    &global_metadata,
+                    intelligence_path,
                 )?;
                 write_light_stats(
                     &stats_path,
@@ -1602,6 +1627,9 @@ async fn main() -> Result<(), String> {
         &history,
         &final_attempts,
         &final_metadata,
+        &intelligence,
+        &global_metadata,
+        intelligence_path,
     )?;
     println!(
         "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | DISCOVERY {} | STRICT CHECKS {} | 10 MiB PASSES {}",
