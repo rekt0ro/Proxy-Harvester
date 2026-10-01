@@ -1074,7 +1074,6 @@ fn light_backend(config: &str) -> LightBackend {
     LightBackend::SingBox
 }
 
-
 fn vmess_payload(config: &str) -> Option<Value> {
     let encoded = config.split_once("://").map(|(_, rest)| rest)?;
     let payload = encoded.split('#').next().unwrap_or("").trim();
@@ -1163,10 +1162,7 @@ fn light_training_features(
     let port = if let Some(payload) = vmess.as_ref() {
         json_u64(payload.get("port"))
     } else {
-        url.as_ref()
-            .and_then(Url::port)
-            .map(u64::from)
-            .unwrap_or(0)
+        url.as_ref().and_then(Url::port).map(u64::from).unwrap_or(0)
     };
 
     let query_parameter_count = url
@@ -1246,10 +1242,7 @@ fn light_training_features(
     features.insert("has_host".to_string(), Value::Bool(has_host));
     features.insert("has_path".to_string(), Value::Bool(has_path));
     features.insert("tls_enabled".to_string(), Value::Bool(tls_enabled));
-    features.insert(
-        "reality_enabled".to_string(),
-        Value::Bool(reality_enabled),
-    );
+    features.insert("reality_enabled".to_string(), Value::Bool(reality_enabled));
     features.insert("early_attempts".to_string(), Value::from(early_attempts));
     features.insert(
         "early_success_rate".to_string(),
@@ -1323,8 +1316,7 @@ fn persist_light_training_data(
             strict_pass: final_metadata.contains_key(config),
             strict_checks: *attempts as u64,
             transfer_tested: transfer_was_tested,
-            transfer_pass: transfer_was_tested
-                .then(|| transfer_verified.contains_key(config)),
+            transfer_pass: transfer_was_tested.then(|| transfer_verified.contains_key(config)),
         });
     }
 
@@ -2343,7 +2335,9 @@ mod tests {
             Some(&serde_json::Value::String("vless".to_string()))
         );
         assert_eq!(
-            features.get("transport").and_then(serde_json::Value::as_str),
+            features
+                .get("transport")
+                .and_then(serde_json::Value::as_str),
             Some("ws")
         );
         assert_eq!(
@@ -2351,11 +2345,15 @@ mod tests {
             Some("tls")
         );
         assert_eq!(
-            features.get("early_attempts").and_then(serde_json::Value::as_u64),
+            features
+                .get("early_attempts")
+                .and_then(serde_json::Value::as_u64),
             Some(3)
         );
         assert_eq!(
-            features.get("history_checks").and_then(serde_json::Value::as_u64),
+            features
+                .get("history_checks")
+                .and_then(serde_json::Value::as_u64),
             Some(4)
         );
         assert!(!features.values().any(|value| {
