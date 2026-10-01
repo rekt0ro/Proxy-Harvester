@@ -110,19 +110,22 @@ async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, 
 
 async fn test_chunk(
     index: usize,
+    total_chunks: usize,
     configs: &[String],
 ) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
     println!(
-        "[INFO] Testing chunk {}: {} configs with transport-aware reachability.",
-        index,
+        "[INFO] 🔎 [TRANSPORT] CHUNK {}/{} | TESTING {} CONFIGS",
+        index + 1,
+        total_chunks,
         configs.len()
     );
 
     let working = test_transport_configs(configs).await;
 
     println!(
-        "[INFO] Chunk {} complete: {}/{} transport-reachable.",
-        index,
+        "[INFO] ✅ [TRANSPORT] CHUNK {}/{} COMPLETE | {}/{} REACHABLE",
+        index + 1,
+        total_chunks,
         working.len(),
         configs.len()
     );
@@ -152,7 +155,7 @@ async fn write_atomic(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[INFO] ProxyRift starting...");
+    println!("[INFO] 🚀 ProxyRift starting...");
 
     let root = project_root()?;
     let sources_path = root.join("sources.txt");
@@ -160,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(&output_dir).await?;
 
     let sources = load_sources(&sources_path).await?;
-    println!("[INFO] Loaded {} sources.", sources.len());
+    println!("[INFO] 📡 Loaded {} sources", sources.len());
 
     let client = Client::builder()
         .user_agent("ProxyRift/3.0")
@@ -181,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     _ => {
                         println!(
-                            "[WARN] Source #{source_number} has an invalid or unsupported URL."
+                            "[WARN] ⚠️ Source #{source_number} has an invalid or unsupported URL."
                         );
                         return Vec::new();
                     }
@@ -197,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             if status.is_redirection() {
                                 if redirect_count == MAX_SOURCE_REDIRECTS {
                                     println!(
-                                        "[WARN] Source #{source_number} exceeded the {}-redirect limit.",
+                                        "[WARN] ⚠️ Source #{source_number} exceeded the {}-redirect limit.",
                                         MAX_SOURCE_REDIRECTS
                                     );
                                     return Vec::new();
@@ -205,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                 let Some(location) = response.headers().get(LOCATION) else {
                                     println!(
-                                        "[WARN] Source #{source_number} returned HTTP status {status} without a Location header."
+                                        "[WARN] ⚠️ Source #{source_number} returned HTTP status {status} without a Location header."
                                     );
                                     return Vec::new();
                                 };
@@ -215,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                     Err(_) => {
                                         println!(
-                                            "[WARN] Source #{source_number} returned an invalid redirect Location header."
+                                            "[WARN] ⚠️ Source #{source_number} returned an invalid redirect Location header."
                                         );
                                         return Vec::new();
                                     }
@@ -231,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                     Err(reason) => {
                                         println!(
-                                            "[WARN] Source #{source_number} redirect rejected by safety policy: {reason}."
+                                            "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
                                         );
                                         return Vec::new();
                                     }
@@ -255,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
 
                                 println!(
-                                    "[WARN] Source #{source_number} returned HTTP status {status}"
+                                    "[WARN] ⚠️ Source #{source_number} returned HTTP status {status}"
                                 );
                                 return Vec::new();
                             }
@@ -265,7 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
                                 println!(
-                                    "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
+                                    "[WARN] ⚠️ Skipping source #{source_number}: response exceeds {} bytes",
                                     MAX_SOURCE_BYTES
                                 );
                                 return Vec::new();
@@ -282,14 +285,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                                 Err(SourceBodyError::TooLarge) => {
                                     println!(
-                                        "[WARN] Skipping source #{source_number}: response exceeds {} bytes",
+                                        "[WARN] ⚠️ Skipping source #{source_number}: response exceeds {} bytes",
                                         MAX_SOURCE_BYTES
                                     );
                                     return Vec::new();
                                 }
 
                                 Err(SourceBodyError::Read) => {
-                                    println!("[WARN] Failed to read source #{source_number}.");
+                                    println!("[WARN] ⚠️ Failed to read source #{source_number}.");
                                     return Vec::new();
                                 }
                             }
@@ -307,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             }
 
                             println!(
-                                "[WARN] Failed to download source #{source_number}: {error}"
+                                "[WARN] ⚠️ Failed to download source #{source_number}: {error}"
                             );
                             return Vec::new();
                         }
@@ -338,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     configs = cap_configs_by_protocol(configs, MAX_COLLECTED_CONFIGS);
 
-    println!("[INFO] Collected {} unique configs.", configs.len());
+    println!("[INFO] 📦 Collected {} unique configs", configs.len());
 
     if configs.is_empty() {
         return Err("no proxy configurations were collected".into());
@@ -353,8 +356,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut scheme_counts = scheme_counts.into_iter().collect::<Vec<_>>();
     scheme_counts.sort();
 
-    for (scheme, count) in scheme_counts {
-        println!("[INFO] Protocol {scheme}: {count}");
+    for chunk in scheme_counts.chunks(4) {
+        let summary = chunk
+            .iter()
+            .map(|(scheme, count)| format!("{scheme} {count}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        println!("[INFO] 📊 [PROTOCOLS] {summary}");
     }
 
     let all_path = output_dir.join("all.txt");
@@ -363,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let test_concurrency = TEST_CONCURRENCY.min(transport_chunk_count).max(1);
 
     let mut chunk_results = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-        .map(|(index, chunk)| async move { test_chunk(index, chunk).await })
+        .map(|(index, chunk)| async move { test_chunk(index, transport_chunk_count, chunk).await })
         .buffer_unordered(test_concurrency)
         .try_collect::<Vec<(usize, Vec<(String, u64)>)>>()
         .await?;
@@ -379,7 +387,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
-        println!("[WARN] No usable configs remained after transport-aware reachability screening.");
+        println!("[WARN] ⚠️ No usable configs remained after transport-aware reachability screening.");
 
         diagnose_configs(&configs).await;
         return Err("no usable configs remained after transport-aware screening".into());
@@ -459,7 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .saturating_sub(sampled_transport_count);
 
     println!(
-        "[INFO] Light candidate sampling: selected {} transport-reachable configs and retained {} Hysteria/Hysteria2 candidates for core validation.",
+        "[INFO] 🧠 [LIGHT] CANDIDATE SAMPLING | {} TRANSPORT-REACHABLE | {} HYSTERIA/HYSTERIA2 RETAINED",
         sampled_transport_count,
         special_count
     );
@@ -491,21 +499,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .len();
 
     println!(
-        "[INFO] Prepared {} All configs directly from transport-reachable results ({} transport-reachable probes; {} unique endpoints; cap {}; max {} per endpoint).",
+        "[INFO] 📦 [ALL] {} CONFIGS READY | PROBES: {} | UNIQUE ENDPOINTS: {}",
         working_configs.len(),
         reachable_probes,
-        all_unique_endpoints,
-        MAX_ALL_CONFIGS,
-        MAX_ALL_PER_ENDPOINT
+        all_unique_endpoints
     );
 
     println!(
-        "[INFO] Prepared {} Light candidates (cap {}).",
+        "[INFO] 🎯 [LIGHT] {} CANDIDATES READY | CAP: {}",
         light_candidates.len(),
         MAX_LIGHT_CANDIDATES
     );
 
-    println!("[INFO] Done.");
+    println!("[INFO] ✅ [COLLECTION] COMPLETE");
 
     Ok(())
 }
