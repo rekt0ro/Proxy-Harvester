@@ -622,7 +622,7 @@ jobs:
             echo "| Metric | Value |"
             echo "|---|---:|"
             echo "| Dataset rows | $ml_rows |"
-            echo "| Features per row | $ml_feature_count |
+            echo "| Features per row | $ml_feature_count |"
             echo "| Strict pass rate | $ml_strict_rate% |"
             echo "| Transfer labels | $ml_transfer_passes/$ml_transfer_tests passed |"
             echo
