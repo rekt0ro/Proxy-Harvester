@@ -35,7 +35,8 @@ const FINAL_TRANSFER_INITIAL_WORKERS: usize = 6;
 const FINAL_TRANSFER_MIN_WORKERS: usize = 4;
 const FINAL_TRANSFER_QUEUE_MULTIPLIER: usize = 3;
 const FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP: usize = 2;
-const FINAL_TRANSFER_TEST_LIMIT: usize = 600;
+const FINAL_TRANSFER_TEST_LIMIT: usize = 320;
+const FINAL_TRANSFER_MAX_ELAPSED_SECS: u64 = 8 * 60;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
@@ -674,6 +675,7 @@ async fn fill_transfer_gate(
     max_per_endpoint: usize,
     max_per_family: usize,
 ) -> Result<usize, String> {
+    let gate_started = Instant::now();
     let mut transfer_workers = FINAL_TRANSFER_INITIAL_WORKERS;
     let mut clean_batches = 0usize;
     loop {
@@ -703,6 +705,15 @@ async fn fill_transfer_gate(
             .collect::<Vec<_>>();
 
         if untested.is_empty() || transfer_tested.len() >= FINAL_TRANSFER_TEST_LIMIT {
+            return Ok(selected.len());
+        }
+
+        if gate_started.elapsed().as_secs() >= FINAL_TRANSFER_MAX_ELAPSED_SECS {
+            println!(
+                "[WARN] ⏱️ [10 MiB] TIME BUDGET REACHED | TESTED: {} | SELECTABLE: {} | STOPPING BEST-EFFORT GATE",
+                transfer_tested.len(),
+                selected.len()
+            );
             return Ok(selected.len());
         }
 
@@ -1942,30 +1953,18 @@ async fn main() -> Result<(), String> {
         max_per_family,
     );
 
+    if selected.is_empty() {
+        return Err(
+            "selected Light validation produced no configs after the 10 MiB gate".to_string(),
+        );
+    }
+
     if selected.len() < selection_limit {
-        persist_light_training_data(
-            &history,
-            &final_attempts,
-            &final_metadata,
-            &global_metadata,
-            &transfer_tested,
-            &transfer_verified,
-        )?;
-        persist_history(history_path, &history, &final_attempts, &final_metadata)?;
-        write_light_stats(
-            &stats_path,
-            input_candidate_count,
-            security_rejected,
-            final_metadata.len(),
-            transfer_tested.len(),
-            transfer_verified.len(),
-            selected.len(),
-        )?;
-        return Err(format!(
-            "selected Light validation produced {} configs after the 10 MiB gate; required {}",
+        println!(
+            "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {}",
             selected.len(),
             selection_limit
-        ));
+        );
     }
 
     write_light_stats(

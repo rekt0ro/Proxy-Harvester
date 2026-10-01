@@ -315,7 +315,7 @@ jobs:
       - name: "💡 Build Light subscription"
         env:
           LIGHT_MAX_CANDIDATES: "10000"
-          LIGHT_MIN_PUBLISH: "200"
+          LIGHT_SELECTION_LIMIT: "200"
         run: |
           mkdir -p /tmp/proxyrift
           light_started=$SECONDS
@@ -332,7 +332,7 @@ jobs:
             --selected-batch-size 350 \
             --primary-target https://www.google.com/generate_204 \
             --singbox "$HOME/.local/bin/sing-box" \
-            --selection-limit 200 \
+            --selection-limit "$LIGHT_SELECTION_LIMIT" \
             --max-per-endpoint 1 \
             --max-per-family 3 \
             --stats /tmp/proxyrift/light-stats.json
@@ -349,8 +349,8 @@ jobs:
 
           if [ -s /tmp/proxyrift/light.next.txt ]; then
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
-            echo "[INFO] 🎯 [LIGHT] OUTPUT | ${light_count} CANDIDATES | MIN: ${LIGHT_MIN_PUBLISH}"
-            if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
+            echo "[INFO] 🎯 [LIGHT] OUTPUT | ${light_count} CANDIDATES | MAX: ${LIGHT_SELECTION_LIMIT}"
+            if [ "$light_count" -gt 0 ]; then
               cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
               mv -f subscriptions/.light.txt.next subscriptions/light.txt
               echo "[INFO] ✅ [LIGHT] PUBLISHED REFRESHED SUBSCRIPTION"
