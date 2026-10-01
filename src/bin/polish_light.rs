@@ -1904,7 +1904,6 @@ async fn main() -> Result<(), String> {
                 );
                 break;
             }
-            }
         }
 
         let remaining = selection_limit.saturating_sub(transfer_selected);
@@ -2163,7 +2162,7 @@ mod tests {
         adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
         history_fingerprint, light_backend, light_training_features, merge_light_metadata,
         normalize_light_config, select_verified_configs, selection_eligible_count,
-        transfer_reserve_target, LightBackend, ProxyMetrics,
+        selection_potential_count, transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2222,14 +2221,14 @@ mod tests {
 
     #[test]
     fn transfer_reserve_is_conservative_at_start() {
-        assert_eq!(transfer_reserve_target(200, 0, 0), 270);
-        assert_eq!(transfer_reserve_target(200, 200, 190), 260);
+        assert_eq!(transfer_reserve_target(200, 0, 0, 0), 270);
+        assert_eq!(transfer_reserve_target(200, 190, 200, 160), 18);
     }
 
     #[test]
     fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
-        assert_eq!(transfer_reserve_target(200, 200, 160), 273);
-        assert_eq!(transfer_reserve_target(200, 200, 100), 320);
+        assert_eq!(transfer_reserve_target(200, 0, 200, 160), 273);
+        assert_eq!(transfer_reserve_target(200, 0, 200, 100), 320);
     }
 
     #[test]
@@ -2247,6 +2246,16 @@ mod tests {
     #[test]
     fn adaptive_transfer_budget_stops_when_target_is_already_met() {
         assert_eq!(adaptive_transfer_test_limit(200, 200, 320, 280, 20), 320);
+    }
+
+    #[test]
+    fn selection_potential_count_respects_existing_selection() {
+        let selected = vec!["vless://a@example.com:443".to_string()];
+        let untested = vec![
+            "vless://b@example.com:443".to_string(),
+            "vless://c@example.net:443".to_string(),
+        ];
+        assert_eq!(selection_potential_count(&selected, &untested, 1, 3), 2);
     }
 
     #[test]
