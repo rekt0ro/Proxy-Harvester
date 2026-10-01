@@ -1568,7 +1568,10 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
                 return false;
             }
             if scheme == "trojan" {
-                let password = url.password().unwrap_or(url.username());
+                let password = url
+                    .password()
+                    .filter(|password| !password.is_empty())
+                    .unwrap_or(url.username());
                 if password.is_empty() {
                     return false;
                 }
@@ -1648,15 +1651,17 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
                     .unwrap_or(false)
         }
         "ss" => {
-            if let Ok(url) = Url::parse(config) {
-                if url.query_pairs().any(|(key, value)| {
-                    !supported_ss_plugin(&key, &value)
-                }) {
-                    return false;
-                }
-                if url.password().is_some_and(str::is_empty) {
-                    return false;
-                }
+            let Ok(url) = Url::parse(config) else {
+                return false;
+            };
+            if url
+                .query_pairs()
+                .any(|(key, value)| !supported_ss_plugin(&key, &value))
+            {
+                return false;
+            }
+            if url.password().is_some_and(str::is_empty) {
+                return false;
             }
             true
         }
@@ -3733,6 +3738,13 @@ mod tests {
     #[test]
     fn cheap_compatibility_rejects_hysteria2_without_password() {
         assert!(!is_cheaply_supported_config("hy2://example.com:443"));
+    }
+
+    #[test]
+    fn cheap_compatibility_preserves_trojan_username_fallback() {
+        assert!(is_cheaply_supported_config(
+            "trojan://user:@example.com:443?security=tls"
+        ));
     }
 
     #[test]
