@@ -26,6 +26,8 @@ const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 const TRANSFER_SELECTION_HEADROOM: usize = 80;
 const FINAL_TRANSFER_BATCH_SIZE: usize = 32;
 const FINAL_TRANSFER_WORKERS: usize = 16;
+const FINAL_TRANSFER_INITIAL_WORKERS: usize = 10;
+const FINAL_TRANSFER_MIN_WORKERS: usize = 4;
 const FINAL_TRANSFER_TEST_LIMIT: usize = 600;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
@@ -592,7 +594,7 @@ async fn fill_transfer_gate(
     max_per_endpoint: usize,
     max_per_family: usize,
 ) -> Result<usize, String> {
-    let mut transfer_workers = FINAL_TRANSFER_WORKERS;
+    let mut transfer_workers = FINAL_TRANSFER_INITIAL_WORKERS;
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
         sort_ranked(
@@ -652,8 +654,18 @@ async fn fill_transfer_gate(
 
         let rate_limits_after = rate_limit_events();
         let rate_limits = rate_limits_after.saturating_sub(rate_limits_before);
-        if rate_limits > 0 {
-            transfer_workers = (transfer_workers / 2).max(1);
+        if rate_limits >= 4 {
+            transfer_workers = transfer_workers
+                .saturating_sub(4)
+                .max(FINAL_TRANSFER_MIN_WORKERS);
+            println!(
+                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
+                rate_limits, transfer_workers
+            );
+        } else if rate_limits > 0 {
+            transfer_workers = transfer_workers
+                .saturating_sub(2)
+                .max(FINAL_TRANSFER_MIN_WORKERS);
             println!(
                 "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
                 rate_limits, transfer_workers
