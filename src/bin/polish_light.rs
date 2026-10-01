@@ -717,12 +717,15 @@ async fn fill_transfer_gate(
             batch.len(),
             batch_elapsed,
             transfer_verified.len(),
-            selection_limit.saturating_sub(select_verified_configs(
-                &transfer_verified.keys().cloned().collect::<Vec<_>>(),
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            ).len()),
+            selection_limit.saturating_sub(
+                select_verified_configs(
+                    &transfer_verified.keys().cloned().collect::<Vec<_>>(),
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                )
+                .len(),
+            ),
         );
     }
 }
