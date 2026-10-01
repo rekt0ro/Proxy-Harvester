@@ -311,6 +311,7 @@ jobs:
           mkdir -p /tmp/proxyrift
           echo "Light candidate ceiling: ${LIGHT_MAX_CANDIDATES}"
           light_started=$SECONDS
+          set +e
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
             --output /tmp/proxyrift/light.next.txt \
@@ -327,7 +328,9 @@ jobs:
             --max-per-endpoint 1 \
             --max-per-family 3 \
             --stats /tmp/proxyrift/light-stats.json
+          status=$?
           light_elapsed=$((SECONDS - light_started))
+          set -e
           echo "Light validation elapsed: ${light_elapsed}s"
 
           if [ "$status" -ne 0 ]; then
