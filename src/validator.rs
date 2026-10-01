@@ -1579,7 +1579,9 @@ pub fn is_locally_supported_config(config: &str) -> bool {
         }
 
         let obfs = first_query(&url, &["obfs"], Some("")).to_ascii_lowercase();
-        let obfs_param = first_query(&url, &["obfsparam"], Some("")).trim().to_string();
+        let obfs_param = first_query(&url, &["obfsparam"], Some(""))
+            .trim()
+            .to_string();
         if !obfs.is_empty() && obfs != "xplus" {
             return false;
         }
