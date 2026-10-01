@@ -630,8 +630,7 @@ async fn fill_transfer_gate(
             remaining
         );
 
-        let metadata =
-            validate_light_transfer_batch(xray, singbox, &batch, workers).await?;
+        let metadata = validate_light_transfer_batch(xray, singbox, &batch, workers).await?;
 
         transfer_verified.extend(metadata);
     }
@@ -1194,22 +1193,23 @@ async fn main() -> Result<(), String> {
             &history,
         );
 
-        let transfer_selected = if final_verified.len() >= selection_limit + TRANSFER_SELECTION_HEADROOM {
-            fill_transfer_gate(
-                &xray,
-                &singbox,
-                &final_verified,
-                &mut transfer_verified,
-                &mut transfer_tested,
-                &global_positions,
-                &history,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-                final_workers,
-            )
-            .await?
-        } else {
+        let transfer_selected =
+            if final_verified.len() >= selection_limit + TRANSFER_SELECTION_HEADROOM {
+                fill_transfer_gate(
+                    &xray,
+                    &singbox,
+                    &final_verified,
+                    &mut transfer_verified,
+                    &mut transfer_tested,
+                    &global_positions,
+                    &history,
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                    final_workers,
+                )
+                .await?
+            } else {
             let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
             sort_ranked(
                 &mut transfer_ranked,
