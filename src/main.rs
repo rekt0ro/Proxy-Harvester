@@ -3,7 +3,8 @@ use base64::Engine;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use percent_encoding::percent_decode_str;
 use proxyrift::validator::{
-    config_label, endpoint, is_locally_supported_config, is_public_ip, resolve_public_host,
+    config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
+    resolve_public_host,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
@@ -412,6 +413,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut seen_keys = HashSet::new();
     configs.retain(|config| seen_keys.insert(dedup_key(config)));
 
+    let before_cheap_compatibility = configs.len();
+    configs.retain(|config| is_cheaply_supported_config(config));
+    let cheaply_rejected = before_cheap_compatibility.saturating_sub(configs.len());
+    if cheaply_rejected > 0 {
+        println!(
+            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} COLLECTED CONFIGS BY CHEAP COMPATIBILITY SCREENING",
+            cheaply_rejected
+        );
+    }
+
     configs = assign_config_names(configs);
 
     let special_hysteria_candidates = configs
@@ -466,16 +477,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for (_, working) in chunk_results {
         reachable_probes += working.len();
         ranked_working_configs.extend(working);
-    }
-
-    let reachable_before_filter = ranked_working_configs.len();
-    ranked_working_configs.retain(|(config, _)| is_locally_supported_config(config));
-    let locally_rejected = reachable_before_filter.saturating_sub(ranked_working_configs.len());
-    if locally_rejected > 0 {
-        println!(
-            "[INFO] 🧹 [COMPATIBILITY] REJECTED {} TRANSPORT-REACHABLE CONFIGS WITH LOCAL COMPATIBILITY ERRORS",
-            locally_rejected
-        );
     }
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
