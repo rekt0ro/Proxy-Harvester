@@ -84,6 +84,39 @@ fn parse_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'sta
     Ok(target_url)
 }
 
+async fn safe_source_client(current_url: &Url) -> Result<Client, &'static str> {
+    if !matches!(current_url.scheme(), "http" | "https") {
+        return Err("source URL must use HTTP or HTTPS");
+    }
+
+    let host = current_url
+        .host_str()
+        .ok_or("source URL must have a host")?;
+
+    let port = current_url
+        .port_or_known_default()
+        .ok_or("source URL must have a known port")?;
+
+    let mut builder = Client::builder()
+        .user_agent("ProxyRift/3.0")
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !is_public_ip(&ip) {
+            return Err("source URL must resolve to a public address");
+        }
+    } else {
+        let ip = resolve_public_host(host, port)
+            .await
+            .ok_or("source URL must resolve to a public address")?;
+
+        builder = builder.resolve(host, SocketAddr::new(ip, port));
+    }
+
+    builder.build().map_err(|_| "failed to build source HTTP client")
+}
+
 async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, &'static str> {
     let target_url = parse_source_redirect(current_url, location)?;
     let host = target_url
@@ -158,12 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let sources = load_sources(&sources_path).await?;
     println!("[INFO] 📡 Loaded {} sources", sources.len());
 
-    let client = Client::builder()
-        .user_agent("ProxyRift/3.0")
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-
     let mut unique = HashSet::new();
     let source_http_warnings = Arc::new(Mutex::new(Vec::<(usize, u16)>::new()));
 
@@ -180,6 +207,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     _ => {
                         println!(
                             "[WARN] ⚠️ Source #{source_number} has an invalid or unsupported URL."
+                        );
+                        return Vec::new();
+                    }
+                };
+
+                let mut client = match safe_source_client(&current_url).await {
+                    Ok(client) => client,
+
+                    Err(reason) => {
+                        println!(
+                            "[WARN] ⚠️ Source #{source_number} rejected by safety policy: {reason}."
                         );
                         return Vec::new();
                     }
@@ -222,6 +260,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 match safe_source_redirect(&current_url, location).await {
                                     Ok(next_url) => {
                                         current_url = next_url;
+
+                                        client = match safe_source_client(&current_url).await {
+                                            Ok(client) => client,
+
+                                            Err(reason) => {
+                                                println!(
+                                                    "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
+                                                );
+                                                return Vec::new();
+                                            }
+                                        };
+
                                         redirect_count += 1;
                                         attempt = 0;
                                         continue;
