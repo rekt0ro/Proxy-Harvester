@@ -1302,8 +1302,11 @@ fn persist_light_training_data(
     for (config, attempts) in final_attempts {
         let (history_rate, history_checks) = historical_score(config, history);
         let candidate_fingerprint = history_fingerprint(config);
-        let run_key = run_id.as_deref().unwrap_or("local");
-        let observation_id = format!("{run_key}:{observed_at}:{candidate_fingerprint}");
+        let observation_id = if let Some(run_id) = run_id.as_deref() {
+            format!("{run_id}:{candidate_fingerprint}")
+        } else {
+            format!("local:{observed_at}:{candidate_fingerprint}")
+        };
         let transfer_was_tested = transfer_tested.contains(config);
 
         rows.push(TrainingRow {
