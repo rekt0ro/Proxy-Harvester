@@ -41,9 +41,13 @@ const DEFAULT_QUERIES: [&str; 10] = [
     "v2ray collector",
 ];
 
-const PATH_HINTS: [&str; 16] = [
+const PATH_HINTS: [&str; 19] = [
     "sub",
+    "subs",
+    "subscription",
+    "subscriptions",
     "config",
+    "configs",
     "v2ray",
     "vless",
     "vmess",
@@ -55,6 +59,7 @@ const PATH_HINTS: [&str; 16] = [
     "reality",
     "clash",
     "sing",
+    "singbox",
     "nodes",
     "servers",
     "proxy",
@@ -372,7 +377,10 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         unique
             .entry(candidate.url.clone())
             .and_modify(|existing| {
-                if candidate.priority > existing.priority {
+                if candidate.priority > existing.priority
+                    || (candidate.priority == existing.priority
+                        && candidate.repo_rank < existing.repo_rank)
+                {
                     *existing = candidate.clone();
                 }
             })
@@ -694,9 +702,10 @@ async fn search_repositories(
     let mut repos = Vec::new();
 
     for query in DEFAULT_QUERIES {
+        let search_query = format!("{query} archived:false fork:false");
         let url = format!(
             "https://api.github.com/search/repositories?q={}&sort=updated&order=desc&per_page={}",
-            percent_encode(query),
+            percent_encode(&search_query),
             SEARCH_PER_PAGE
         );
 
@@ -910,6 +919,12 @@ fn normalize_github_source(raw: &str) -> Option<String> {
         "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
     ))
 }
+fn has_path_hint(path: &str) -> bool {
+    path.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| PATH_HINTS.iter().any(|hint| segment == *hint))
+}
+
 fn likely_source_url(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
@@ -931,7 +946,7 @@ fn likely_source_url(url: &str) -> bool {
         .rsplit('/')
         .next()
         .is_some_and(|name| name.contains('.'));
-    let hint_ok = PATH_HINTS.iter().any(|hint| path.contains(hint));
+    let hint_ok = has_path_hint(path);
 
     (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
 }
@@ -953,7 +968,7 @@ fn is_source_path(path: &str) -> bool {
         .rsplit('/')
         .next()
         .is_some_and(|name| name.contains('.'));
-    let hint_ok = PATH_HINTS.iter().any(|hint| lowered.contains(hint));
+    let hint_ok = has_path_hint(&lowered);
 
     (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
 }
