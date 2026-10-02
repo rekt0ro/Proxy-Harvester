@@ -425,7 +425,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            println!("[WARN] ⚠️ [SOURCES] HTTP {status_code} {reason} | SOURCES: {sources}");
+            if matches!(status_code, 404 | 410) {
+                println!(
+                    "[INFO] 🔭 [SOURCES] permanently unavailable | HTTP {status_code} {reason} | SOURCES: {sources}"
+                );
+            } else {
+                println!("[WARN] ⚠️ [SOURCES] HTTP {status_code} {reason} | SOURCES: {sources}");
+            }
         }
     }
 
