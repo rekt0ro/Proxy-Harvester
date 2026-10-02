@@ -1956,7 +1956,7 @@ fn source_path_score(path: &str) -> u8 {
         return 0;
     }
 
-    let mut score = if extension_without_hint { 70 } else { 50 };
+    let mut score: u8 = if extension_without_hint { 70 } else { 50 };
 
     if has_strong_path_hint(&lowered) {
         score += 30;
