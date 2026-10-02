@@ -327,6 +327,11 @@ impl Registry {
             CollectionOutcome::Success(0) => {
                 object.insert("configs_last_run".into(), Value::from(0u64));
                 object.insert(
+                    "successes".into(),
+                    Value::from(successes.saturating_add(1)),
+                );
+                object.insert("failure_streak".into(), Value::from(0u64));
+                object.insert(
                     "empty_runs".into(),
                     Value::from(empty_runs.saturating_add(1)),
                 );
@@ -334,6 +339,7 @@ impl Registry {
                     "empty_streak".into(),
                     Value::from(empty_streak.saturating_add(1)),
                 );
+                object.insert("last_success".into(), Value::from(now));
             }
             CollectionOutcome::Failed => {
                 object.insert("configs_last_run".into(), Value::from(0u64));
@@ -1414,6 +1420,28 @@ mod tests {
     };
     use base64::Engine as _;
     use std::collections::HashSet;
+
+    #[test]
+    fn empty_success_does_not_build_failure_streak() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-empty".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        registry.record_outcome(&candidate.url, CollectionOutcome::Failed, 2);
+        registry.record_outcome(&candidate.url, CollectionOutcome::Success(0), 3);
+
+        let record = registry.sources().get("source-empty").expect("record");
+        assert_eq!(record["failure_streak"], 0);
+        assert_eq!(record["empty_streak"], 1);
+        assert_eq!(record["empty_runs"], 1);
+        assert_eq!(record["successes"], 1);
+        assert_eq!(record["last_success"], 3);
+    }
 
     #[test]
     fn cross_repository_readme_links_preserve_tree_fallback_for_target_repo() {
