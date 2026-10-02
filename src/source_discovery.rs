@@ -41,7 +41,7 @@ const DEFAULT_QUERIES: [&str; 10] = [
     "v2ray collector",
 ];
 
-const PATH_HINTS: [&str; 19] = [
+const PATH_HINTS: [&str; 21] = [
     "sub",
     "subs",
     "subscription",
