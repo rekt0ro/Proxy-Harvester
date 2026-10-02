@@ -397,21 +397,48 @@ async fn discover_from_repos(
         }
     }
 
-    if missing > 0 {
-        let tree_targets = repos
-            .iter()
-            .filter(|(repo, _)| !all.iter().any(|candidate| candidate.repo == *repo))
-            .take(MAX_TREE_SCANS)
-            .cloned()
-            .collect::<Vec<_>>();
+    let discovered_repos = all
+        .iter()
+        .map(|candidate| candidate.repo.as_str())
+        .collect::<HashSet<_>>();
 
-        for (index, repo) in tree_targets.into_iter().enumerate() {
-            match scan_repo_tree(client, &repo).await {
+    let mut tree_targets = repos
+        .iter()
+        .filter(|(repo, _)| !discovered_repos.contains(repo.as_str()))
+        .take(MAX_TREE_SCANS)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if tree_targets.len() < MAX_TREE_SCANS {
+        let mut selected = tree_targets
+            .iter()
+            .map(|(repo, _)| repo.as_str())
+            .collect::<HashSet<_>>();
+
+        for repo in repos {
+            if tree_targets.len() >= MAX_TREE_SCANS {
+                break;
+            }
+
+            if selected.insert(repo.0.as_str()) {
+                tree_targets.push(repo.clone());
+            }
+        }
+    }
+
+    if !tree_targets.is_empty() {
+        let mut tree_stream = stream::iter(tree_targets.into_iter().map(|repo| {
+            let client = client.clone();
+            async move { (repo.clone(), scan_repo_tree(&client, &repo).await) }
+        }))
+        .buffer_unordered(8);
+
+        while let Some((repo, result)) = tree_stream.next().await {
+            match result {
                 Ok(candidates) => all.extend(candidates),
                 Err(error) => println!(
-                    "[WARN] 🔭 [DISCOVERY] tree probe {}/{} failed: {error}",
-                    index + 1,
-                    MAX_TREE_SCANS
+                    "[WARN] 🔭 [DISCOVERY] tree probe failed for {}: {error}",
+                    repo.0
                 ),
             }
         }
