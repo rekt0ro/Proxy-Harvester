@@ -269,6 +269,7 @@ impl Registry {
         }
     }
 
+    #[cfg(test)]
     fn record_result(&mut self, url: &str, produced_configs: usize, now: u64) {
         let outcome = if produced_configs > 0 {
             CollectionOutcome::Success(produced_configs)
