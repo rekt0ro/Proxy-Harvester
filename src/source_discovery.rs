@@ -290,7 +290,10 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let mut repos = match search_repositories(&client, token.as_deref()).await {
         Ok(repos) => repos,
         Err(error) => {
-            if registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new()).is_empty() {
+            if registry
+                .active_urls(MAX_ACTIVE_SOURCES, &HashSet::new())
+                .is_empty()
+            {
                 return Err(error);
             }
 
@@ -987,7 +990,10 @@ mod tests {
     fn limits_unchecked_sources_during_rotation() {
         let mut registry = Registry::new(1);
 
-        for (index, url) in ["source-a", "source-b", "source-c", "source-d"].into_iter().enumerate() {
+        for (index, url) in ["source-a", "source-b", "source-c", "source-d"]
+            .into_iter()
+            .enumerate()
+        {
             registry.add_candidate(
                 &Candidate {
                     url: url.to_string(),
