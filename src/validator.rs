@@ -15,16 +15,8 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
-pub const EARLY_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=1048576";
 pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=10485760";
-pub const THROUGHPUT_TARGET: &str = EARLY_THROUGHPUT_TARGET;
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
-pub const LIGHT_TARGETS: &[&str] = &[
-    PRIMARY_TARGET,
-    EARLY_THROUGHPUT_TARGET,
-    "https://example.com/",
-];
-pub const EARLY_THROUGHPUT_BYTES: usize = 1_048_576;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
 pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
@@ -2197,14 +2189,13 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
 
 pub(crate) fn response_limit_for_target(url: &str) -> usize {
     match url {
-        EARLY_THROUGHPUT_TARGET => EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => STRICT_THROUGHPUT_BYTES,
         _ => MAX_RESPONSE_BYTES,
     }
 }
 
 pub(crate) fn is_throughput_target(url: &str) -> bool {
-    matches!(url, EARLY_THROUGHPUT_TARGET | STRICT_THROUGHPUT_TARGET)
+    url == STRICT_THROUGHPUT_TARGET
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
