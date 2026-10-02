@@ -274,6 +274,7 @@ jobs:
           key: ${{ steps.keys.outputs.build }}
 
       - name: "🔭 Discover GitHub subscription sources"
+        id: discovery
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -283,6 +284,7 @@ jobs:
           echo "DISCOVERY_ELAPSED=$discovery_elapsed" >> "$GITHUB_ENV"
 
       - name: "🔎 Collect & transport-test configs"
+        id: collect_transport
         run: |
           collect_started=$SECONDS
           ./target/release/ProxyRift
@@ -290,6 +292,7 @@ jobs:
           echo "COLLECT_ELAPSED=$collect_elapsed" >> "$GITHUB_ENV"
 
       - name: "💡 Build Light subscription"
+        id: build_light
         env:
           LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_SELECTION_LIMIT: "200"
@@ -340,6 +343,7 @@ jobs:
           fi
 
       - name: "🏷️ Add subscription update metadata"
+        id: subscription_metadata
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt; do
             test -s "$f"
@@ -352,6 +356,7 @@ jobs:
           done
 
       - name: "🧬 Generate Base64 subscriptions"
+        id: generate_base64
         run: |
           generation_started=$SECONDS
           ./target/release/encode_subscriptions
@@ -359,12 +364,14 @@ jobs:
           echo "GENERATION_ELAPSED=$generation_elapsed" >> "$GITHUB_ENV"
 
       - name: "📦 Prepare published outputs"
+        id: prepare_outputs
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt subscriptions/all-base64.txt subscriptions/light-base64.txt; do
             test -s "$f"
           done
 
       - name: "🚀 Publish generated changes"
+        id: publish
         run: |
           set -euo pipefail
           publish_started=$SECONDS
@@ -481,6 +488,13 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
+          DISCOVERY_OUTCOME: ${{ steps.discovery.outcome }}
+          COLLECT_OUTCOME: ${{ steps.collect_transport.outcome }}
+          LIGHT_OUTCOME: ${{ steps.build_light.outcome }}
+          METADATA_OUTCOME: ${{ steps.subscription_metadata.outcome }}
+          GENERATION_OUTCOME: ${{ steps.generate_base64.outcome }}
+          PREPARE_OUTCOME: ${{ steps.prepare_outputs.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
           XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
@@ -494,6 +508,35 @@ jobs:
             failure) status_icon="❌"; status_text="Failed" ;;
             cancelled) status_icon="⏹️"; status_text="Cancelled" ;;
           esac
+
+          stage_status() {
+            local outcome="$1"
+            case "$outcome" in
+              success) printf "✅ Complete" ;;
+              failure) printf "❌ Failed" ;;
+              cancelled) printf "⏹️ Cancelled" ;;
+              skipped) printf "⏭️ Skipped" ;;
+              *) printf "⚪ Unknown" ;;
+            esac
+          }
+
+          collection_status="$(stage_status "$DISCOVERY_OUTCOME")"
+          if [ "$collection_status" = "✅ Complete" ] && [ "$COLLECT_OUTCOME" != "success" ]; then
+            collection_status="$(stage_status "$COLLECT_OUTCOME")"
+          fi
+          if [ "$collection_status" = "✅ Complete" ] && [ "$LIGHT_OUTCOME" != "success" ]; then
+            collection_status="$(stage_status "$LIGHT_OUTCOME")"
+          fi
+
+          generation_status="$(stage_status "$METADATA_OUTCOME")"
+          if [ "$generation_status" = "✅ Complete" ] && [ "$GENERATION_OUTCOME" != "success" ]; then
+            generation_status="$(stage_status "$GENERATION_OUTCOME")"
+          fi
+          if [ "$generation_status" = "✅ Complete" ] && [ "$PREPARE_OUTCOME" != "success" ]; then
+            generation_status="$(stage_status "$PREPARE_OUTCOME")"
+          fi
+
+          publish_status="$(stage_status "$PUBLISH_OUTCOME")"
 
           count_configs() {
             if [ -s "$1" ]; then
@@ -678,8 +721,9 @@ jobs:
             echo
             echo "| Stage | Status |"
             echo "|---|---|"
-            echo "| Collection & validation | $status_icon $status_text |"
-            echo "| Subscription generation | $status_icon $status_text |"
+            echo "| Collection & validation | $collection_status |"
+            echo "| Subscription generation | $generation_status |"
+            echo "| Publish | $publish_status |"
             echo
             echo "### ⏱️ Benchmark"
             echo
