@@ -646,9 +646,7 @@ fn normalize_github_source(raw: &str) -> Option<String> {
 
     let (branch_start, path_start) = match marker {
         "blob" => {
-            if segments.get(3) == Some(&"refs")
-                && segments.get(4) == Some(&"heads")
-            {
+            if segments.get(3) == Some(&"refs") && segments.get(4) == Some(&"heads") {
                 (5, 6)
             } else {
                 (3, 4)
@@ -827,9 +825,7 @@ mod tests {
                 "https://github.com/example/project/raw/refs/heads/main/subscriptions/all.txt"
             )
             .as_deref(),
-            Some(
-                "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
-            )
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
     }
 
