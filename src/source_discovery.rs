@@ -310,33 +310,34 @@ impl Registry {
         object.insert("last_checked".into(), Value::from(now));
 
         match outcome {
-            CollectionOutcome::Success(produced_configs) if produced_configs > 0 => {
+            CollectionOutcome::Success(produced_configs) => {
                 object.insert(
                     "configs_last_run".into(),
                     Value::from(produced_configs as u64),
                 );
-                object.insert(
-                    "configs_total".into(),
-                    Value::from(configs_total.saturating_add(produced_configs as u64)),
-                );
-                object.insert("successes".into(), Value::from(successes.saturating_add(1)));
-                object.insert("failure_streak".into(), Value::from(0u64));
-                object.insert("empty_streak".into(), Value::from(0u64));
-                object.insert("last_success".into(), Value::from(now));
-            }
-            CollectionOutcome::Success(0) => {
-                object.insert("configs_last_run".into(), Value::from(0u64));
-                object.insert("successes".into(), Value::from(successes.saturating_add(1)));
-                object.insert("failure_streak".into(), Value::from(0u64));
-                object.insert(
-                    "empty_runs".into(),
-                    Value::from(empty_runs.saturating_add(1)),
-                );
-                object.insert(
-                    "empty_streak".into(),
-                    Value::from(empty_streak.saturating_add(1)),
-                );
-                object.insert("last_success".into(), Value::from(now));
+
+                if produced_configs > 0 {
+                    object.insert(
+                        "configs_total".into(),
+                        Value::from(configs_total.saturating_add(produced_configs as u64)),
+                    );
+                    object.insert("successes".into(), Value::from(successes.saturating_add(1)));
+                    object.insert("failure_streak".into(), Value::from(0u64));
+                    object.insert("empty_streak".into(), Value::from(0u64));
+                    object.insert("last_success".into(), Value::from(now));
+                } else {
+                    object.insert("successes".into(), Value::from(successes.saturating_add(1)));
+                    object.insert("failure_streak".into(), Value::from(0u64));
+                    object.insert(
+                        "empty_runs".into(),
+                        Value::from(empty_runs.saturating_add(1)),
+                    );
+                    object.insert(
+                        "empty_streak".into(),
+                        Value::from(empty_streak.saturating_add(1)),
+                    );
+                    object.insert("last_success".into(), Value::from(now));
+                }
             }
             CollectionOutcome::Failed => {
                 object.insert("configs_last_run".into(), Value::from(0u64));
@@ -1410,9 +1411,9 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
-        percent_encode_path, Candidate, Registry, Repository, Value, MAX_ACTIVE_SOURCES,
-        MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK, MAX_KNOWN_REFRESH_SOURCES,
-        MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS, STANDARD,
+        percent_encode_path, Candidate, CollectionOutcome, Registry, Repository, Value,
+        MAX_ACTIVE_SOURCES, MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK,
+        MAX_KNOWN_REFRESH_SOURCES, MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS, STANDARD,
     };
     use base64::Engine as _;
     use std::collections::HashSet;
