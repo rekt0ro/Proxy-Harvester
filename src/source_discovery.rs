@@ -689,8 +689,7 @@ fn source_quality_factor(record: &Value) -> f64 {
 
     if let (Some(tested), Some(passed)) = (transfer_tested, transfer_pass) {
         if tested > 0 {
-            let transfer_rate =
-                ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
+            let transfer_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
             weighted_sum += transfer_rate * 0.15;
             weight_sum += 0.15;
         }
