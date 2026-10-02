@@ -21,6 +21,9 @@ const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
 const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
+const MAX_PROVEN_ACTIVE_SOURCES: usize = 500;
+const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
+const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 100;
 const MAX_FAILURE_STREAK: u64 = 5;
 const MAX_EMPTY_STREAK: u64 = 3;
 const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -189,11 +192,23 @@ impl Registry {
         excluded: &HashSet<String>,
         recoverable: &HashSet<String>,
     ) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let proven = self
+            .proven_urls(limit, excluded, recoverable)
+            .into_iter()
+            .collect::<HashSet<_>>();
+
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if excluded.contains(url) || is_legacy_noise_source(url) {
+            if proven.contains(url)
+                || excluded.contains(url)
+                || is_legacy_noise_source(url)
+            {
                 continue;
             }
 
@@ -228,19 +243,136 @@ impl Registry {
         checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-        let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES.min(limit).min(unchecked.len());
+        let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES
+            .min(limit.saturating_sub(proven.len()))
+            .min(unchecked.len());
 
-        unchecked
+        proven
             .into_iter()
-            .take(unchecked_limit)
-            .map(|(url, _)| url)
+            .take(limit)
+            .chain(
+                unchecked
+                    .into_iter()
+                    .take(unchecked_limit)
+                    .map(|(url, _)| url),
+            )
             .chain(
                 checked
                     .into_iter()
-                    .take(limit.saturating_sub(unchecked_limit))
-                    .map(|(url, _)| url),
+                    .take(limit.saturating_sub(MAX_PROVEN_ACTIVE_SOURCES).saturating_sub(unchecked_limit)),
             )
             .collect()
+    }
+
+    fn proven_urls(
+        &self,
+        limit: usize,
+        excluded: &HashSet<String>,
+        recoverable: &HashSet<String>,
+    ) -> Vec<String> {
+        let mut proven = self
+            .sources()
+            .iter()
+            .filter_map(|(url, record)| {
+                if excluded.contains(url)
+                    || is_legacy_noise_source(url)
+                    || !self.is_healthy_for_selection(record, url, recoverable)
+                {
+                    return None;
+                }
+
+                let successes = record
+                    .get("successes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let configs_last_run = record
+                    .get("configs_last_run")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+
+                if successes < MIN_PROVEN_SUCCESSFUL_RUNS
+                    || configs_last_run < MIN_PROVEN_CONFIGS_LAST_RUN
+                {
+                    return None;
+                }
+
+                let failures = record
+                    .get("failures")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let empty_runs = record
+                    .get("empty_runs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let total_runs = successes
+                    .saturating_add(failures)
+                    .saturating_add(empty_runs);
+                let reliability = if total_runs == 0 {
+                    0
+                } else {
+                    successes.saturating_mul(1_000) / total_runs
+                };
+                let last_success = record
+                    .get("last_success")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let configs_total = record
+                    .get("configs_total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+
+                Some((
+                    url.clone(),
+                    configs_last_run,
+                    configs_total,
+                    reliability,
+                    successes,
+                    last_success,
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        proven.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.3.cmp(&a.3))
+                .then_with(|| b.4.cmp(&a.4))
+                .then_with(|| b.5.cmp(&a.5))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        proven
+            .into_iter()
+            .take(limit.min(MAX_PROVEN_ACTIVE_SOURCES))
+            .map(|(url, _, _, _, _, _)| url)
+            .collect()
+    }
+
+    fn is_healthy_for_selection(
+        &self,
+        record: &Value,
+        url: &str,
+        recoverable: &HashSet<String>,
+    ) -> bool {
+        if recoverable.contains(url) {
+            return true;
+        }
+
+        let failures = record
+            .get("failure_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let empty_streak = record
+            .get("empty_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+
+        failures < MAX_FAILURE_STREAK
+            && empty_streak < MAX_EMPTY_STREAK
+            && record
+                .get("permanently_failed")
+                .and_then(Value::as_bool)
+                != Some(true)
     }
 
     fn is_recoverable(&self, url: &str, now: u64) -> bool {
@@ -615,11 +747,18 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     write_registry(&registry_path, &registry).await?;
     write_sources(&sources_path, &ordered).await?;
 
+    let proven_active = ordered
+        .iter()
+        .filter(|url| registry.proven_urls(1, &HashSet::new(), &HashSet::new()).contains(url))
+        .count();
+
     println!(
-        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources | {} registry pruned",
+        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources | {} proven core | {} exploratory | {} registry pruned",
         repos.len(),
         new_candidates.len(),
         ordered.len(),
+        proven_active,
+        ordered.len().saturating_sub(proven_active),
         retired
     );
 
@@ -1272,16 +1411,19 @@ fn select_active_sources(
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let reserved_new_slots = registry
+    let replacement_slots = registry
         .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
-        .min(limit)
-        .min(new_urls.len());
+        .min(limit);
+
+    let exploration_slots = new_urls.len().min(MAX_NEW_ACTIVE_SOURCES);
+    let reserved_new_slots = replacement_slots.max(exploration_slots);
 
     let mut active = registry.active_urls(
         limit.saturating_sub(reserved_new_slots),
         &discovered_new_set,
         &recoverable_known_urls,
     );
+
     let remaining_slots = limit.saturating_sub(active.len());
     active.extend(new_urls.into_iter().take(remaining_slots));
     active.truncate(limit);
@@ -1694,6 +1836,67 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn proven_sources_are_preferred_over_rotation() {
+        let mut registry = Registry::new(1);
+        let proven = Candidate {
+            url: "source-proven".to_string(),
+            repo: "example/proven".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        let newer = Candidate {
+            url: "source-newer".to_string(),
+            repo: "example/newer".to_string(),
+            repo_rank: 1,
+            priority: 100,
+        };
+
+        registry.add_candidate(&proven, 1);
+        registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
+
+        registry.add_candidate(&newer, 3);
+        let active =
+            super::select_active_sources(&registry, &[], &[], 4, 1);
+
+        assert_eq!(active, vec![proven.url]);
+    }
+
+    #[test]
+    fn newly_discovered_sources_get_exploration_slots_without_displacing_proven_core() {
+        let mut registry = Registry::new(1);
+        let proven = Candidate {
+            url: "source-proven".to_string(),
+            repo: "example/proven".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        registry.add_candidate(&proven, 1);
+        registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
+
+        let new_sources = (0..3)
+            .map(|index| Candidate {
+                url: format!("source-new-{index}"),
+                repo: format!("example/new-{index}"),
+                repo_rank: index + 1,
+                priority: 100,
+            })
+            .collect::<Vec<_>>();
+
+        for candidate in &new_sources {
+            registry.add_candidate(candidate, 3);
+        }
+
+        let active = super::select_active_sources(&registry, &new_sources, &[], 4, 4);
+
+        assert!(active.contains(&proven.url));
+        for candidate in &new_sources {
+            assert!(active.contains(&candidate.url));
+        }
+    }
+
     fn new_sources_do_not_displace_healthy_sources() {
         let mut registry = Registry::new(1);
         let healthy = Candidate {
