@@ -1145,7 +1145,8 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_source_path, likely_source_url, normalize_github_source, percent_encode_path, Candidate,
+        extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
+        percent_encode_path, Candidate,
         Registry, Value, MAX_ACTIVE_SOURCES, MAX_FAILURE_STREAK, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
@@ -1366,6 +1367,18 @@ mod tests {
         assert!(!is_source_path("docs/todo.txt"));
         assert!(is_source_path("subscriptions/all.txt"));
         assert!(is_source_path("proxies.txt"));
+    }
+
+    #[test]
+    fn extracts_urls_from_markdown_table_cells() {
+        let text = "| https://github.com/example/project/blob/main/subscriptions/all.txt |";
+        let candidates = extract_source_urls(text, "example/project", 0);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
     }
 
     #[test]
