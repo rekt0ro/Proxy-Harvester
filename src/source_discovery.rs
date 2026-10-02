@@ -14,16 +14,19 @@ const SEARCH_PER_PAGE: usize = 100;
 const MAX_DISCOVERY_REPOS: usize = 300;
 const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
-const MAX_ACTIVE_SOURCES: usize = 1200;
+const MAX_ACTIVE_SOURCES: usize = 900;
 const MAX_NEW_SOURCES: usize = 800;
 const MAX_NEW_SOURCES_PER_REPO: usize = 25;
 const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
 const MAX_REGISTRY_SOURCES: usize = 10_000;
-const MAX_NEW_ACTIVE_SOURCES: usize = 300;
-const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
-const MAX_PROVEN_ACTIVE_SOURCES: usize = 300;
+const MAX_NEW_ACTIVE_SOURCES: usize = 75;
+const BOOTSTRAP_NEW_ACTIVE_SOURCES: usize = 300;
+const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 75;
+const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
 const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
+const MAX_LOW_QUALITY_STREAK: u64 = 3;
+const QUALITY_RETRY_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_FAILURE_STREAK: u64 = 5;
 const MAX_EMPTY_STREAK: u64 = 3;
 const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -318,7 +321,11 @@ impl Registry {
                     .get("configs_total")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
-                let effective_yield = configs_last_run.saturating_mul(reliability);
+                let quality_factor = source_quality_factor(record);
+                let effective_yield =
+                    ((configs_last_run as f64) * (reliability as f64) * quality_factor)
+                        .round()
+                        .clamp(0.0, u64::MAX as f64) as u64;
 
                 Some((
                     url.clone(),
@@ -370,6 +377,7 @@ impl Registry {
 
         failures < MAX_FAILURE_STREAK
             && empty_streak < MAX_EMPTY_STREAK
+            && !source_quality_quarantined(record)
             && record.get("permanently_failed").and_then(Value::as_bool) != Some(true)
     }
 
@@ -406,6 +414,14 @@ impl Registry {
             object.insert("failures".into(), Value::from(0u64));
             object.insert("failure_streak".into(), Value::from(0u64));
             object.insert("configs_total".into(), Value::from(0u64));
+            object.insert("transport_reachable_last_run".into(), Value::from(0u64));
+            object.insert("strict_tested_last_run".into(), Value::from(0u64));
+            object.insert("strict_pass_last_run".into(), Value::from(0u64));
+            object.insert("transfer_tested_last_run".into(), Value::from(0u64));
+            object.insert("transfer_pass_last_run".into(), Value::from(0u64));
+            object.insert("transport_low_quality_streak".into(), Value::from(0u64));
+            object.insert("strict_low_quality_streak".into(), Value::from(0u64));
+            object.insert("transfer_low_quality_streak".into(), Value::from(0u64));
             Value::Object(object)
         });
 
@@ -545,7 +561,9 @@ impl Registry {
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
 
-                failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK
+                failure_streak >= MAX_FAILURE_STREAK
+                    || empty_streak >= MAX_EMPTY_STREAK
+                    || source_quality_quarantined(record)
             })
             .count()
     }
@@ -574,7 +592,9 @@ impl Registry {
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
 
-                failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK
+                failure_streak >= MAX_FAILURE_STREAK
+                    || empty_streak >= MAX_EMPTY_STREAK
+                    || source_quality_quarantined(record)
             })
             .count()
     }
@@ -633,6 +653,271 @@ impl Registry {
     }
 }
 
+fn source_quality_factor(record: &Value) -> f64 {
+    let collected = record
+        .get("configs_last_run")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let transport = record
+        .get("transport_reachable_last_run")
+        .and_then(Value::as_u64);
+    let strict_tested = record.get("strict_tested_last_run").and_then(Value::as_u64);
+    let strict_pass = record.get("strict_pass_last_run").and_then(Value::as_u64);
+    let transfer_tested = record
+        .get("transfer_tested_last_run")
+        .and_then(Value::as_u64);
+    let transfer_pass = record.get("transfer_pass_last_run").and_then(Value::as_u64);
+
+    let mut weighted_sum = 0.0;
+    let mut weight_sum = 0.0;
+
+    if collected > 0 && transport.is_some() {
+        let transport_rate = ((transport.unwrap_or_default() as f64 + 2.0)
+            / (collected as f64 + 4.0))
+            .clamp(0.0, 1.0);
+        weighted_sum += transport_rate * 0.60;
+        weight_sum += 0.60;
+    }
+
+    if let (Some(tested), Some(passed)) = (strict_tested, strict_pass) {
+        if tested > 0 {
+            let strict_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
+            weighted_sum += strict_rate * 0.25;
+            weight_sum += 0.25;
+        }
+    }
+
+    if let (Some(tested), Some(passed)) = (transfer_tested, transfer_pass) {
+        if tested > 0 {
+            let transfer_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
+            weighted_sum += transfer_rate * 0.15;
+            weight_sum += 0.15;
+        }
+    }
+
+    if weight_sum == 0.0 {
+        1.0
+    } else {
+        let score = weighted_sum / weight_sum;
+        0.20 + (0.80 * score)
+    }
+}
+
+fn source_quality_quarantined(record: &Value) -> bool {
+    let reached_threshold = [
+        "transport_low_quality_streak",
+        "strict_low_quality_streak",
+        "transfer_low_quality_streak",
+    ]
+    .into_iter()
+    .any(|key| {
+        record.get(key).and_then(Value::as_u64).unwrap_or_default() >= MAX_LOW_QUALITY_STREAK
+    });
+
+    if !reached_threshold {
+        return false;
+    }
+
+    record
+        .get("last_checked")
+        .and_then(Value::as_u64)
+        .is_none_or(|checked| unix_now().saturating_sub(checked) < QUALITY_RETRY_COOLDOWN_SECS)
+}
+
+pub async fn record_transport_results(
+    reachable_by_source: &std::collections::HashMap<String, usize>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if reachable_by_source.is_empty() {
+        return Ok(());
+    }
+
+    let root = project_root()?;
+    let registry_path = root.join("subscriptions").join("source-registry.json");
+    let now = unix_now();
+    let mut registry = load_registry(&registry_path, now).await;
+
+    for (url, reachable) in reachable_by_source {
+        let Some(object) = registry
+            .sources_mut()
+            .get_mut(url)
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+
+        let collected = object
+            .get("configs_last_run")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let previous = object
+            .get("transport_low_quality_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+
+        object.insert(
+            "transport_reachable_last_run".into(),
+            Value::from(*reachable as u64),
+        );
+
+        let low_quality = collected >= 100 && (*reachable as f64 / collected as f64) < 0.08;
+        object.insert(
+            "transport_low_quality_streak".into(),
+            Value::from(if low_quality {
+                previous.saturating_add(1)
+            } else {
+                0
+            }),
+        );
+    }
+
+    write_registry(&registry_path, &registry).await?;
+    Ok(())
+}
+
+pub fn record_light_results(
+    strict_tested: &std::collections::HashSet<String>,
+    strict_passed: &std::collections::HashSet<String>,
+    transfer_tested: &std::collections::HashSet<String>,
+    transfer_passed: &std::collections::HashSet<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let root = project_root()?;
+    let map_path = root.join("subscriptions").join(".source-config-map.json");
+    let registry_path = root.join("subscriptions").join("source-registry.json");
+
+    let map_text = match std::fs::read_to_string(&map_path) {
+        Ok(text) => text,
+        Err(_) => return Ok(()),
+    };
+    let source_map = serde_json::from_str::<Map<String, Value>>(&map_text).unwrap_or_default();
+
+    let mut strict_tested_by_source = HashMap::<String, u64>::new();
+    let mut strict_passed_by_source = HashMap::<String, u64>::new();
+    let mut transfer_tested_by_source = HashMap::<String, u64>::new();
+    let mut transfer_passed_by_source = HashMap::<String, u64>::new();
+
+    for config in strict_tested {
+        if let Some(Value::Array(sources)) = source_map.get(config) {
+            for source in sources.iter().filter_map(Value::as_str) {
+                *strict_tested_by_source
+                    .entry(source.to_string())
+                    .or_default() += 1;
+                if strict_passed.contains(config) {
+                    *strict_passed_by_source
+                        .entry(source.to_string())
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+
+    for config in transfer_tested {
+        if let Some(Value::Array(sources)) = source_map.get(config) {
+            for source in sources.iter().filter_map(Value::as_str) {
+                *transfer_tested_by_source
+                    .entry(source.to_string())
+                    .or_default() += 1;
+                if transfer_passed.contains(config) {
+                    *transfer_passed_by_source
+                        .entry(source.to_string())
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+
+    if strict_tested_by_source.is_empty() && transfer_tested_by_source.is_empty() {
+        return Ok(());
+    }
+
+    let now = unix_now();
+    let registry_value = std::fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| Registry::new(now).json());
+    let mut registry = Registry::from_value(registry_value, now);
+
+    let mut touched = HashSet::new();
+    touched.extend(strict_tested_by_source.keys().cloned());
+    touched.extend(transfer_tested_by_source.keys().cloned());
+
+    for source in touched {
+        let Some(object) = registry
+            .sources_mut()
+            .get_mut(&source)
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+
+        let strict_tested = strict_tested_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let strict_passed = strict_passed_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let transfer_tested = transfer_tested_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let transfer_passed = transfer_passed_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+
+        object.insert("strict_tested_last_run".into(), Value::from(strict_tested));
+        object.insert("strict_pass_last_run".into(), Value::from(strict_passed));
+        object.insert(
+            "transfer_tested_last_run".into(),
+            Value::from(transfer_tested),
+        );
+        object.insert(
+            "transfer_pass_last_run".into(),
+            Value::from(transfer_passed),
+        );
+
+        let strict_previous = object
+            .get("strict_low_quality_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let strict_low =
+            strict_tested >= 20 && (strict_passed as f64 / strict_tested as f64) < 0.05;
+        object.insert(
+            "strict_low_quality_streak".into(),
+            Value::from(if strict_low {
+                strict_previous.saturating_add(1)
+            } else {
+                0
+            }),
+        );
+
+        let transfer_previous = object
+            .get("transfer_low_quality_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let transfer_low =
+            transfer_tested >= 10 && (transfer_passed as f64 / transfer_tested as f64) < 0.05;
+        object.insert(
+            "transfer_low_quality_streak".into(),
+            Value::from(if transfer_low {
+                transfer_previous.saturating_add(1)
+            } else {
+                0
+            }),
+        );
+    }
+
+    let data = serde_json::to_string_pretty(&registry.json())?;
+    let temporary = registry_path.with_extension("json.tmp");
+    std::fs::write(&temporary, format!("{data}\n"))?;
+    if let Err(error) = std::fs::rename(&temporary, &registry_path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+
+    Ok(())
+}
 pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>>
 {
     let root = project_root()?;
@@ -1392,9 +1677,17 @@ fn select_active_sources(
     now: u64,
     limit: usize,
 ) -> Vec<String> {
+    let bootstrap = registry
+        .proven_urls(1, &HashSet::new(), &HashSet::new())
+        .is_empty();
+    let new_limit = if bootstrap {
+        BOOTSTRAP_NEW_ACTIVE_SOURCES
+    } else {
+        MAX_NEW_ACTIVE_SOURCES
+    };
     let new_urls = new_candidates
         .iter()
-        .take(MAX_NEW_ACTIVE_SOURCES)
+        .take(new_limit)
         .map(|candidate| candidate.url.clone())
         .collect::<Vec<_>>();
     let discovered_new_set = new_urls.iter().cloned().collect::<HashSet<_>>();

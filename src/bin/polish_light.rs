@@ -386,6 +386,18 @@ fn persist_light_result(
         transfer_verified,
     )?;
 
+    let strict_tested = final_attempts.keys().cloned().collect::<HashSet<_>>();
+    let strict_passed = final_metadata.keys().cloned().collect::<HashSet<_>>();
+    let transfer_passed = transfer_verified.keys().cloned().collect::<HashSet<_>>();
+    if let Err(error) = proxyrift::source_discovery::record_light_results(
+        &strict_tested,
+        &strict_passed,
+        transfer_tested,
+        &transfer_passed,
+    ) {
+        println!("[WARN] ⚠️ [SOURCE QUALITY] failed to persist Light feedback: {error}");
+    }
+
     let mut model = intelligence.clone();
     for config in final_attempts.keys() {
         // The model observes one candidate-level outcome per strict recheck.
