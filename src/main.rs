@@ -2465,11 +2465,7 @@ fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
 
             let sni = ["sni", "peer", "server_name"]
                 .iter()
-                .find_map(|key| {
-                    hysteria2_query_values(config, key)
-                        .into_iter()
-                        .next()
-                })
+                .find_map(|key| hysteria2_query_values(config, key).into_iter().next())
                 .unwrap_or_else(|| host.clone());
 
             let alpn = {
