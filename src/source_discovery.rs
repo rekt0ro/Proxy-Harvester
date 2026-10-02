@@ -110,6 +110,12 @@ struct Candidate {
     priority: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollectionOutcome {
+    Success(usize),
+    Failed,
+}
+
 struct Registry {
     root: Map<String, Value>,
 }
@@ -264,6 +270,10 @@ impl Registry {
     }
 
     fn record_result(&mut self, url: &str, produced_configs: usize, now: u64) {
+        self.record_outcome(url, CollectionOutcome::Success(produced_configs), now);
+    }
+
+    fn record_outcome(&mut self, url: &str, outcome: CollectionOutcome, now: u64) {
         let Some(object) = self
             .sources_mut()
             .get_mut(url)
@@ -284,31 +294,59 @@ impl Registry {
             .get("failure_streak")
             .and_then(Value::as_u64)
             .unwrap_or_default();
+        let empty_runs = object
+            .get("empty_runs")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let empty_streak = object
+            .get("empty_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
         let configs_total = object
             .get("configs_total")
             .and_then(Value::as_u64)
             .unwrap_or_default();
 
         object.insert("last_checked".into(), Value::from(now));
-        object.insert(
-            "configs_last_run".into(),
-            Value::from(produced_configs as u64),
-        );
-        object.insert(
-            "configs_total".into(),
-            Value::from(configs_total.saturating_add(produced_configs as u64)),
-        );
 
-        if produced_configs > 0 {
-            object.insert("successes".into(), Value::from(successes + 1));
-            object.insert("failure_streak".into(), Value::from(0u64));
-            object.insert("last_success".into(), Value::from(now));
-        } else {
-            object.insert("failures".into(), Value::from(failures + 1));
-            object.insert(
-                "failure_streak".into(),
-                Value::from(streak.saturating_add(1)),
-            );
+        match outcome {
+            CollectionOutcome::Success(produced_configs) if produced_configs > 0 => {
+                object.insert(
+                    "configs_last_run".into(),
+                    Value::from(produced_configs as u64),
+                );
+                object.insert(
+                    "configs_total".into(),
+                    Value::from(configs_total.saturating_add(produced_configs as u64)),
+                );
+                object.insert("successes".into(), Value::from(successes.saturating_add(1)));
+                object.insert("failure_streak".into(), Value::from(0u64));
+                object.insert("empty_streak".into(), Value::from(0u64));
+                object.insert("last_success".into(), Value::from(now));
+            }
+            CollectionOutcome::Success(0) => {
+                object.insert("configs_last_run".into(), Value::from(0u64));
+                object.insert(
+                    "empty_runs".into(),
+                    Value::from(empty_runs.saturating_add(1)),
+                );
+                object.insert(
+                    "empty_streak".into(),
+                    Value::from(empty_streak.saturating_add(1)),
+                );
+            }
+            CollectionOutcome::Failed => {
+                object.insert("configs_last_run".into(), Value::from(0u64));
+                object.insert(
+                    "failures".into(),
+                    Value::from(failures.saturating_add(1)),
+                );
+                object.insert(
+                    "failure_streak".into(),
+                    Value::from(streak.saturating_add(1)),
+                );
+                object.insert("empty_streak".into(), Value::from(0u64));
+            }
         }
     }
 
@@ -519,7 +557,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
 }
 
 pub async fn record_collection_results(
-    results: &[(String, usize)],
+    results: &[(String, CollectionOutcome)],
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     if results.is_empty() {
         return Ok(0);
@@ -530,16 +568,20 @@ pub async fn record_collection_results(
     let now = unix_now();
     let mut registry = load_registry(&registry_path, now).await;
 
-    for (url, configs) in results {
-        registry.record_result(url, *configs, now);
+    for (url, outcome) in results {
+        registry.record_outcome(url, *outcome, now);
     }
 
     let retired = registry.retire_failed();
     write_registry(&registry_path, &registry).await?;
 
     println!(
-        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | retired {}",
+        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | failed {} | retired {}",
         results.len(),
+        results
+            .iter()
+            .filter(|(_, outcome)| *outcome == CollectionOutcome::Failed)
+            .count(),
         retired
     );
 
@@ -1325,7 +1367,15 @@ async fn write_sources(
     path: &Path,
     urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    fs::write(path, format!("{}\n", urls.join("\n"))).await?;
+    let temporary = path.with_file_name(format!(
+        ".{}.tmp",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("sources")
+    ));
+    fs::write(&temporary, format!("{}\n", urls.join("\n"))).await?;
+    if let Err(error) = fs::rename(&temporary, path).await {
+        let _ = fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
     Ok(())
 }
 
