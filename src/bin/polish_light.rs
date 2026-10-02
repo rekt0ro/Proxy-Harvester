@@ -29,9 +29,9 @@ const TRANSFER_RESERVE_DEFAULT_PASS_RATE: f64 = 0.80;
 const TRANSFER_RESERVE_SAFETY_FACTOR: f64 = 1.08;
 const TRANSFER_RESERVE_MAX_HEADROOM: usize = 120;
 const FINAL_TRANSFER_BATCH_SIZE: usize = 32;
-const FINAL_TRANSFER_WORKERS: usize = 12;
-const FINAL_TRANSFER_INITIAL_WORKERS: usize = 6;
-const FINAL_TRANSFER_MIN_WORKERS: usize = 4;
+const FINAL_TRANSFER_WORKERS: usize = 8;
+const FINAL_TRANSFER_INITIAL_WORKERS: usize = 4;
+const FINAL_TRANSFER_MIN_WORKERS: usize = 2;
 const FINAL_TRANSFER_QUEUE_MULTIPLIER: usize = 3;
 const FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP: usize = 2;
 const FINAL_TRANSFER_TEST_LIMIT: usize = 320;
@@ -732,6 +732,22 @@ async fn validate_light_transfer_batch(
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
+fn adjust_transfer_workers(
+    current: usize,
+    rate_limits: u64,
+    clean_batches: usize,
+) -> (usize, usize) {
+    if rate_limits >= 4 {
+        (current.saturating_sub(2).max(FINAL_TRANSFER_MIN_WORKERS), 0)
+    } else if rate_limits > 0 {
+        (current.saturating_sub(1).max(FINAL_TRANSFER_MIN_WORKERS), 0)
+    } else if clean_batches.saturating_add(1) >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
+        ((current + 1).min(FINAL_TRANSFER_WORKERS), 0)
+    } else {
+        (current, clean_batches.saturating_add(1))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
@@ -857,30 +873,22 @@ async fn fill_transfer_gate(
 
         let rate_limits_after = rate_limit_events();
         let rate_limits = rate_limits_after.saturating_sub(rate_limits_before);
-        if rate_limits >= 4 {
-            transfer_workers = transfer_workers
-                .saturating_sub(2)
-                .max(FINAL_TRANSFER_MIN_WORKERS);
-            clean_batches = 0;
+        let previous_workers = transfer_workers;
+        let previous_clean_batches = clean_batches;
+        (transfer_workers, clean_batches) =
+            adjust_transfer_workers(transfer_workers, rate_limits, clean_batches);
+        if rate_limits > 0 {
             println!(
-                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
-                rate_limits, transfer_workers
+                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers {} -> {}",
+                rate_limits, previous_workers, transfer_workers
             );
-        } else if rate_limits > 0 {
-            transfer_workers = transfer_workers
-                .saturating_sub(1)
-                .max(FINAL_TRANSFER_MIN_WORKERS);
-            clean_batches = 0;
+        } else if transfer_workers > previous_workers {
             println!(
-                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers to {}",
-                rate_limits, transfer_workers
+                "[INFO] 📈 LIGHT TRANSFER: {} clean batches; increasing workers {} -> {}",
+                previous_clean_batches + 1,
+                previous_workers,
+                transfer_workers
             );
-        } else {
-            clean_batches += 1;
-            if clean_batches >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
-                transfer_workers = (transfer_workers + 1).min(FINAL_TRANSFER_WORKERS);
-                clean_batches = 0;
-            }
         }
 
         println!(
@@ -2195,11 +2203,11 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
-        history_fingerprint, light_backend, light_training_features, merge_light_metadata,
-        normalize_light_config, select_verified_configs, selection_additional_potential_count,
-        selection_eligible_count, selection_potential_count, transfer_reserve_target, LightBackend,
-        ProxyMetrics,
+        adaptive_recheck_limit, adaptive_transfer_test_limit, adjust_transfer_workers,
+        has_disabled_tls_verification, history_fingerprint, light_backend, light_training_features,
+        merge_light_metadata, normalize_light_config, select_verified_configs,
+        selection_additional_potential_count, selection_eligible_count, selection_potential_count,
+        transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2266,6 +2274,20 @@ mod tests {
     fn transfer_reserve_scales_with_low_pass_rate_and_is_capped() {
         assert_eq!(transfer_reserve_target(200, 0, 200, 160), 273);
         assert_eq!(transfer_reserve_target(200, 0, 200, 100), 320);
+    }
+
+    #[test]
+    fn rate_limits_back_transfer_workers_to_two() {
+        assert_eq!(adjust_transfer_workers(4, 4, 0), (2, 0));
+        assert_eq!(adjust_transfer_workers(8, 1, 1), (7, 0));
+        assert_eq!(adjust_transfer_workers(2, 1, 0), (2, 0));
+    }
+
+    #[test]
+    fn clean_transfer_batches_ramp_workers_slowly() {
+        assert_eq!(adjust_transfer_workers(2, 0, 0), (2, 1));
+        assert_eq!(adjust_transfer_workers(2, 0, 1), (3, 0));
+        assert_eq!(adjust_transfer_workers(8, 0, 1), (8, 0));
     }
 
     #[test]
