@@ -416,7 +416,8 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
     }
 
     let fallback = public[0];
-    let probes = stream::iter(public.iter().copied())
+    let probe_ips = public.clone();
+    let probes = stream::iter(probe_ips)
         .map(|ip| async move {
             timeout(Duration::from_millis(750), TcpStream::connect((ip, port)))
                 .await
@@ -429,10 +430,7 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
 
     futures::pin_mut!(probes);
 
-    let preferred = timeout(PUBLIC_DNS_TIMEOUT, probes.next()).await;
-    drop(probes);
-
-    if let Ok(Some(ip)) = preferred {
+    if let Ok(Some(ip)) = timeout(PUBLIC_DNS_TIMEOUT, probes.next()).await {
         return Some(ip);
     }
 
