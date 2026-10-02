@@ -36,18 +36,6 @@ jobs:
       - name: "Checkout source"
         uses: actions/checkout@v7
 
-      - name: "🔐 Load proxy sources"
-        env:
-          PROXY_SOURCES: ${{ secrets.PROXY_SOURCES }}
-        run: |
-          test -n "$PROXY_SOURCES"
-          while IFS= read -r line; do
-            if [ -n "$line" ]; then
-              echo "::add-mask::$line"
-            fi
-          done <<< "$PROXY_SOURCES"
-          printf '%s\n' "$PROXY_SOURCES" > sources.txt
-
       - name: "🦀 Resolve stable Rust toolchain"
         id: rust-toolchain
         run: |
@@ -279,6 +267,7 @@ jobs:
           test -x ./target/release/check_proxies
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
+          test -x ./target/release/discover_sources
 
       - name: "💾 Save Rust toolchain cache"
         if: steps.rust-toolchain-cache-restore.outputs.cache-hit != 'true'
@@ -304,6 +293,15 @@ jobs:
         with:
           path: target
           key: ${{ steps.keys.outputs.build }}
+
+      - name: "🔭 Discover GitHub subscription sources"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          discovery_started=$SECONDS
+          ./target/release/discover_sources
+          discovery_elapsed=$((SECONDS - discovery_started))
+          echo "DISCOVERY_ELAPSED=$discovery_elapsed" >> "$GITHUB_ENV"
 
       - name: "🔎 Collect & transport-test configs"
         run: |
@@ -669,6 +667,9 @@ jobs:
           if [ -s "subscriptions/light-training.jsonl" ]; then
             cp -- subscriptions/light-training.jsonl "$publish_snapshot/subscriptions/light-training.jsonl"
           fi
+          if [ -s "subscriptions/source-registry.json" ]; then
+            cp -- subscriptions/source-registry.json "$publish_snapshot/subscriptions/source-registry.json"
+          fi
 
           git config user.name "rekt0ro"
           git config user.email "104654981+rekt0ro@users.noreply.github.com"
@@ -691,6 +692,10 @@ jobs:
             if [ -f "$publish_snapshot/subscriptions/light-training.jsonl" ]; then
               cp -- "$publish_snapshot/subscriptions/light-training.jsonl" subscriptions/light-training.jsonl
             fi
+            if [ -f "$publish_snapshot/subscriptions/source-registry.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/source-registry.json" subscriptions/source-registry.json
+            fi
+
 
             git add -- \
               subscriptions/all.txt \
@@ -705,6 +710,10 @@ jobs:
             if [ -f "subscriptions/light-training.jsonl" ]; then
               git add -- subscriptions/light-training.jsonl
             fi
+            if [ -f "subscriptions/source-registry.json" ]; then
+              git add -- subscriptions/source-registry.json
+            fi
+
 
             if git diff --cached --quiet; then
               publish_elapsed=$((SECONDS - publish_started))
