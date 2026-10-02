@@ -581,7 +581,7 @@ async fn discover_from_repos(
                 Ok(candidates) => all.extend(candidates),
                 Err(error) => println!(
                     "[WARN] 🔭 [DISCOVERY] tree probe failed for {}: {error}",
-                    repo.0
+                    repo.name
                 ),
             }
         }
@@ -715,7 +715,7 @@ async fn scan_repo_tree(
 async fn search_repositories(
     client: &Client,
     token: Option<&str>,
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<Repository>, Box<dyn std::error::Error + Send + Sync>> {
     let mut repos = Vec::new();
 
     for query in DEFAULT_QUERIES {
@@ -756,15 +756,15 @@ async fn search_repositories(
                     .unwrap_or("main");
 
                 let pushed_at = item
-            .get("pushed_at")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+                    .get("pushed_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
 
-        repos.push(Repository {
-            name: name.to_string(),
-            branch: branch.to_string(),
-            pushed_at: pushed_at.to_string(),
-        });
+                repos.push(Repository {
+                    name: name.to_string(),
+                    branch: branch.to_string(),
+                    pushed_at: pushed_at.to_string(),
+                });
             }
         }
     }
