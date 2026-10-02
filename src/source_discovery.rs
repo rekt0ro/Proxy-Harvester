@@ -1075,6 +1075,7 @@ mod tests {
                 &Candidate {
                     url: url.to_string(),
                     repo: "example/repo".to_string(),
+                    repo_rank: 0,
                     priority: 100,
                 },
                 index as u64 + 1,
@@ -1118,6 +1119,7 @@ mod tests {
                 &Candidate {
                     url: url.to_string(),
                     repo: "example/repo".to_string(),
+                    repo_rank: 0,
                     priority: 100,
                 },
                 now,
@@ -1150,6 +1152,7 @@ mod tests {
                 &Candidate {
                     url: url.to_string(),
                     repo: "example/repo".to_string(),
+                    repo_rank: 0,
                     priority: 100,
                 },
                 now,
