@@ -644,6 +644,15 @@ async fn scan_repo_tree(
     let body = read_limited_body(response, MAX_TREE_RESPONSE_BYTES).await?;
     let text = String::from_utf8(body)?;
     let payload: Value = serde_json::from_str(&text)?;
+
+    if payload
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("GitHub tree response was truncated".into());
+    }
+
     let tree = payload
         .get("tree")
         .and_then(Value::as_array)
