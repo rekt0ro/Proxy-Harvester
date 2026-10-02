@@ -1675,9 +1675,9 @@ mod tests {
     #[test]
     fn light_candidates_allow_two_variants_per_endpoint() {
         let configs = [
-            "vless://first@example.com:443".to_string(),
-            "vmess://second@example.com:443".to_string(),
-            "trojan://third@example.com:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000002@example.com:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000003@example.com:443".to_string(),
         ];
         let mut selected = Vec::new();
         let mut endpoint_counts = std::collections::HashMap::new();
