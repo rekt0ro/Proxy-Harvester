@@ -31,9 +31,6 @@ jobs:
       singbox_key: ${{ steps.keys.outputs.singbox }}
 
     steps:
-      - name: "⏱️ Start pipeline timer"
-        run: echo "PIPELINE_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
-
       - name: "Checkout source"
         uses: actions/checkout@v7
 
@@ -283,10 +280,7 @@ jobs:
       - name: "🔎 Collect & transport-test configs"
         id: collect_transport
         run: |
-          collect_started=$SECONDS
           ./target/release/ProxyRift
-          collect_elapsed=$((SECONDS - collect_started))
-          echo "COLLECT_ELAPSED=$collect_elapsed" >> "$GITHUB_ENV"
 
       - name: "💡 Build Light subscription"
         id: build_light
@@ -296,7 +290,6 @@ jobs:
           LIGHT_MIN_PUBLISH: "50"
         run: |
           mkdir -p /tmp/proxyrift
-          light_started=$SECONDS
           set +e
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
@@ -315,9 +308,7 @@ jobs:
             --max-per-family 3 \
             --stats /tmp/proxyrift/light-stats.json
           status=$?
-          light_elapsed=$((SECONDS - light_started))
           set -e
-          echo "LIGHT_ELAPSED=$light_elapsed" >> "$GITHUB_ENV"
           echo "[INFO] ✅ [LIGHT] VALIDATION COMPLETE | $light_elapsed"
 
           if [ "$status" -ne 0 ]; then
@@ -355,10 +346,7 @@ jobs:
       - name: "🧬 Generate Base64 subscriptions"
         id: generate_base64
         run: |
-          generation_started=$SECONDS
           ./target/release/encode_subscriptions
-          generation_elapsed=$((SECONDS - generation_started))
-          echo "GENERATION_ELAPSED=$generation_elapsed" >> "$GITHUB_ENV"
 
       - name: "📦 Prepare published outputs"
         id: prepare_outputs
@@ -371,7 +359,6 @@ jobs:
         id: publish
         run: |
           set -euo pipefail
-          publish_started=$SECONDS
 
           files="all.txt light.txt all-base64.txt light-base64.txt"
           publish_snapshot="$(mktemp -d /tmp/proxyrift-publish.XXXXXX)"
@@ -448,8 +435,6 @@ jobs:
 
 
             if git diff --cached --quiet; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
               echo "[INFO] 📤 [PUBLISH] NO CHANGES"
               exit 0
             fi
@@ -462,8 +447,6 @@ jobs:
             printf '%s\n' "$push_output"
 
             if [ "$push_status" -eq 0 ]; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
               echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
               exit 0
             fi
@@ -580,16 +563,44 @@ jobs:
             published="$(jq -r '.published // "unknown"' /tmp/proxyrift/light-stats.json)"
           fi
 
-          pipeline_elapsed="unknown"
-          if [[ "$PIPELINE_STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
-            pipeline_elapsed="$(( $(date +%s) - PIPELINE_STARTED_EPOCH ))"
+          current_jobs=""
+          if current_jobs="$(gh api --method GET "/repos/$GH_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" 2>/dev/null)"; then
+            :
           fi
 
-          collect_elapsed="$COLLECT_ELAPSED"
-          light_elapsed="$LIGHT_ELAPSED"
+          step_elapsed() {
+            local step_name="$1"
+            if [ -z "$current_jobs" ]; then
+              printf "%s" "unknown"
+              return
+            fi
+            local elapsed
+            elapsed="$(jq -r --arg step "$step_name" '.jobs[] | .steps[] | select(.name == $step and .started_at != null and .completed_at != null) | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) | tostring' <<< "$current_jobs" | head -n 1)"
+            [ -n "$elapsed" ] || elapsed="unknown"
+            printf "%s" "$elapsed"
+          }
 
-          [ -n "$collect_elapsed" ] || collect_elapsed="unknown"
-          [ -n "$light_elapsed" ] || light_elapsed="unknown"
+          collect_elapsed="$(step_elapsed "🔎 Collect & transport-test configs")"
+          light_elapsed="$(step_elapsed "💡 Build Light subscription")"
+
+          current_job_started=""
+          current_publish_completed=""
+          if [ -n "$current_jobs" ]; then
+            current_job_started="$(jq -r '.jobs[] | select(.name == "🔎 Collect & Validate") | .started_at // empty' <<< "$current_jobs" | head -n 1)"
+            current_publish_completed="$(jq -r '.jobs[] | select(.name == "🔎 Collect & Validate") | .steps[] | select(.name == "🚀 Publish generated changes") | .completed_at // empty' <<< "$current_jobs" | head -n 1)"
+          fi
+
+          pipeline_elapsed="unknown"
+          if [[ "$current_job_started" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            job_started_epoch="$(date -d "$current_job_started" +%s 2>/dev/null || true)"
+            if [[ "$job_started_epoch" =~ ^[0-9]+$ ]]; then
+              pipeline_end_epoch="$(date +%s)"
+              if [[ "$current_publish_completed" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+                pipeline_end_epoch="$(date -d "$current_publish_completed" +%s 2>/dev/null || printf "%s" "$pipeline_end_epoch")"
+              fi
+              pipeline_elapsed="$(( pipeline_end_epoch - job_started_epoch ))"
+            fi
+          fi
 
           format_minutes() {
             local seconds="$1"
@@ -672,11 +683,10 @@ jobs:
               )"
 
               previous_summary_epoch="$(
-                jq -r \
-                  '.jobs[]
+                jq -r                   '.jobs[]
                    | select(.name == "🔎 Collect & Validate")
                    | .steps[]
-                   | select(.name == "📊 Write run summary" and .completed_at != null)
+                   | select(.name == "🚀 Publish generated changes" and .completed_at != null)
                    | (.completed_at | fromdateiso8601)
                    | tostring' <<< "$previous_jobs" | head -n 1
               )"
