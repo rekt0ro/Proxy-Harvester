@@ -1012,9 +1012,7 @@ fn select_known_refresh_candidates(
                 .get(&candidate.url)
                 .and_then(|record| record.get("last_checked"))
                 .and_then(Value::as_u64)
-                .is_some_and(|checked| {
-                    now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
-                });
+                .is_some_and(|checked| now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS);
 
         if recoverable {
             selected.push(candidate.clone());
@@ -1320,11 +1318,16 @@ mod tests {
         }
         discovered.push(retired.clone());
 
-        let selected =
-            super::select_known_refresh_candidates(&discovered, &registry, RETIRED_SOURCE_COOLDOWN_SECS + 1);
+        let selected = super::select_known_refresh_candidates(
+            &discovered,
+            &registry,
+            RETIRED_SOURCE_COOLDOWN_SECS + 1,
+        );
 
         assert_eq!(selected.len(), MAX_KNOWN_REFRESH_SOURCES);
-        assert!(selected.iter().any(|candidate| candidate.url == retired.url));
+        assert!(selected
+            .iter()
+            .any(|candidate| candidate.url == retired.url));
 
     }
 
