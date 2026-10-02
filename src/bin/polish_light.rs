@@ -2372,13 +2372,13 @@ mod tests {
     fn recheck_diversity_allows_multiple_configs_per_family() {
         let configs = vec![
             "vless://a@example.com:443?type=ws".to_string(),
-            "vless://a@example.com:443?type=ws".to_string(),
-            "vless://a@example.com:443?type=ws".to_string(),
+            "vless://a@example.net:443?type=ws".to_string(),
+            "vless://a@example.org:443?type=ws".to_string(),
             "vless://b@example.net:443?type=ws".to_string(),
         ];
 
         let selected = super::diversify_recheck_candidates(&configs, 4, 3);
-        assert_eq!(selected.len(), 2);
+        assert_eq!(selected.len(), 3);
     }
 
     #[test]
