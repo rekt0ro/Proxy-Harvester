@@ -126,29 +126,44 @@ impl Registry {
     }
 
     fn active_urls(&self) -> Vec<String> {
-        let mut active = self
-            .sources()
-            .iter()
-            .filter_map(|(url, record)| {
-                let failures = record
-                    .get("failure_streak")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
+        let mut checked = Vec::new();
+        let mut unchecked = Vec::new();
 
-                (failures < MAX_FAILURE_STREAK).then(|| {
-                    (
-                        url.clone(),
-                        record
-                            .get("last_checked")
-                            .and_then(Value::as_u64)
-                            .unwrap_or_default(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
+        for (url, record) in self.sources() {
+            let failures = record
+                .get("failure_streak")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
 
-        active.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        active.into_iter().map(|(url, _)| url).collect()
+            if failures >= MAX_FAILURE_STREAK {
+                continue;
+            }
+
+            match record.get("last_checked").and_then(Value::as_u64) {
+                Some(last_checked) => checked.push((url.clone(), last_checked)),
+                None => unchecked.push((
+                    url.clone(),
+                    record
+                        .get("first_seen")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                )),
+            }
+        }
+
+        checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+        checked
+            .into_iter()
+            .map(|(url, _)| url)
+            .chain(
+                unchecked
+                    .into_iter()
+                    .take(MAX_NEW_ACTIVE_SOURCES)
+                    .map(|(url, _)| url),
+            )
+            .collect()
     }
 
     fn add_candidate(&mut self, candidate: &Candidate, now: u64) {
@@ -283,7 +298,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let mut discovered = if repos.is_empty() {
         Vec::new()
     } else {
-        discover_from_repos(&client, &repos).await?
+        discover_from_repos(&client, &repos, token.as_deref()).await?
     };
     let mut unique = HashMap::<String, Candidate>::new();
 
@@ -311,12 +326,18 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         registry.add_candidate(candidate, now);
     }
 
-    let mut new_urls = discovered
-        .iter()
-        .map(|candidate| candidate.url.clone())
-        .collect::<Vec<_>>();
-    new_urls.dedup();
-    new_urls.truncate(MAX_NEW_ACTIVE_SOURCES);
+    let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
+
+    let mut new_urls = Vec::new();
+    for candidate in &discovered {
+        if existing_urls.contains(&candidate.url) {
+            continue;
+        }
+        new_urls.push(candidate.url.clone());
+        if new_urls.len() >= MAX_NEW_ACTIVE_SOURCES {
+            break;
+        }
+    }
 
     let active = registry.active_urls();
 
@@ -373,10 +394,12 @@ pub async fn record_collection_results(
 async fn discover_from_repos(
     client: &Client,
     repos: &[(String, String)],
+    token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut stream = stream::iter(repos.iter().cloned().map(|repo| {
         let client = client.clone();
-        async move { discover_repo(&client, &repo).await }
+        let token = token.map(str::to_owned);
+        async move { discover_repo(&client, &repo, token.as_deref()).await }
     }))
     .buffer_unordered(24);
 
@@ -424,7 +447,13 @@ async fn discover_from_repos(
     if !tree_targets.is_empty() {
         let mut tree_stream = stream::iter(tree_targets.into_iter().map(|repo| {
             let client = client.clone();
-            async move { (repo.clone(), scan_repo_tree(&client, &repo).await) }
+            let token = token.map(str::to_owned);
+            async move {
+                (
+                    repo.clone(),
+                    scan_repo_tree(&client, &repo, token.as_deref()).await,
+                )
+            }
         }))
         .buffer_unordered(8);
 
@@ -445,6 +474,7 @@ async fn discover_from_repos(
 async fn discover_repo(
     client: &Client,
     repo: &(String, String),
+    token: Option<&str>,
 ) -> Result<(Vec<Candidate>, bool), Box<dyn std::error::Error + Send + Sync>> {
     let (name, branch) = repo;
 
@@ -454,7 +484,7 @@ async fn discover_repo(
             name, branch, readme
         );
 
-        let response = github_get(client, &url, None).await?;
+        let response = github_get(client, &url, token).await?;
         if !response.status().is_success() {
             continue;
         }
@@ -484,6 +514,7 @@ async fn discover_repo(
 async fn scan_repo_tree(
     client: &Client,
     repo: &(String, String),
+    token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let (name, branch) = repo;
     let url = format!(
@@ -492,7 +523,7 @@ async fn scan_repo_tree(
         percent_encode(branch)
     );
 
-    let response = github_get(client, &url, None).await?;
+    let response = github_get(client, &url, token).await?;
     if !response.status().is_success() {
         return Err(format!("GitHub tree API returned HTTP {}", response.status()).into());
     }
@@ -559,11 +590,11 @@ async fn search_repositories(
             }
         };
         if !response.status().is_success() {
-            return Err(format!(
-                "GitHub repository search returned HTTP {}",
+            println!(
+                "[WARN] 🔭 [DISCOVERY] GitHub repository search returned HTTP {}",
                 response.status()
-            )
-            .into());
+            );
+            continue;
         }
 
         let text = response.text().await?;
