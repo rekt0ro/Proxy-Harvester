@@ -783,7 +783,40 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_source_path, likely_source_url, normalize_github_source};
+    use super::{
+        is_source_path, likely_source_url, normalize_github_source, Candidate, Registry,
+    };
+
+    #[test]
+    fn preserves_oldest_source_rotation_order() {
+        let mut registry = Registry::new(100);
+
+        for (index, url) in ["source-a", "source-b", "source-c"].into_iter().enumerate() {
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    priority: 100,
+                },
+                100,
+            );
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_checked".into(), Value::from(index as u64 + 1));
+        }
+
+        assert_eq!(
+            registry.active_urls(),
+            vec![
+                "source-a".to_string(),
+                "source-b".to_string(),
+                "source-c".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn normalizes_github_blob_to_raw() {
