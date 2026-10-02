@@ -1186,8 +1186,8 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
-        percent_encode_path, Candidate,
-        Registry, Value, MAX_ACTIVE_SOURCES, MAX_FAILURE_STREAK, RETIRED_SOURCE_COOLDOWN_SECS,
+        percent_encode_path, Candidate, Registry, Value, MAX_ACTIVE_SOURCES, MAX_FAILURE_STREAK,
+        RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
 
@@ -1433,7 +1433,9 @@ mod tests {
     #[test]
     fn rejects_malformed_raw_github_paths() {
         assert!(normalize_github_source("https://raw.githubusercontent.com/all.txt").is_none());
-        assert!(normalize_github_source("https://raw.githubusercontent.com/example/project").is_none());
+        assert!(
+            normalize_github_source("https://raw.githubusercontent.com/example/project").is_none()
+        );
         assert!(normalize_github_source(
             "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
         )
