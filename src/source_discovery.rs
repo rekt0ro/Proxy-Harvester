@@ -14,7 +14,7 @@ const SEARCH_PER_PAGE: usize = 100;
 const MAX_DISCOVERY_REPOS: usize = 300;
 const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
-const MAX_ACTIVE_SOURCES: usize = 900;
+const MAX_ACTIVE_SOURCES: usize = 600;
 const MAX_NEW_SOURCES: usize = 800;
 const MAX_NEW_SOURCES_PER_REPO: usize = 25;
 const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
@@ -22,9 +22,11 @@ const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 75;
 const BOOTSTRAP_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 75;
-const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
+const MAX_PROVEN_ACTIVE_SOURCES: usize = 250;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
 const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
+const MIN_PROVEN_TRANSPORT_RATE: f64 = 0.08;
+const MIN_KNOWN_TRANSPORT_REACHABLE: u64 = 20;
 const MAX_LOW_QUALITY_STREAK: u64 = 3;
 const QUALITY_RETRY_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_FAILURE_STREAK: u64 = 5;
@@ -206,7 +208,11 @@ impl Registry {
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if proven_set.contains(url) || excluded.contains(url) || is_legacy_noise_source(url) {
+            if proven_set.contains(url)
+                || excluded.contains(url)
+                || is_self_source(url)
+                || is_legacy_noise_source(url)
+            {
                 continue;
             }
 
@@ -218,7 +224,6 @@ impl Registry {
                 .get("empty_streak")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
-            let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
             if (failures >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK)
                 && !recoverable.contains(url)
@@ -226,19 +231,22 @@ impl Registry {
                 continue;
             }
 
-            match last_checked {
-                Some(last_checked) => checked.push((url.clone(), last_checked)),
-                None => unchecked.push((
-                    url.clone(),
-                    record
-                        .get("first_seen")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default(),
-                )),
+            let first_seen = record
+                .get("first_seen")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+
+            match record.get("last_checked").and_then(Value::as_u64) {
+                Some(_) => checked.push((url.clone(), source_selection_score(record), first_seen)),
+                None => unchecked.push((url.clone(), first_seen)),
             }
         }
 
-        checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        checked.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
         let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES
@@ -253,12 +261,17 @@ impl Registry {
             .into_iter()
             .take(limit)
             .chain(
+                checked
+                    .into_iter()
+                    .take(checked_limit)
+                    .map(|(url, _, _)| url),
+            )
+            .chain(
                 unchecked
                     .into_iter()
                     .take(unchecked_limit)
                     .map(|(url, _)| url),
             )
-            .chain(checked.into_iter().take(checked_limit).map(|(url, _)| url))
             .collect()
     }
 
@@ -273,6 +286,7 @@ impl Registry {
             .iter()
             .filter_map(|(url, record)| {
                 if excluded.contains(url)
+                    || is_self_source(url)
                     || is_legacy_noise_source(url)
                     || !self.is_healthy_for_selection(record, url, recoverable)
                 {
@@ -290,6 +304,7 @@ impl Registry {
 
                 if successes < MIN_PROVEN_SUCCESSFUL_RUNS
                     || configs_last_run < MIN_PROVEN_CONFIGS_LAST_RUN
+                    || !source_has_meaningful_transport_history(record)
                 {
                     return None;
                 }
@@ -321,11 +336,10 @@ impl Registry {
                     .get("configs_total")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
-                let quality_factor = source_quality_factor(record);
-                let effective_yield =
-                    ((configs_last_run as f64) * (reliability as f64) * quality_factor)
-                        .round()
-                        .clamp(0.0, u64::MAX as f64) as u64;
+                let effective_yield = source_selection_score(record)
+                    .mul_add(configs_last_run as f64, 0.0)
+                    .round()
+                    .clamp(0.0, u64::MAX as f64) as u64;
 
                 Some((
                     url.clone(),
@@ -568,37 +582,6 @@ impl Registry {
             .count()
     }
 
-    fn quarantined_replacement_slots(
-        &self,
-        excluded: &HashSet<String>,
-        recoverable: &HashSet<String>,
-    ) -> usize {
-        self.sources()
-            .iter()
-            .filter(|(url, record)| {
-                if excluded.contains(*url)
-                    || recoverable.contains(*url)
-                    || is_legacy_noise_source(url)
-                {
-                    return false;
-                }
-
-                let failure_streak = record
-                    .get("failure_streak")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
-                let empty_streak = record
-                    .get("empty_streak")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
-
-                failure_streak >= MAX_FAILURE_STREAK
-                    || empty_streak >= MAX_EMPTY_STREAK
-                    || source_quality_quarantined(record)
-            })
-            .count()
-    }
-
     fn prune(&mut self, limit: usize, protected: &HashSet<String>) -> usize {
         let source_count = self.sources().len();
         if source_count <= limit {
@@ -653,54 +636,87 @@ impl Registry {
     }
 }
 
-fn source_quality_factor(record: &Value) -> f64 {
+fn is_self_source(url: &str) -> bool {
+    url.starts_with("https://raw.githubusercontent.com/rekt0ro/ProxyRift/")
+}
+
+fn source_has_meaningful_transport_history(record: &Value) -> bool {
     let collected = record
         .get("configs_last_run")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    let transport = record
+    let reachable = record
         .get("transport_reachable_last_run")
         .and_then(Value::as_u64);
-    let strict_tested = record.get("strict_tested_last_run").and_then(Value::as_u64);
-    let strict_pass = record.get("strict_pass_last_run").and_then(Value::as_u64);
-    let transfer_tested = record
-        .get("transfer_tested_last_run")
-        .and_then(Value::as_u64);
-    let transfer_pass = record.get("transfer_pass_last_run").and_then(Value::as_u64);
 
-    let mut weighted_sum = 0.0;
-    let mut weight_sum = 0.0;
+    collected >= MIN_PROVEN_CONFIGS_LAST_RUN
+        && reachable.is_some_and(|reachable| {
+            reachable >= MIN_KNOWN_TRANSPORT_REACHABLE
+                && (reachable as f64 / collected.max(1) as f64) >= MIN_PROVEN_TRANSPORT_RATE
+        })
+}
 
-    if collected > 0 && transport.is_some() {
-        let transport_rate = ((transport.unwrap_or_default() as f64 + 2.0)
-            / (collected as f64 + 4.0))
-            .clamp(0.0, 1.0);
-        weighted_sum += transport_rate * 0.60;
-        weight_sum += 0.60;
-    }
-
-    if let (Some(tested), Some(passed)) = (strict_tested, strict_pass) {
-        if tested > 0 {
-            let strict_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
-            weighted_sum += strict_rate * 0.25;
-            weight_sum += 0.25;
-        }
-    }
-
-    if let (Some(tested), Some(passed)) = (transfer_tested, transfer_pass) {
-        if tested > 0 {
-            let transfer_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
-            weighted_sum += transfer_rate * 0.15;
-            weight_sum += 0.15;
-        }
-    }
-
-    if weight_sum == 0.0 {
-        1.0
+fn source_selection_score(record: &Value) -> f64 {
+    let collected = record
+        .get("configs_last_run")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let successes = record
+        .get("successes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let failures = record
+        .get("failures")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let empty_runs = record
+        .get("empty_runs")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let total_runs = successes
+        .saturating_add(failures)
+        .saturating_add(empty_runs);
+    let reliability = if total_runs == 0 {
+        0.5
     } else {
-        let score = weighted_sum / weight_sum;
-        0.20 + (0.80 * score)
+        successes as f64 / total_runs as f64
+    };
+
+    let Some(reachable) = record
+        .get("transport_reachable_last_run")
+        .and_then(Value::as_u64)
+    else {
+        return 0.05 * reliability;
+    };
+
+    if collected == 0 {
+        return 0.0;
     }
+
+    let transport_rate = ((reachable as f64 + 4.0) / (collected as f64 + 8.0)).clamp(0.0, 1.0);
+
+    let strict_rate = match (
+        record.get("strict_tested_last_run").and_then(Value::as_u64),
+        record.get("strict_pass_last_run").and_then(Value::as_u64),
+    ) {
+        (Some(tested), Some(passed)) if tested > 0 => (passed as f64 + 1.0) / (tested as f64 + 2.0),
+        _ => 0.5,
+    };
+
+    let transfer_rate = match (
+        record
+            .get("transfer_tested_last_run")
+            .and_then(Value::as_u64),
+        record.get("transfer_pass_last_run").and_then(Value::as_u64),
+    ) {
+        (Some(tested), Some(passed)) if tested > 0 => (passed as f64 + 1.0) / (tested as f64 + 2.0),
+        _ => 0.5,
+    };
+
+    let downstream_quality =
+        (transport_rate * 0.65) + (strict_rate * 0.25) + (transfer_rate * 0.10);
+
+    (downstream_quality * reliability).clamp(0.0, 1.0)
 }
 
 fn source_quality_quarantined(record: &Value) -> bool {
@@ -1697,10 +1713,7 @@ fn select_active_sources(
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let reserved_new_slots = registry
-        .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
-        .min(limit)
-        .min(new_urls.len());
+    let reserved_new_slots = new_urls.len().min(limit);
 
     let mut active = registry.active_urls(
         limit.saturating_sub(reserved_new_slots),
@@ -1823,6 +1836,10 @@ fn has_noise_path_token(path: &str) -> bool {
 }
 
 fn is_legacy_noise_source(url: &str) -> bool {
+    if is_self_source(url) {
+        return true;
+    }
+
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
@@ -2131,6 +2148,12 @@ mod tests {
         registry.add_candidate(&proven, 1);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&proven.url)
+            .and_then(Value::as_object_mut)
+            .expect("proven source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(100u64));
 
         let active = super::select_active_sources(&registry, &[], &[], 4, 1);
 
@@ -2172,7 +2195,109 @@ mod tests {
     }
 
     #[test]
-    fn new_sources_do_not_displace_healthy_sources() {
+    fn collection_only_sources_are_not_proven() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "source-collection-only".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+
+        assert!(registry
+            .proven_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn low_transport_sources_are_not_proven() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "source-low-transport".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(10u64));
+
+        assert!(registry
+            .proven_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn self_sources_are_never_active() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "rekt0ro/ProxyRift".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(500u64));
+
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn checked_sources_are_ranked_by_transport_quality() {
+        let mut registry = Registry::new(1);
+
+        for (name, reachable) in [("source-good", 400u64), ("source-bad", 20u64)] {
+            let candidate = Candidate {
+                url: name.to_string(),
+                repo: "example/repo".to_string(),
+                repo_rank: 0,
+                priority: 100,
+            };
+            registry.add_candidate(&candidate, 1);
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(500), 2);
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(500), 3);
+            registry
+                .sources_mut()
+                .get_mut(name)
+                .and_then(Value::as_object_mut)
+                .expect("source exists")
+                .insert(
+                    "transport_reachable_last_run".into(),
+                    Value::from(reachable),
+                );
+        }
+
+        let active = registry.active_urls(2, &HashSet::new(), &HashSet::new());
+        assert_eq!(
+            active,
+            vec!["source-good".to_string(), "source-bad".to_string()]
+        );
+    }
+
+    #[test]
+    fn new_sources_get_a_fixed_exploration_slot() {
         let mut registry = Registry::new(1);
         let healthy = Candidate {
             url: "source-healthy".to_string(),
@@ -2190,9 +2315,10 @@ mod tests {
         registry.add_candidate(&healthy, 1);
         registry.record_outcome(&healthy.url, CollectionOutcome::Success(1), 2);
         let active =
-            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 1);
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 2);
 
-        assert_eq!(active, vec![healthy.url.clone()]);
+        assert!(active.contains(&healthy.url));
+        assert!(active.contains(&new_source.url));
     }
 
     #[test]
@@ -2658,9 +2784,9 @@ mod tests {
         assert_eq!(
             active,
             vec![
+                "source-c".to_string(),
                 "source-a".to_string(),
                 "source-b".to_string(),
-                "source-c".to_string(),
             ]
         );
     }
@@ -2731,10 +2857,10 @@ mod tests {
         assert_eq!(
             active,
             vec![
-                "source-c".to_string(),
-                "source-d".to_string(),
                 "source-a".to_string(),
                 "source-b".to_string(),
+                "source-c".to_string(),
+                "source-d".to_string(),
             ]
         );
     }
