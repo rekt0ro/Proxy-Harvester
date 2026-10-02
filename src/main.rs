@@ -344,9 +344,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 Ok(bytes) => {
                                     let text = String::from_utf8_lossy(&bytes);
                                     let configs = extract_configs(&text);
+                                    let config_count = configs.len();
 
-
-                                    return (source_index, configs, CollectionOutcome::Success(configs.len()));
+                                    return (
+                                        source_index,
+                                        configs,
+                                        CollectionOutcome::Success(config_count),
+                                    );
                                 }
 
                                 Err(SourceBodyError::TooLarge) => {
