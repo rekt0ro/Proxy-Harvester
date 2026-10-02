@@ -499,10 +499,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let (tcp_config_count, unique_tcp_endpoints) = {
         let groups = tcp_endpoint_groups(&configs);
-        (
-            groups.values().map(Vec::len).sum::<usize>(),
-            groups.len(),
-        )
+        (groups.values().map(Vec::len).sum::<usize>(), groups.len())
     };
     let non_tcp_transport_count = configs
         .iter()
@@ -523,7 +520,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     let transport_results = test_transport_configs(&configs).await;
-    let reachable_probes = transport_results.iter().filter(|latency| latency.is_some()).count();
+    let reachable_probes = transport_results
+        .iter()
+        .filter(|latency| latency.is_some())
+        .count();
 
     println!(
         "[INFO] ✅ [TRANSPORT] COMPLETE | {} CONFIGS | {} REACHABLE",
@@ -1685,31 +1685,26 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn transport_probe_keys_deduplicate_equivalent_endpoints() {
-        let tcp_a = transport_probe_key(
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443",
-        );
+        let tcp_a =
+            transport_probe_key("vless://00000000-0000-0000-0000-000000000001@example.com:443");
         let tcp_b = transport_probe_key("http://example.com:443");
 
         assert_eq!(tcp_a, tcp_b);
 
-        let hy2_a = transport_probe_key(
-            "hysteria2://password-a@example.com:443?sni=example.com&alpn=h3",
-        );
-        let hy2_b = transport_probe_key(
-            "hy2://password-b@example.com:443?sni=example.com&alpn=h3",
-        );
+        let hy2_a =
+            transport_probe_key("hysteria2://password-a@example.com:443?sni=example.com&alpn=h3");
+        let hy2_b = transport_probe_key("hy2://password-b@example.com:443?sni=example.com&alpn=h3");
 
         assert_eq!(hy2_a, hy2_b);
 
-        let hy2_other_sni = transport_probe_key(
-            "hysteria2://password-c@example.com:443?sni=other.example&alpn=h3",
-        );
+        let hy2_other_sni =
+            transport_probe_key("hysteria2://password-c@example.com:443?sni=other.example&alpn=h3");
 
         assert_ne!(hy2_a, hy2_other_sni);
     }
 
+    #[test]
     fn tcp_endpoint_groups_share_identical_endpoints() {
         let configs = vec![
             "http://example.com:443".to_string(),
