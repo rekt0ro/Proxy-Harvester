@@ -1,6 +1,7 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
-    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit,
+    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
+    wait_for_rate_limit,
     ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET,
     MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET,
     STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
@@ -1202,10 +1203,10 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     })
 }
 
-type SingBoxEndpointCache = HashMap<(String, u16), IpAddr>;
+type SingBoxEndpointCache = HashMap<(String, u16, bool), IpAddr>;
 
-fn singbox_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
-    (host.to_ascii_lowercase(), port)
+fn singbox_endpoint_cache_key(host: &str, port: u16, tcp_preferred: bool) -> (String, u16, bool) {
+    (host.to_ascii_lowercase(), port, tcp_preferred)
 }
 
 async fn pin_singbox_entries(
@@ -1216,16 +1217,19 @@ async fn pin_singbox_entries(
         .iter()
         .filter_map(|(config, _)| {
             let (host, port) = crate::validator::endpoint(config)?;
-            let key = singbox_endpoint_cache_key(&host, port);
+            let key = singbox_endpoint_cache_key(&host, port, !uses_udp_transport(config));
             (!cache.contains_key(&key)).then_some(key)
         })
         .collect::<HashSet<_>>();
 
     let resolved = stream::iter(missing)
-        .map(|(host, port)| async move {
-            crate::validator::resolve_public_host(&host, port)
-                .await
-                .map(|ip| ((host, port), ip))
+        .map(|(host, port, tcp_preferred)| async move {
+            let ip = if tcp_preferred {
+                crate::validator::resolve_public_tcp_host(&host, port).await
+            } else {
+                crate::validator::resolve_public_host(&host, port).await
+            };
+            ip.map(|ip| ((host, port, tcp_preferred), ip))
         })
         .buffer_unordered(64)
         .collect::<Vec<_>>()
@@ -1238,7 +1242,7 @@ async fn pin_singbox_entries(
         .filter_map(|(config, outbound)| {
             let (host, port) = crate::validator::endpoint(config)?;
             let ip = cache
-                .get(&singbox_endpoint_cache_key(&host, port))
+                .get(&singbox_endpoint_cache_key(&host, port, !uses_udp_transport(config)))
                 .copied()?;
 
             let mut outbound = outbound.clone();
