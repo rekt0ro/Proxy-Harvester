@@ -381,14 +381,9 @@ async fn discover_from_repos(
     .buffer_unordered(24);
 
     let mut all = Vec::new();
-    let mut missing = 0usize;
-
     while let Some(result) = stream.next().await {
         match result {
-            Ok((candidates, needs_tree)) => {
-                if candidates.is_empty() && needs_tree {
-                    missing += 1;
-                }
+            Ok((candidates, _needs_tree)) => {
                 all.extend(candidates);
             }
             Err(error) => {
@@ -409,18 +404,18 @@ async fn discover_from_repos(
         .cloned()
         .collect::<Vec<_>>();
 
-    if tree_targets.len() < MAX_TREE_SCANS {
-        let mut selected = tree_targets
-            .iter()
-            .map(|(repo, _)| repo.as_str())
-            .collect::<HashSet<_>>();
+    let mut selected = tree_targets
+        .iter()
+        .map(|(repo, _)| repo.clone())
+        .collect::<HashSet<_>>();
 
+    if tree_targets.len() < MAX_TREE_SCANS {
         for repo in repos {
             if tree_targets.len() >= MAX_TREE_SCANS {
                 break;
             }
 
-            if selected.insert(repo.0.as_str()) {
+            if selected.insert(repo.0.clone()) {
                 tree_targets.push(repo.clone());
             }
         }
@@ -624,7 +619,7 @@ async fn github_get(
 
             Ok(response) => return Ok(response),
 
-            Err(error) if attempt < GITHUB_REQUEST_RETRIES => {
+            Err(_error) if attempt < GITHUB_REQUEST_RETRIES => {
                 let delay = Duration::from_millis(
                     GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)),
                 );
