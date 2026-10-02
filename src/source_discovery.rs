@@ -152,7 +152,7 @@ impl Registry {
             .expect("registry always contains sources")
     }
 
-    fn active_urls(&self, limit: usize, excluded: &HashSet<String>) -> Vec<String> {
+    fn active_urls(&self, limit: usize, excluded: &HashSet<String>, now: u64) -> Vec<String> {
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
@@ -165,12 +165,17 @@ impl Registry {
                 .get("failure_streak")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
+            let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
-            if failures >= MAX_FAILURE_STREAK {
+            if failures >= MAX_FAILURE_STREAK
+                && !last_checked.is_some_and(|checked| {
+                    now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
+                })
+            {
                 continue;
             }
 
-            match record.get("last_checked").and_then(Value::as_u64) {
+            match last_checked {
                 Some(last_checked) => checked.push((url.clone(), last_checked)),
                 None => unchecked.push((
                     url.clone(),
@@ -223,14 +228,11 @@ impl Registry {
                 .unwrap_or_default();
             let last_checked = object.get("last_checked").and_then(Value::as_u64);
 
-            if failure_streak >= MAX_FAILURE_STREAK
-                && last_checked.is_some_and(|checked| {
+            if failure_streak < MAX_FAILURE_STREAK
+                || last_checked.is_some_and(|checked| {
                     now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
                 })
             {
-                object.insert("failure_streak".into(), Value::from(0u64));
-                object.insert("last_discovered".into(), Value::from(now));
-            } else if failure_streak < MAX_FAILURE_STREAK {
                 object.insert("last_discovered".into(), Value::from(now));
             }
 
@@ -382,7 +384,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         Ok(repos) => repos,
         Err(error) => {
             if registry
-                .active_urls(MAX_ACTIVE_SOURCES, &HashSet::new())
+                .active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), now)
                 .is_empty()
             {
                 return Err(error);
@@ -452,7 +454,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
     let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
-    let active = registry.active_urls(active_limit, &discovered_new_set);
+    let active = registry.active_urls(active_limit, &discovered_new_set, now);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
@@ -1436,13 +1438,69 @@ mod tests {
 
         let just_before_expiry = RETIRED_SOURCE_COOLDOWN_SECS;
         registry.add_candidate(&candidate, just_before_expiry);
-        assert!(registry.active_urls(1, &HashSet::new()).is_empty());
+        assert_eq!(
+            registry
+                .sources()
+                .get("source-a")
+                .and_then(|record| record.get("failure_streak"))
+                .and_then(Value::as_u64),
+            Some(MAX_FAILURE_STREAK)
+        );
+        assert!(registry
+            .active_urls(1, &HashSet::new(), RETIRED_SOURCE_COOLDOWN_SECS)
+            .is_empty());
 
         let at_expiry = RETIRED_SOURCE_COOLDOWN_SECS + 1;
-        registry.add_candidate(&candidate, at_expiry);
         assert_eq!(
-            registry.active_urls(1, &HashSet::new()),
+            registry.active_urls(1, &HashSet::new(), at_expiry),
             vec!["source-a".to_string()]
+        );
+
+        assert_eq!(
+            registry
+                .sources()
+                .get("source-a")
+                .and_then(|record| record.get("failure_streak"))
+                .and_then(Value::as_u64),
+            Some(MAX_FAILURE_STREAK)
+        );
+    }
+
+    #[test]
+    fn rediscovery_does_not_clear_retired_health_before_collection() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-retired".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&candidate.url, 0, 1);
+        }
+
+        registry.add_candidate(
+            &candidate,
+            RETIRED_SOURCE_COOLDOWN_SECS + 1,
+        );
+
+        assert_eq!(
+            registry
+                .sources()
+                .get(&candidate.url)
+                .and_then(|record| record.get("failure_streak"))
+                .and_then(Value::as_u64),
+            Some(MAX_FAILURE_STREAK)
+        );
+        assert_eq!(
+            registry.active_urls(
+                1,
+                &HashSet::new(),
+                RETIRED_SOURCE_COOLDOWN_SECS + 1
+            ),
+            vec![candidate.url]
         );
     }
 
@@ -1469,7 +1527,7 @@ mod tests {
         }
 
         assert_eq!(
-            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new()),
+            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), 100),
             vec![
                 "source-a".to_string(),
                 "source-b".to_string(),
@@ -1511,7 +1569,7 @@ mod tests {
             .expect("source-d exists")
             .insert("last_checked".into(), Value::from(20u64));
 
-        let active = registry.active_urls(3, &HashSet::new());
+        let active = registry.active_urls(3, &HashSet::new(), 100);
 
         assert_eq!(
             active,
@@ -1583,7 +1641,7 @@ mod tests {
                 .insert("last_checked".into(), Value::from(last_checked));
         }
 
-        let active = registry.active_urls(4, &HashSet::new());
+        let active = registry.active_urls(4, &HashSet::new(), 100);
 
         assert_eq!(active.len(), 4);
         assert_eq!(
