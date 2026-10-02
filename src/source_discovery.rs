@@ -128,11 +128,15 @@ impl Registry {
             .expect("registry always contains sources")
     }
 
-    fn active_urls(&self, limit: usize) -> Vec<String> {
+    fn active_urls(&self, limit: usize, excluded: &HashSet<String>) -> Vec<String> {
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
+            if excluded.contains(url) {
+                continue;
+            }
+
             let failures = record
                 .get("failure_streak")
                 .and_then(Value::as_u64)
@@ -286,7 +290,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let mut repos = match search_repositories(&client, token.as_deref()).await {
         Ok(repos) => repos,
         Err(error) => {
-            if registry.active_urls(MAX_ACTIVE_SOURCES).is_empty() {
+            if registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new()).is_empty() {
                 return Err(error);
             }
 
@@ -353,8 +357,9 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .map(|candidate| candidate.url.clone())
         .collect::<Vec<_>>();
 
+    let new_url_set = new_urls.iter().cloned().collect::<HashSet<_>>();
     let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
-    let active = registry.active_urls(active_limit);
+    let active = registry.active_urls(active_limit, &new_url_set);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
@@ -969,7 +974,7 @@ mod tests {
         }
 
         assert_eq!(
-            registry.active_urls(MAX_ACTIVE_SOURCES),
+            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new()),
             vec![
                 "source-a".to_string(),
                 "source-b".to_string(),
@@ -1007,7 +1012,7 @@ mod tests {
             .expect("source-d exists")
             .insert("last_checked".into(), Value::from(20u64));
 
-        let active = registry.active_urls(3);
+        let active = registry.active_urls(3, &HashSet::new());
 
         assert_eq!(
             active,
