@@ -347,7 +347,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         registry.add_candidate(candidate, now);
     }
 
-    let mut new_urls = new_candidates
+    let new_urls = new_candidates
         .iter()
         .take(MAX_NEW_ACTIVE_SOURCES)
         .map(|candidate| candidate.url.clone())
