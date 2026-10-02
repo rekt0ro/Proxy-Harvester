@@ -21,9 +21,9 @@ const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
 const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
-const MAX_PROVEN_ACTIVE_SOURCES: usize = 500;
+const MAX_PROVEN_ACTIVE_SOURCES: usize = 300;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
-const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 100;
+const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
 const MAX_FAILURE_STREAK: u64 = 5;
 const MAX_EMPTY_STREAK: u64 = 3;
 const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -315,9 +315,11 @@ impl Registry {
                     .get("configs_total")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
+                let effective_yield = configs_last_run.saturating_mul(reliability);
 
                 Some((
                     url.clone(),
+                    effective_yield,
                     configs_last_run,
                     configs_total,
                     reliability,
@@ -333,13 +335,15 @@ impl Registry {
                 .then_with(|| b.3.cmp(&a.3))
                 .then_with(|| b.4.cmp(&a.4))
                 .then_with(|| b.5.cmp(&a.5))
+                .then_with(|| b.6.cmp(&a.6))
+                .then_with(|| b.7.cmp(&a.7))
                 .then_with(|| a.0.cmp(&b.0))
         });
 
         proven
             .into_iter()
             .take(limit.min(MAX_PROVEN_ACTIVE_SOURCES))
-            .map(|(url, _, _, _, _, _)| url)
+            .map(|(url, _, _, _, _, _, _)| url)
             .collect()
     }
 
