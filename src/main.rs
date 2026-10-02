@@ -311,10 +311,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 .content_length()
                                 .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
-                                println!(
-                                    "[INFO] ↪️ Skipping source #{source_number}: response exceeds {} bytes",
-                                    MAX_SOURCE_BYTES
-                                );
                                 return (source_index, Vec::new());
                             }
 
@@ -328,10 +324,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
 
                                 Err(SourceBodyError::TooLarge) => {
-                                    println!(
-                                        "[INFO] ↪️ Skipping source #{source_number}: response exceeds {} bytes",
-                                        MAX_SOURCE_BYTES
-                                    );
                                     return (source_index, Vec::new());
                                 }
 
