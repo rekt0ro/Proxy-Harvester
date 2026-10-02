@@ -956,8 +956,7 @@ async fn discover_from_repos(
 }
 
 fn is_expected_tree_probe_skip(error: &str) -> bool {
-    error.contains("HTTP 409 Conflict")
-        || error.contains("response exceeds discovery size limit")
+    error.contains("HTTP 409 Conflict") || error.contains("response exceeds discovery size limit")
 }
 
 fn is_expected_probe_skip(error: &str) -> bool {
