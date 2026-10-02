@@ -931,6 +931,8 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let host = value.host_str()?.to_ascii_lowercase();
 
     if host == "raw.githubusercontent.com" {
+        value.set_scheme("https").ok()?;
+
         let segments = value.path_segments()?.collect::<Vec<_>>();
         if segments.len() < 4 || segments.iter().any(|segment| segment.is_empty()) {
             return None;
@@ -1514,6 +1516,17 @@ mod tests {
                 "source-a".to_string(),
                 "source-b".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn normalizes_http_raw_github_to_https() {
+        assert_eq!(
+            normalize_github_source(
+                "http://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
     }
 
