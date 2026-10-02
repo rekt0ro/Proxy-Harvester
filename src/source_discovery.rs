@@ -578,7 +578,7 @@ fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
     while let Some(relative) = text[start..].find("http") {
         let absolute = start + relative;
         let end = text[absolute..]
-.find(|character: char| {
+            .find(|character: char| {
                 character.is_whitespace()
                     || matches!(
                         character,
