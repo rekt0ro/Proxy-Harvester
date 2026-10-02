@@ -564,6 +564,9 @@ async fn discover_from_repos(
             Ok(candidates) => {
                 all.extend(candidates);
             }
+            Err(error) if is_expected_probe_skip(&error.to_string()) => {
+                println!("[INFO] 🔭 [DISCOVERY] repository probe skipped: {error}");
+            }
             Err(error) => {
                 println!("[WARN] 🔭 [DISCOVERY] repository probe failed: {error}");
             }
@@ -613,6 +616,10 @@ async fn discover_from_repos(
         while let Some((repo, result)) = tree_stream.next().await {
             match result {
                 Ok(candidates) => all.extend(candidates),
+                Err(error) if is_expected_probe_skip(&error.to_string()) => println!(
+                    "[INFO] 🔭 [DISCOVERY] tree probe skipped for {}: {error}",
+                    repo.name
+                ),
                 Err(error) => println!(
                     "[WARN] 🔭 [DISCOVERY] tree probe failed for {}: {error}",
                     repo.name
@@ -625,6 +632,10 @@ async fn discover_from_repos(
     all.truncate(MAX_DISCOVERED_CANDIDATES);
 
     Ok(all)
+}
+
+fn is_expected_probe_skip(error: &str) -> bool {
+    error.contains("HTTP 404 Not Found") || error.contains("response exceeds discovery size limit")
 }
 
 async fn discover_repo(
@@ -1526,6 +1537,19 @@ mod tests {
         assert!(super::github_rate_limit_status_is_retryable(
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             false
+        ));
+    }
+
+    #[test]
+    fn expected_discovery_probe_skips_are_not_failures() {
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API returned HTTP 404 Not Found"
+        ));
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API response exceeds discovery size limit"
+        ));
+        assert!(!super::is_expected_probe_skip(
+            "GitHub README API response parse failed"
         ));
     }
 
