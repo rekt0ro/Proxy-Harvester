@@ -1481,10 +1481,7 @@ mod tests {
             registry.record_result(&candidate.url, 0, 1);
         }
 
-        registry.add_candidate(
-            &candidate,
-            RETIRED_SOURCE_COOLDOWN_SECS + 1,
-        );
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS + 1);
 
         assert_eq!(
             registry
@@ -1495,11 +1492,7 @@ mod tests {
             Some(MAX_FAILURE_STREAK)
         );
         assert_eq!(
-            registry.active_urls(
-                1,
-                &HashSet::new(),
-                RETIRED_SOURCE_COOLDOWN_SECS + 1
-            ),
+            registry.active_urls(1, &HashSet::new(), RETIRED_SOURCE_COOLDOWN_SECS + 1),
             vec![candidate.url]
         );
     }
