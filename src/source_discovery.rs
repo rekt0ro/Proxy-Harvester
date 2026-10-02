@@ -612,7 +612,7 @@ fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
 }
 
 fn normalize_github_source(raw: &str) -> Option<String> {
-    let value = Url::parse(raw).ok()?;
+    let mut value = Url::parse(raw).ok()?;
 
     if !matches!(value.scheme(), "http" | "https") {
         return None;
