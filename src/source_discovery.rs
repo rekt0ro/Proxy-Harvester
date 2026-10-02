@@ -494,7 +494,6 @@ async fn discover_from_repos(
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
         let client = client.clone();
-        let token = token.map(str::to_owned);
         async move { discover_repo(&client, &repo, repo_rank).await }
     }))
     .buffer_unordered(24);
@@ -518,45 +517,37 @@ async fn discover_from_repos(
 
     let mut tree_targets = repos
         .iter()
-        .filter(|(repo, _)| !discovered_repos.contains(repo.as_str()))
+        .enumerate()
+        .filter(|(_, (repo, _))| !discovered_repos.contains(repo.as_str()))
         .take(MAX_TREE_SCANS)
-        .cloned()
+        .map(|(repo_rank, repo)| (repo_rank, repo.clone()))
         .collect::<Vec<_>>();
 
     let mut selected = tree_targets
         .iter()
-        .map(|(repo, _)| repo.clone())
+        .map(|(_, (repo, _))| repo.clone())
         .collect::<HashSet<_>>();
 
     if tree_targets.len() < MAX_TREE_SCANS {
-        for repo in repos {
+        for (repo_rank, repo) in repos.iter().enumerate() {
             if tree_targets.len() >= MAX_TREE_SCANS {
                 break;
             }
 
             if selected.insert(repo.0.clone()) {
-                tree_targets.push(repo.clone());
+                tree_targets.push((repo_rank, repo.clone()));
             }
         }
     }
 
     if !tree_targets.is_empty() {
-        let mut tree_stream = stream::iter(tree_targets.into_iter().map(|repo| {
+        let mut tree_stream = stream::iter(tree_targets.into_iter().map(|(repo_rank, repo)| {
             let client = client.clone();
             let token = token.map(str::to_owned);
             async move {
                 (
                     repo.clone(),
-                    scan_repo_tree(
-                        &client,
-                        &repo,
-                        repos
-                            .iter()
-                            .position(|candidate| candidate.0 == repo.0)
-                            .unwrap_or(MAX_DISCOVERY_REPOS),
-                        token.as_deref(),
-                    )
-                    .await,
+                    scan_repo_tree(&client, &repo, repo_rank, token.as_deref()).await,
                 )
             }
         }))
