@@ -441,8 +441,6 @@ impl Registry {
             object.insert("failures".into(), Value::from(0u64));
             object.insert("failure_streak".into(), Value::from(0u64));
             object.insert("configs_total".into(), Value::from(0u64));
-            object.insert("transport_tested_last_run".into(), Value::from(0u64));
-            object.insert("transport_reachable_last_run".into(), Value::from(0u64));
             object.insert("strict_tested_last_run".into(), Value::from(0u64));
             object.insert("strict_pass_last_run".into(), Value::from(0u64));
             object.insert("transfer_tested_last_run".into(), Value::from(0u64));
