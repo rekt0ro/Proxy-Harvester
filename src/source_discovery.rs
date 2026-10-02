@@ -78,6 +78,7 @@ const NOISE_HINTS: [&str; 12] = [
 const SOURCE_EXTENSIONS: [&str; 8] = [
     ".txt", ".yaml", ".yml", ".json", ".conf", ".list", ".sub", ".ini",
 ];
+const SOURCE_EXTENSIONS_WITHOUT_HINT: [&str; 3] = [".txt", ".list", ".sub"];
 
 #[derive(Clone, Debug)]
 struct Candidate {
@@ -455,7 +456,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         retired
     );
 
-    Ok((discovered.len(), ordered.len()))
+    Ok((new_candidates.len(), ordered.len()))
 }
 
 pub async fn record_collection_results(
@@ -589,9 +590,17 @@ async fn discover_repo(
             name, branch, readme
         );
 
-        let response = github_get(client, &url, token).await?;
+        let response = raw_get(client, &url).await?;
         if !response.status().is_success() {
-            continue;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                continue;
+            }
+
+            return Err(format!(
+                "GitHub README request returned HTTP {}",
+                response.status()
+            )
+            .into());
         }
 
         if response
@@ -745,6 +754,13 @@ async fn search_repositories(
     }
 
     Ok(repos)
+}
+
+async fn raw_get(
+    client: &Client,
+    url: &str,
+) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+    github_get(client, url, None).await
 }
 
 async fn github_get(
@@ -923,13 +939,16 @@ fn likely_source_url(url: &str) -> bool {
     let extension_ok = SOURCE_EXTENSIONS
         .iter()
         .any(|extension| path.ends_with(extension));
+    let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
+        .iter()
+        .any(|extension| path.ends_with(extension));
     let has_extension = path
         .rsplit('/')
         .next()
         .is_some_and(|name| name.contains('.'));
     let hint_ok = PATH_HINTS.iter().any(|hint| path.contains(hint));
 
-    extension_ok || (!has_extension && hint_ok)
+    (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
 }
 
 fn is_source_path(path: &str) -> bool {
@@ -1211,6 +1230,15 @@ mod tests {
             .as_deref(),
             Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
+    }
+
+    #[test]
+    fn rejects_generic_structured_files_without_source_hints() {
+        assert!(!is_source_path("package.json"));
+        assert!(!is_source_path("data.yaml"));
+        assert!(!is_source_path("settings.ini"));
+        assert!(is_source_path("subscriptions/config.json"));
+        assert!(is_source_path("nodes/data.yaml"));
     }
 
     #[test]
