@@ -533,9 +533,7 @@ async fn discover_from_repos(
     let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
         let client = client.clone();
         let token = token.map(str::to_owned);
-        async move {
-            discover_repo(&client, &repo, repo_rank, token.as_deref()).await
-        }
+        async move { discover_repo(&client, &repo, repo_rank, token.as_deref()).await }
     }))
     .buffer_unordered(24);
 
