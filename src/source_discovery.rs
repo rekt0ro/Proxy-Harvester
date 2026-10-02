@@ -1,11 +1,3 @@
-//! Autonomous GitHub source discovery for ProxyRift.
-//!
-//! Discovery is deliberately separate from proxy validation. This module finds candidate
-//! subscription files; the existing collector remains the authority that decides whether a
-//! source is safe to fetch and whether its configs are usable.
-//!
-//! State is persisted in subscriptions/source-registry.json. A source is retired only after
-//! repeated collection failures, so temporary GitHub search-rank changes do not cause churn.
 
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
