@@ -961,15 +961,23 @@ fn normalize_github_source(raw: &str) -> Option<String> {
 
     let (branch_start, path_start) = match marker {
         "blob" => {
-            if segments.get(3) == Some(&"refs") && segments.get(4) == Some(&"heads") {
-                (5, 6)
+            if segments.get(3) == Some(&"refs") {
+                if segments.get(4) == Some(&"heads") {
+                    (5, 6)
+                } else {
+                    return None;
+                }
             } else {
                 (3, 4)
             }
         }
         "raw" => {
-            if segments.get(3) == Some(&"refs") && segments.get(4) == Some(&"heads") {
-                (5, 6)
+            if segments.get(3) == Some(&"refs") {
+                if segments.get(4) == Some(&"heads") {
+                    (5, 6)
+                } else {
+                    return None;
+                }
             } else {
                 (3, 4)
             }
@@ -1673,6 +1681,18 @@ mod tests {
     #[test]
     fn rejects_github_repository_pages() {
         assert!(normalize_github_source("https://github.com/example/project").is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_github_ref_urls() {
+        assert!(normalize_github_source(
+            "https://github.com/example/project/blob/refs/pull/123/head/subscriptions/all.txt"
+        )
+        .is_none());
+        assert!(normalize_github_source(
+            "https://github.com/example/project/raw/refs/tags/v1/subscriptions/all.txt"
+        )
+        .is_none());
     }
 
     #[test]
