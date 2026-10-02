@@ -1253,8 +1253,8 @@ mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
         percent_encode_path, Candidate, Registry, Value, MAX_ACTIVE_SOURCES,
-        MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK, MAX_SOURCE_URL_LENGTH,
-        RETIRED_SOURCE_COOLDOWN_SECS,
+        MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK, MAX_KNOWN_REFRESH_SOURCES,
+        MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
 
