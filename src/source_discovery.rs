@@ -14,7 +14,7 @@ const SEARCH_PER_PAGE: usize = 100;
 const MAX_DISCOVERY_REPOS: usize = 300;
 const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
-const MAX_ACTIVE_SOURCES: usize = 900;
+const MAX_ACTIVE_SOURCES: usize = 600;
 const MAX_NEW_SOURCES: usize = 800;
 const MAX_NEW_SOURCES_PER_REPO: usize = 25;
 const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
@@ -22,7 +22,7 @@ const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 75;
 const BOOTSTRAP_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 75;
-const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
+const MAX_PROVEN_ACTIVE_SOURCES: usize = 250;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
 const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
 const MIN_PROVEN_TRANSPORT_RATE: f64 = 0.08;
@@ -1799,10 +1799,7 @@ fn select_active_sources(
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let reserved_new_slots = registry
-        .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
-        .min(limit)
-        .min(new_urls.len());
+    let reserved_new_slots = new_urls.len().min(limit);
 
     let mut active = registry.active_urls(
         limit.saturating_sub(reserved_new_slots),
