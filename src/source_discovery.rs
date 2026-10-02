@@ -1542,6 +1542,19 @@ mod tests {
     }
 
     #[test]
+    fn expected_discovery_probe_skips_are_not_failures() {
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API returned HTTP 404 Not Found"
+        ));
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API response exceeds discovery size limit"
+        ));
+        assert!(!super::is_expected_probe_skip(
+            "GitHub README API response parse failed"
+        ));
+    }
+
+    #[test]
     fn repository_search_requires_public_repositories() {
         let search_query = format!(
             "{} archived:false fork:false is:public",
