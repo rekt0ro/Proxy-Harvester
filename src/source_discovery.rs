@@ -196,16 +196,14 @@ impl Registry {
             return Vec::new();
         }
 
-        let proven = self
-            .proven_urls(limit, excluded, recoverable)
-            .into_iter()
-            .collect::<HashSet<_>>();
+        let proven = self.proven_urls(limit, excluded, recoverable);
+        let proven_set = proven.iter().cloned().collect::<HashSet<_>>();
 
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if proven.contains(url)
+            if proven_set.contains(url)
                 || excluded.contains(url)
                 || is_legacy_noise_source(url)
             {
@@ -247,6 +245,10 @@ impl Registry {
             .min(limit.saturating_sub(proven.len()))
             .min(unchecked.len());
 
+        let checked_limit = limit
+            .saturating_sub(proven.len())
+            .saturating_sub(unchecked_limit);
+
         proven
             .into_iter()
             .take(limit)
@@ -259,7 +261,8 @@ impl Registry {
             .chain(
                 checked
                     .into_iter()
-                    .take(limit.saturating_sub(MAX_PROVEN_ACTIVE_SOURCES).saturating_sub(unchecked_limit)),
+                    .take(checked_limit)
+                    .map(|(url, _)| url),
             )
             .collect()
     }
@@ -747,9 +750,13 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     write_registry(&registry_path, &registry).await?;
     write_sources(&sources_path, &ordered).await?;
 
+    let proven_set = registry
+        .proven_urls(MAX_PROVEN_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new())
+        .into_iter()
+        .collect::<HashSet<_>>();
     let proven_active = ordered
         .iter()
-        .filter(|url| registry.proven_urls(1, &HashSet::new(), &HashSet::new()).contains(url))
+        .filter(|url| proven_set.contains(*url))
         .count();
 
     println!(
@@ -1413,7 +1420,8 @@ fn select_active_sources(
 
     let replacement_slots = registry
         .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
-        .min(limit);
+        .min(limit)
+        .min(new_urls.len());
 
     let exploration_slots = new_urls.len().min(MAX_NEW_ACTIVE_SOURCES);
     let reserved_new_slots = replacement_slots.max(exploration_slots);
