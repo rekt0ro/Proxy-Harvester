@@ -685,11 +685,10 @@ jobs:
               )"
 
               previous_summary_epoch="$(
-                jq -r \
-                  '.jobs[]
+                jq -r                   '.jobs[]
                    | select(.name == "🔎 Collect & Validate")
                    | .steps[]
-                   | select(.name == "📊 Write run summary" and .completed_at != null)
+                   | select(.name == "🚀 Publish generated changes" and .completed_at != null)
                    | (.completed_at | fromdateiso8601)
                    | tostring' <<< "$previous_jobs" | head -n 1
               )"
