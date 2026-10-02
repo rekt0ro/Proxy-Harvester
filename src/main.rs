@@ -6,7 +6,7 @@ use percent_encoding::percent_decode_str;
 use proxyrift::source_discovery::CollectionOutcome;
 use proxyrift::validator::{
     config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
-    resolve_public_host, resolve_public_tcp_host,
+    resolve_public_tcp_host,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
