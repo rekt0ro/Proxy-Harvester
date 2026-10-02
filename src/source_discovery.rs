@@ -25,6 +25,8 @@ const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 75;
 const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
 const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
+const MIN_PROVEN_TRANSPORT_RATE: f64 = 0.08;
+const MIN_KNOWN_TRANSPORT_REACHABLE: u64 = 20;
 const MAX_LOW_QUALITY_STREAK: u64 = 3;
 const QUALITY_RETRY_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_FAILURE_STREAK: u64 = 5;
@@ -206,7 +208,11 @@ impl Registry {
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if proven_set.contains(url) || excluded.contains(url) || is_legacy_noise_source(url) {
+            if proven_set.contains(url)
+                || excluded.contains(url)
+                || is_self_source(url)
+                || is_legacy_noise_source(url)
+            {
                 continue;
             }
 
@@ -218,7 +224,6 @@ impl Registry {
                 .get("empty_streak")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
-            let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
             if (failures >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK)
                 && !recoverable.contains(url)
@@ -226,19 +231,22 @@ impl Registry {
                 continue;
             }
 
-            match last_checked {
-                Some(last_checked) => checked.push((url.clone(), last_checked)),
-                None => unchecked.push((
-                    url.clone(),
-                    record
-                        .get("first_seen")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default(),
-                )),
+            let first_seen = record
+                .get("first_seen")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+
+            match record.get("last_checked").and_then(Value::as_u64) {
+                Some(_) => checked.push((url.clone(), source_selection_score(record), first_seen)),
+                None => unchecked.push((url.clone(), first_seen)),
             }
         }
 
-        checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        checked.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
         let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES
@@ -253,12 +261,17 @@ impl Registry {
             .into_iter()
             .take(limit)
             .chain(
+                checked
+                    .into_iter()
+                    .take(checked_limit)
+                    .map(|(url, _, _)| url),
+            )
+            .chain(
                 unchecked
                     .into_iter()
                     .take(unchecked_limit)
                     .map(|(url, _)| url),
             )
-            .chain(checked.into_iter().take(checked_limit).map(|(url, _)| url))
             .collect()
     }
 
@@ -273,6 +286,7 @@ impl Registry {
             .iter()
             .filter_map(|(url, record)| {
                 if excluded.contains(url)
+                    || is_self_source(url)
                     || is_legacy_noise_source(url)
                     || !self.is_healthy_for_selection(record, url, recoverable)
                 {
@@ -290,6 +304,7 @@ impl Registry {
 
                 if successes < MIN_PROVEN_SUCCESSFUL_RUNS
                     || configs_last_run < MIN_PROVEN_CONFIGS_LAST_RUN
+                    || !source_has_meaningful_transport_history(record)
                 {
                     return None;
                 }
@@ -321,11 +336,10 @@ impl Registry {
                     .get("configs_total")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
-                let quality_factor = source_quality_factor(record);
-                let effective_yield =
-                    ((configs_last_run as f64) * (reliability as f64) * quality_factor)
-                        .round()
-                        .clamp(0.0, u64::MAX as f64) as u64;
+                let effective_yield = source_selection_score(record)
+                    .mul_add(configs_last_run as f64, 0.0)
+                    .round()
+                    .clamp(0.0, u64::MAX as f64) as u64;
 
                 Some((
                     url.clone(),
@@ -651,6 +665,94 @@ impl Registry {
     fn json(&self) -> Value {
         Value::Object(self.root.clone())
     }
+}
+
+fn is_self_source(url: &str) -> bool {
+    url.starts_with("https://raw.githubusercontent.com/rekt0ro/ProxyRift/")
+}
+
+fn source_has_meaningful_transport_history(record: &Value) -> bool {
+    let collected = record
+        .get("configs_last_run")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let reachable = record
+        .get("transport_reachable_last_run")
+        .and_then(Value::as_u64);
+
+    collected >= MIN_PROVEN_CONFIGS_LAST_RUN
+        && reachable.is_some_and(|reachable| {
+            reachable >= MIN_KNOWN_TRANSPORT_REACHABLE
+                && (reachable as f64 / collected.max(1) as f64) >= MIN_PROVEN_TRANSPORT_RATE
+        })
+}
+
+fn source_selection_score(record: &Value) -> f64 {
+    let collected = record
+        .get("configs_last_run")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let successes = record
+        .get("successes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let failures = record
+        .get("failures")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let empty_runs = record
+        .get("empty_runs")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let total_runs = successes.saturating_add(failures).saturating_add(empty_runs);
+    let reliability = if total_runs == 0 {
+        0.5
+    } else {
+        successes as f64 / total_runs as f64
+    };
+
+    let Some(reachable) = record
+        .get("transport_reachable_last_run")
+        .and_then(Value::as_u64)
+    else {
+        return 0.05 * reliability;
+    };
+
+    if collected == 0 {
+        return 0.0;
+    }
+
+    let transport_rate =
+        ((reachable as f64 + 4.0) / (collected as f64 + 8.0)).clamp(0.0, 1.0);
+
+    let strict_rate = match (
+        record.get("strict_tested_last_run").and_then(Value::as_u64),
+        record.get("strict_pass_last_run").and_then(Value::as_u64),
+    ) {
+        (Some(tested), Some(passed)) if tested > 0 => {
+            (passed as f64 + 1.0) / (tested as f64 + 2.0)
+        }
+        _ => 0.5,
+    };
+
+    let transfer_rate = match (
+        record
+            .get("transfer_tested_last_run")
+            .and_then(Value::as_u64),
+        record
+            .get("transfer_pass_last_run")
+            .and_then(Value::as_u64),
+    ) {
+        (Some(tested), Some(passed)) if tested > 0 => {
+            (passed as f64 + 1.0) / (tested as f64 + 2.0)
+        }
+        _ => 0.5,
+    };
+
+    let downstream_quality =
+        (transport_rate * 0.65) + (strict_rate * 0.25) + (transfer_rate * 0.10);
+
+    (downstream_quality * reliability).clamp(0.0, 1.0)
 }
 
 fn source_quality_factor(record: &Value) -> f64 {
@@ -1823,6 +1925,10 @@ fn has_noise_path_token(path: &str) -> bool {
 }
 
 fn is_legacy_noise_source(url: &str) -> bool {
+    if is_self_source(url) {
+        return true;
+    }
+
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
