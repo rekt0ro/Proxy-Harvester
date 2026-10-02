@@ -582,37 +582,6 @@ impl Registry {
             .count()
     }
 
-    fn quarantined_replacement_slots(
-        &self,
-        excluded: &HashSet<String>,
-        recoverable: &HashSet<String>,
-    ) -> usize {
-        self.sources()
-            .iter()
-            .filter(|(url, record)| {
-                if excluded.contains(*url)
-                    || recoverable.contains(*url)
-                    || is_legacy_noise_source(url)
-                {
-                    return false;
-                }
-
-                let failure_streak = record
-                    .get("failure_streak")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
-                let empty_streak = record
-                    .get("empty_streak")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
-
-                failure_streak >= MAX_FAILURE_STREAK
-                    || empty_streak >= MAX_EMPTY_STREAK
-                    || source_quality_quarantined(record)
-            })
-            .count()
-    }
-
     fn prune(&mut self, limit: usize, protected: &HashSet<String>) -> usize {
         let source_count = self.sources().len();
         if source_count <= limit {
