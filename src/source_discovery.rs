@@ -1328,7 +1328,6 @@ mod tests {
         assert!(selected
             .iter()
             .any(|candidate| candidate.url == retired.url));
-
     }
 
     #[test]
