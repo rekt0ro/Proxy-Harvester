@@ -729,9 +729,8 @@ fn source_selection_score(record: &Value) -> f64 {
         record.get("strict_tested_last_run").and_then(Value::as_u64),
         record.get("strict_pass_last_run").and_then(Value::as_u64),
     ) {
-        (Some(tested), Some(passed)) if tested > 0 => {
-            (passed as f64 + 1.0) / (tested as f64 + 2.0)
-        }
+        (Some(tested), Some(passed)) if tested > 0 =>
+            (passed as f64 + 1.0) / (tested as f64 + 2.0),
         _ => 0.5,
     };
 
@@ -739,9 +738,7 @@ fn source_selection_score(record: &Value) -> f64 {
         record
             .get("transfer_tested_last_run")
             .and_then(Value::as_u64),
-        record
-            .get("transfer_pass_last_run")
-            .and_then(Value::as_u64),
+        record.get("transfer_pass_last_run").and_then(Value::as_u64),
     ) {
         (Some(tested), Some(passed)) if tested > 0 => {
             (passed as f64 + 1.0) / (tested as f64 + 2.0)
