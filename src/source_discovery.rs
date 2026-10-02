@@ -1309,12 +1309,14 @@ mod tests {
 
         let mut discovered = Vec::new();
         for rank in 0..MAX_KNOWN_REFRESH_SOURCES {
-            discovered.push(Candidate {
+            let candidate = Candidate {
                 url: format!("https://raw.githubusercontent.com/example/known/{rank}.sub"),
                 repo: format!("example/known-{rank}"),
                 repo_rank: rank,
                 priority: 100,
-            });
+            };
+            registry.add_candidate(&candidate, 1);
+            discovered.push(candidate);
         }
         discovered.push(retired.clone());
 
