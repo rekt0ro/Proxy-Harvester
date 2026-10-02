@@ -216,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let sources = load_sources(&sources_path).await?;
     println!("[INFO] 📡 Loaded {} sources", sources.len());
 
-    let mut unique = HashSet::new();
+    let mut source_configs = HashMap::<String, HashSet<String>>::new();
     let source_http_warnings = Arc::new(Mutex::new(Vec::<(usize, u16)>::new()));
 
     let mut source_results = stream::iter(sources.iter().cloned().enumerate())
@@ -394,8 +394,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut source_health = Vec::<(String, CollectionOutcome)>::with_capacity(sources.len());
 
     while let Some((source_index, configs, outcome)) = source_results.next().await {
-        source_health.push((sources[source_index].clone(), outcome));
-        unique.extend(configs);
+        let source_url = sources[source_index].clone();
+        source_health.push((source_url.clone(), outcome));
+
+        for config in configs {
+            source_configs
+                .entry(config)
+                .or_default()
+                .insert(source_url.clone());
+        }
     }
 
     proxyrift::source_discovery::record_collection_results(&source_health).await?;
@@ -439,14 +446,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let mut configs: Vec<String> = unique.into_iter().collect();
+    let mut deduped = HashMap::<String, (String, HashSet<String>)>::new();
+    for (config, sources_for_config) in source_configs {
+        let key = dedup_key(&config);
+        let entry = deduped
+            .entry(key)
+            .or_insert_with(|| (config.clone(), HashSet::new()));
+        entry.1.extend(sources_for_config);
+    }
+
+    let mut config_sources = deduped
+        .into_values()
+        .map(|(config, sources)| (config, sources))
+        .collect::<HashMap<_, _>>();
+    let mut configs = config_sources.keys().cloned().collect::<Vec<_>>();
     configs.sort_unstable();
 
-    let mut seen_keys = HashSet::new();
-    configs.retain(|config| seen_keys.insert(dedup_key(config)));
-
     let before_cheap_compatibility = configs.len();
-    configs.retain(|config| is_cheaply_supported_config(config));
+    configs.retain(|config| {
+        let keep = is_cheaply_supported_config(config);
+        if !keep {
+            config_sources.remove(config);
+        }
+        keep
+    });
     let cheaply_rejected = before_cheap_compatibility.saturating_sub(configs.len());
     if cheaply_rejected > 0 {
         println!(
@@ -455,8 +478,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    configs = assign_config_names(configs);
+    let unnamed_configs = configs;
+    let named_configs = assign_config_names(unnamed_configs.clone());
+    let mut named_config_sources = HashMap::<String, HashSet<String>>::new();
 
+    for (config, named) in unnamed_configs.into_iter().zip(named_configs.into_iter()) {
+        let sources_for_config = config_sources.remove(&config).unwrap_or_default();
+        named_config_sources.insert(named, sources_for_config);
+    }
+
+    let all_candidate_sources = named_config_sources.clone();
+    configs = named_config_sources.keys().cloned().collect::<Vec<_>>();
+    configs.sort_unstable();
     let special_hysteria_candidates = configs
         .iter()
         .filter(|config| needs_core_validation_only(config))
@@ -465,6 +498,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .collect::<Vec<_>>();
 
     configs = cap_configs_by_protocol(configs, MAX_COLLECTED_CONFIGS);
+    let retained_configs = configs.iter().cloned().collect::<HashSet<_>>();
+    named_config_sources.retain(|config, _| retained_configs.contains(config));
 
     println!("[INFO] 📦 Collected {} unique configs", configs.len());
 
@@ -536,6 +571,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .zip(configs.iter())
         .filter_map(|(latency, config)| latency.map(|latency| (config.clone(), latency)))
         .collect::<Vec<_>>();
+
+    let mut reachable_by_source = sources
+        .iter()
+        .cloned()
+        .map(|source| (source, 0usize))
+        .collect::<HashMap<_, _>>();
+
+    for (config, _) in &ranked_working_configs {
+        if let Some(sources_for_config) = named_config_sources.get(config) {
+            for source in sources_for_config {
+                *reachable_by_source.entry(source.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    proxyrift::source_discovery::record_transport_results(&reachable_by_source).await?;
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
@@ -625,10 +676,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .len()
         .saturating_sub(sampled_transport_count);
 
+    let mut light_source_map = serde_json::Map::new();
+    for config in &light_candidates {
+        let sources_for_config = named_config_sources
+            .get(config)
+            .or_else(|| all_candidate_sources.get(config))
+            .cloned()
+            .unwrap_or_default();
+        let mut sources_for_config = sources_for_config.into_iter().collect::<Vec<_>>();
+        sources_for_config.sort_unstable();
+        light_source_map.insert(
+            config.clone(),
+            Value::Array(
+                sources_for_config
+                    .into_iter()
+                    .map(Value::String)
+                    .collect::<Vec<_>>(),
+            ),
+        );
+    }
+
+    let source_map_path = output_dir.join(".source-config-map.json");
+    let source_map = serde_json::to_string_pretty(&Value::Object(light_source_map))?;
+    write_atomic(&source_map_path, format!("{source_map}\n")).await?;
+
     println!(
-        "[INFO] 🧠 [LIGHT INTELLIGENCE] PRIORITIZING {} CANDIDATES | {} HYSTERIA/HYSTERIA2 RETAINED",
+        "[INFO] 🧠 [LIGHT INTELLIGENCE] PRIORITIZING {} CANDIDATES | {} HYSTERIA/HYSTERIA2 RETAINED | SOURCE PROVENANCE: {}",
         sampled_transport_count,
-        special_count
+        special_count,
+        light_candidates.len()
     );
 
     let light_candidates_path = output_dir.join(".light-candidates.txt");
