@@ -1667,7 +1667,7 @@ async fn main() -> Result<(), String> {
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
     let light_targets = [primary_target.as_str(), LIGHT_TARGETS[2]];
-    let early_targets = light_targets;
+    let early_targets = [light_targets[0], light_targets[1]];
     let strict_targets = light_targets;
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
@@ -1739,19 +1739,31 @@ async fn main() -> Result<(), String> {
             global_verified.len()
         );
 
-        let chunk_metadata = validate_light_batch(
-            &xray,
-            &singbox,
-            chunk,
-            &early_targets,
-            ValidationSettings {
-                workers,
-                batch_size,
-                timeout_seconds: timeout,
-                strict: false,
-            },
-        )
-        .await?;
+        let mut chunk_metadata = HashMap::new();
+        let mut remaining_candidates = chunk.to_vec();
+
+        for target in &early_targets {
+            if remaining_candidates.is_empty() {
+                break;
+            }
+
+            let target_metadata = validate_light_batch(
+                &xray,
+                &singbox,
+                &remaining_candidates,
+                &[*target],
+                ValidationSettings {
+                    workers,
+                    batch_size,
+                    timeout_seconds: timeout,
+                    strict: false,
+                },
+            )
+            .await?;
+
+            remaining_candidates.retain(|config| !target_metadata.contains_key(config));
+            chunk_metadata.extend(target_metadata);
+        }
 
         for config in chunk_metadata.keys() {
             if !global_positions.contains_key(config) {
