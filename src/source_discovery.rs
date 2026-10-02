@@ -661,6 +661,7 @@ pub async fn record_collection_results(
                 if url.is_empty() {
                     continue;
                 }
+
                 if permanently_failed.contains(url) {
                     removed += 1;
                 } else {
@@ -1791,3 +1792,684 @@ mod tests {
     #[test]
     fn legacy_noise_sources_are_excluded_from_active_selection() {
         let mut registry = Registry::new(1);
+        let noisy = Candidate {
+            url: "https://raw.githubusercontent.com/example/repo/main/archive/all_broken.txt"
+                .to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        let healthy = Candidate {
+            url: "https://raw.githubusercontent.com/example/repo/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 1,
+            priority: 100,
+        };
+
+        registry.add_candidate(&noisy, 1);
+        registry.record_outcome(&noisy.url, CollectionOutcome::Success(3), 2);
+        registry.add_candidate(&healthy, 1);
+        registry.record_outcome(&healthy.url, CollectionOutcome::Success(3), 2);
+
+        let active = registry.active_urls(10, &HashSet::new(), &HashSet::new());
+
+        assert_eq!(active, vec![healthy.url]);
+        assert_eq!(registry.sources().len(), 2);
+    }
+
+    #[test]
+    fn cross_repository_readme_links_preserve_tree_fallback_for_target_repo() {
+        let repos = vec![
+            Repository {
+                name: "reader/repo".to_string(),
+                branch: "main".to_string(),
+                pushed_at: String::new(),
+            },
+            Repository {
+                name: "source/repo".to_string(),
+                branch: "main".to_string(),
+                pushed_at: String::new(),
+            },
+        ];
+        let candidates = vec![Candidate {
+            url: "https://raw.githubusercontent.com/source/repo/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "source/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        }];
+
+        let discovered = super::discovered_repository_names(&candidates, &repos);
+
+        assert!(discovered.contains("reader/repo"));
+        assert!(!discovered.contains("source/repo"));
+    }
+
+    #[test]
+    fn discovered_candidate_cap_is_applied_after_deduplication() {
+        let mut candidates = Vec::new();
+        for rank in 0..(MAX_DISCOVERED_CANDIDATES + 10) {
+            candidates.push(Candidate {
+                url: "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+                    .to_string(),
+                repo: format!("example/repo-{rank}"),
+                repo_rank: rank,
+                priority: 100,
+            });
+        }
+        candidates.push(Candidate {
+            url: "https://raw.githubusercontent.com/example/unique/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "example/unique".to_string(),
+            repo_rank: MAX_DISCOVERED_CANDIDATES + 10,
+            priority: 100,
+        });
+
+        let mut deduplicated = super::deduplicate_candidates(candidates);
+        deduplicated.truncate(super::MAX_DISCOVERED_CANDIDATES);
+
+        assert_eq!(deduplicated.len(), 2);
+        assert_eq!(
+            deduplicated[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
+        assert_eq!(
+            deduplicated[1].url,
+            "https://raw.githubusercontent.com/example/unique/main/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn recoverable_retired_sources_are_prioritized_for_refresh() {
+        let mut registry = Registry::new(1);
+        let retired = Candidate {
+            url: "https://raw.githubusercontent.com/example/retired/sub.txt".to_string(),
+            repo: "example/retired".to_string(),
+            repo_rank: 900,
+            priority: 100,
+        };
+
+        registry.add_candidate(&retired, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&retired.url, 0, 1);
+        }
+
+        let mut discovered = Vec::new();
+        for rank in 0..MAX_KNOWN_REFRESH_SOURCES {
+            let candidate = Candidate {
+                url: format!("https://raw.githubusercontent.com/example/known/{rank}.sub"),
+                repo: format!("example/known-{rank}"),
+                repo_rank: rank,
+                priority: 100,
+            };
+            registry.add_candidate(&candidate, 1);
+            discovered.push(candidate);
+        }
+        discovered.push(retired.clone());
+
+        let selected = super::select_known_refresh_candidates(
+            &discovered,
+            &registry,
+            RETIRED_SOURCE_COOLDOWN_SECS + 1,
+        );
+
+        assert_eq!(selected.len(), MAX_KNOWN_REFRESH_SOURCES);
+        assert!(selected
+            .iter()
+            .any(|candidate| candidate.url == retired.url));
+    }
+
+    #[test]
+    fn falls_back_to_persisted_active_sources_when_discovery_is_empty() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-a".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        registry.record_result(&candidate.url, 1, 2);
+
+        assert_eq!(
+            super::persisted_active_sources(&registry),
+            Some(vec!["source-a".to_string()])
+        );
+    }
+
+    #[test]
+    fn persisted_active_sources_excludes_retired_sources() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-retired".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&candidate.url, 0, 1);
+        }
+
+        assert!(super::persisted_active_sources(&registry).is_none());
+    }
+
+    #[test]
+    fn decodes_github_readme_base64_with_whitespace() {
+        let encoded =
+            STANDARD.encode("https://github.com/example/project/blob/main/subscriptions/all.txt");
+        let wrapped = encoded.replace("Y", "Y\n");
+        let compact = wrapped
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            STANDARD.decode(compact).unwrap(),
+            b"https://github.com/example/project/blob/main/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn discovery_client_policy_disables_automatic_redirects() {
+        let policy = reqwest::redirect::Policy::none();
+        let _ = policy;
+    }
+
+    #[test]
+    fn github_forbidden_with_retry_after_is_retryable() {
+        assert!(super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::FORBIDDEN,
+            true
+        ));
+        assert!(!super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::FORBIDDEN,
+            false
+        ));
+        assert!(super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            false
+        ));
+    }
+
+    #[test]
+    fn expected_discovery_probe_skips_are_not_failures() {
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API returned HTTP 404 Not Found"
+        ));
+        assert!(super::is_expected_probe_skip(
+            "GitHub README API response exceeds discovery size limit"
+        ));
+        assert!(super::is_expected_probe_skip(
+            "GitHub README exceeds discovery size limit"
+        ));
+        assert!(!super::is_expected_probe_skip(
+            "GitHub README API response parse failed"
+        ));
+    }
+
+    #[test]
+    fn repository_search_requires_public_repositories() {
+        let search_query = format!(
+            "{} archived:false fork:false is:public",
+            "v2ray subscription"
+        );
+        assert!(search_query.contains("is:public"));
+    }
+
+    #[test]
+    fn retired_sources_require_rediscovery_after_cooldown() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-a".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result("source-a", 0, 1);
+        }
+
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS);
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+
+        assert_eq!(
+            registry
+                .sources()
+                .get("source-a")
+                .and_then(|record| record.get("failure_streak"))
+                .and_then(Value::as_u64),
+            Some(MAX_FAILURE_STREAK)
+        );
+
+        let recovery = HashSet::from(["source-a".to_string()]);
+        assert_eq!(
+            registry.active_urls(1, &HashSet::new(), &recovery),
+            vec!["source-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn rediscovery_does_not_clear_retired_health_before_collection() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-retired".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&candidate.url, 0, 1);
+        }
+
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS + 1);
+
+        assert_eq!(
+            registry
+                .sources()
+                .get(&candidate.url)
+                .and_then(|record| record.get("failure_streak"))
+                .and_then(Value::as_u64),
+            Some(MAX_FAILURE_STREAK)
+        );
+        assert_eq!(
+            registry.active_urls(1, &HashSet::new(), &HashSet::from([candidate.url.clone()])),
+            vec![candidate.url]
+        );
+    }
+
+    #[test]
+    fn preserves_oldest_source_rotation_order() {
+        let mut registry = Registry::new(100);
+
+        for (index, url) in ["source-a", "source-b", "source-c"].into_iter().enumerate() {
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    repo_rank: 0,
+                    priority: 100,
+                },
+                100,
+            );
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_checked".into(), Value::from(index as u64 + 1));
+        }
+
+        assert_eq!(
+            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new()),
+            vec![
+                "source-a".to_string(),
+                "source-b".to_string(),
+                "source-c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn limits_unchecked_sources_during_rotation() {
+        let mut registry = Registry::new(1);
+
+        for (index, url) in ["source-a", "source-b", "source-c", "source-d"]
+            .into_iter()
+            .enumerate()
+        {
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    repo_rank: 0,
+                    priority: 100,
+                },
+                index as u64 + 1,
+            );
+        }
+
+        registry
+            .sources_mut()
+            .get_mut("source-c")
+            .and_then(Value::as_object_mut)
+            .expect("source-c exists")
+            .insert("last_checked".into(), Value::from(10u64));
+
+        registry
+            .sources_mut()
+            .get_mut("source-d")
+            .and_then(Value::as_object_mut)
+            .expect("source-d exists")
+            .insert("last_checked".into(), Value::from(20u64));
+
+        let active = registry.active_urls(3, &HashSet::new(), &HashSet::new());
+
+        assert_eq!(
+            active,
+            vec![
+                "source-a".to_string(),
+                "source-b".to_string(),
+                "source-c".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prunes_registry_beyond_capacity() {
+        let mut registry = Registry::new(1);
+        let urls = ["source-a", "source-b", "source-c"];
+
+        for (index, url) in urls.into_iter().enumerate() {
+            let now = index as u64 + 1;
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    repo_rank: 0,
+                    priority: 100,
+                },
+                now,
+            );
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_discovered".into(), Value::from(now));
+        }
+
+        let protected = HashSet::from(["source-a".to_string()]);
+        assert_eq!(registry.prune(2, &protected), 1);
+        assert!(registry.sources().contains_key("source-a"));
+        assert!(registry.sources().contains_key("source-c"));
+        assert!(!registry.sources().contains_key("source-b"));
+    }
+
+    #[test]
+    fn fills_remaining_rotation_slots_when_unchecked_pool_is_small() {
+        let mut registry = Registry::new(1);
+
+        for (index, url) in ["source-a", "source-b", "source-c", "source-d"]
+            .into_iter()
+            .enumerate()
+        {
+            let now = index as u64 + 1;
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    repo_rank: 0,
+                    priority: 100,
+                },
+                now,
+            );
+        }
+
+        for (url, last_checked) in [("source-a", 10u64), ("source-b", 20u64)] {
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_checked".into(), Value::from(last_checked));
+        }
+
+        let active = registry.active_urls(4, &HashSet::new(), &HashSet::new());
+
+        assert_eq!(active.len(), 4);
+        assert_eq!(
+            active,
+            vec![
+                "source-c".to_string(),
+                "source-d".to_string(),
+                "source-a".to_string(),
+                "source-b".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalizes_http_raw_github_to_https() {
+        assert_eq!(
+            normalize_github_source(
+                "http://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
+        );
+    }
+
+    #[test]
+    fn normalizes_github_blob_to_raw() {
+        assert_eq!(
+            normalize_github_source(
+                "https://github.com/example/project/blob/main/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
+        );
+    }
+
+    #[test]
+    fn ignores_repository_names_when_filtering_source_paths() {
+        assert!(!likely_source_url(
+            "https://raw.githubusercontent.com/vless-owner/project/main/data.json"
+        ));
+        assert!(likely_source_url(
+            "https://raw.githubusercontent.com/vless-owner/project/main/subscriptions/data.json"
+        ));
+    }
+
+    #[test]
+    fn rejects_generic_structured_files_without_source_hints() {
+        assert!(!is_source_path("package.json"));
+        assert!(!is_source_path("data.yaml"));
+        assert!(!is_source_path("settings.ini"));
+        assert!(is_source_path("subscriptions/config.json"));
+        assert!(is_source_path("nodes/data.yaml"));
+    }
+
+    #[test]
+    fn encodes_branch_path_safely() {
+        assert_eq!(
+            percent_encode_path("feature/source list"),
+            "feature/source%20list"
+        );
+        assert_eq!(
+            percent_encode_path("feature/source#1"),
+            "feature/source%231"
+        );
+    }
+
+    #[test]
+    fn rejects_unrelated_text_files() {
+        assert!(!is_source_path("docs/notes.txt"));
+        assert!(!is_source_path("docs/todo.txt"));
+        assert!(is_source_path("subscriptions/all.txt"));
+        assert!(is_source_path("proxies.txt"));
+    }
+
+    #[test]
+    fn rejects_oversized_source_urls() {
+        let raw = format!(
+            "https://raw.githubusercontent.com/example/project/main/{}.txt",
+            "a".repeat(MAX_SOURCE_URL_LENGTH)
+        );
+        assert!(normalize_github_source(&raw).is_none());
+    }
+
+    #[test]
+    fn attributes_readme_links_to_their_source_repository() {
+        let text = "https://github.com/source-owner/source-repo/blob/main/subscriptions/all.txt";
+        let candidates = extract_source_urls(text, "reader-owner/reader-repo", 7);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].repo, "source-owner/source-repo");
+        assert_eq!(candidates[0].repo_rank, 7);
+    }
+
+    #[test]
+    fn caps_readme_candidate_extraction() {
+        let mut text = String::new();
+        for index in 0..(super::MAX_README_CANDIDATES + 50) {
+            text.push_str(&format!(
+                "https://github.com/example/project-{index}/blob/main/subscriptions/all.txt\n"
+            ));
+        }
+
+        let candidates = extract_source_urls(&text, "reader/example", 0);
+
+        assert_eq!(candidates.len(), super::MAX_README_CANDIDATES);
+    }
+
+    #[test]
+    fn extracts_urls_from_markdown_inline_code() {
+        let text = "`https://github.com/example/project/blob/main/subscriptions/all.txt`";
+        let candidates = extract_source_urls(text, "example/project", 0);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn extracts_urls_from_markdown_table_cells() {
+        let text = "| https://github.com/example/project/blob/main/subscriptions/all.txt |";
+        let candidates = extract_source_urls(text, "example/project", 0);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_raw_github_paths() {
+        assert!(normalize_github_source("https://raw.githubusercontent.com/all.txt").is_none());
+        assert!(
+            normalize_github_source("https://raw.githubusercontent.com/example/project").is_none()
+        );
+        assert!(normalize_github_source(
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn rejects_non_github_sources() {
+        assert!(normalize_github_source("https://example.com/sub.txt").is_none());
+    }
+
+    #[test]
+    fn rejects_github_repository_pages() {
+        assert!(normalize_github_source("https://github.com/example/project").is_none());
+    }
+
+    #[test]
+    fn rejects_non_source_github_paths_with_refs() {
+        assert!(normalize_github_source(
+            "https://github.com/example/project/commits/refs/heads/main/subscriptions/all.txt"
+        )
+        .is_none());
+        assert!(normalize_github_source(
+            "https://github.com/example/project/tree/refs/heads/main/subscriptions/all.txt"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_nonstandard_raw_github_ports() {
+        assert!(normalize_github_source(
+            "https://raw.githubusercontent.com:8443/example/project/main/subscriptions/all.txt"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_github_ref_urls() {
+        assert!(normalize_github_source(
+            "https://github.com/example/project/blob/refs/pull/123/head/subscriptions/all.txt"
+        )
+        .is_none());
+        assert!(normalize_github_source(
+            "https://github.com/example/project/raw/refs/tags/v1/subscriptions/all.txt"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn preserves_modern_github_refs_for_branch_paths() {
+        assert_eq!(
+            normalize_github_source(
+                "https://github.com/example/project/raw/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+        );
+        assert_eq!(
+            normalize_github_source(
+                "https://github.com/example/project/blob/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn builds_raw_urls_with_slash_branches_safely() {
+        assert_eq!(
+            super::raw_github_file_url(
+                "example/project",
+                "feature/source-list",
+                "subscriptions/all.txt"
+            ),
+            "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn recognizes_source_paths() {
+        assert!(is_source_path("configs/vless.txt"));
+        assert!(is_source_path("subscriptions/all.yaml"));
+        assert!(is_source_path("sub"));
+        assert!(!is_source_path("src/config.rs"));
+        assert!(!is_source_path("src/main.rs"));
+    }
+
+    #[test]
+    fn rejects_obvious_noise() {
+        assert!(!likely_source_url(
+            "https://raw.githubusercontent.com/example/project/main/.github/workflows/sub.txt"
+        ));
+        assert!(!likely_source_url(
+            "https://raw.githubusercontent.com/example/project/main/README.md"
+        ));
+        assert!(!is_source_path("archive/all.txt"));
+        assert!(!is_source_path("archive/all_broken.txt"));
+        assert!(!is_source_path("backup/subscriptions.txt"));
+        assert!(!is_source_path("deprecated/vless.txt"));
+        assert!(!is_source_path("examples/configs.txt"));
+        assert!(is_source_path("subscriptions/vless.txt"));
+    }
+}
