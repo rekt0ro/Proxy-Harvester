@@ -711,7 +711,9 @@ fn source_quality_quarantined(record: &Value) -> bool {
         "transfer_low_quality_streak",
     ]
     .into_iter()
-    .any(|key| record.get(key).and_then(Value::as_u64).unwrap_or_default() >= MAX_LOW_QUALITY_STREAK);
+    .any(|key| {
+        record.get(key).and_then(Value::as_u64).unwrap_or_default() >= MAX_LOW_QUALITY_STREAK
+    });
 
     if !reached_threshold {
         return false;
