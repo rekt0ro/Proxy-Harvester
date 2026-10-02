@@ -346,6 +346,9 @@ impl Registry {
                     .get("configs_total")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
+                let transport_tested = source_transport_stats(record)
+                    .map(|(tested, _)| tested)
+                    .unwrap_or(configs_last_run);
                 let effective_yield = source_selection_score(record)
                     .mul_add(transport_tested as f64, 0.0)
                     .round()
