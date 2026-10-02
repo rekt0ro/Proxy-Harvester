@@ -933,6 +933,10 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let host = value.host_str()?.to_ascii_lowercase();
 
     if host == "raw.githubusercontent.com" {
+        if value.port().is_some() {
+            return None;
+        }
+
         value.set_scheme("https").ok()?;
 
         let segments = value.path_segments()?.collect::<Vec<_>>();
@@ -1725,6 +1729,14 @@ mod tests {
         .is_none());
         assert!(normalize_github_source(
             "https://github.com/example/project/tree/refs/heads/main/subscriptions/all.txt"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_nonstandard_raw_github_ports() {
+        assert!(normalize_github_source(
+            "https://raw.githubusercontent.com:8443/example/project/main/subscriptions/all.txt"
         )
         .is_none());
     }
