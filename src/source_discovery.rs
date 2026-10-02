@@ -2369,7 +2369,10 @@ mod tests {
                 .get_mut(name)
                 .and_then(Value::as_object_mut)
                 .expect("source exists")
-                .insert("transport_reachable_last_run".into(), Value::from(reachable));
+                .insert(
+                    "transport_reachable_last_run".into(),
+                    Value::from(reachable),
+                );
         }
 
         let active = registry.active_urls(2, &HashSet::new(), &HashSet::new());
