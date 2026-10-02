@@ -228,21 +228,19 @@ const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
 ];
 
 fn finite_number(value: Option<&Value>) -> bool {
-    value
-        .and_then(Value::as_f64)
-        .is_some_and(f64::is_finite)
+    value.and_then(Value::as_f64).is_some_and(f64::is_finite)
 }
 
 fn valid_stored_row(value: &Value) -> bool {
-    if value
-        .get("schema_version")
-        .and_then(Value::as_u64)
-        != Some(DATASET_VERSION)
+    if value.get("schema_version").and_then(Value::as_u64) != Some(DATASET_VERSION)
         || value
             .get("observation_id")
             .and_then(Value::as_str)
             .is_none_or(str::is_empty)
-        || value.get("candidate_fingerprint").and_then(Value::as_str).is_none_or(str::is_empty)
+        || value
+            .get("candidate_fingerprint")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
         || value.get("observed_at").and_then(Value::as_u64).is_none()
     {
         return false;
@@ -253,7 +251,9 @@ fn valid_stored_row(value: &Value) -> bool {
     };
 
     if features.len() != FEATURE_COUNT
-        || !FEATURE_NAMES.iter().all(|name| features.contains_key(*name))
+        || !FEATURE_NAMES
+            .iter()
+            .all(|name| features.contains_key(*name))
     {
         return false;
     }
@@ -268,7 +268,12 @@ fn valid_stored_row(value: &Value) -> bool {
         }
     }
 
-    for name in ["port", "query_parameter_count", "early_attempts", "history_checks"] {
+    for name in [
+        "port",
+        "query_parameter_count",
+        "early_attempts",
+        "history_checks",
+    ] {
         if features.get(name).and_then(Value::as_u64).is_none() {
             return false;
         }
@@ -305,7 +310,10 @@ fn valid_stored_row(value: &Value) -> bool {
 
     if label.get("strict_pass").and_then(Value::as_bool).is_none()
         || label.get("strict_checks").and_then(Value::as_u64).is_none()
-        || label.get("transfer_tested").and_then(Value::as_bool).is_none()
+        || label
+            .get("transfer_tested")
+            .and_then(Value::as_bool)
+            .is_none()
     {
         return false;
     }
