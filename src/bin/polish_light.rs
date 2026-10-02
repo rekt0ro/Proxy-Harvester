@@ -200,6 +200,53 @@ fn selection_eligible_count(
     select_verified_configs(configs, configs.len(), max_per_endpoint, max_per_family).len()
 }
 
+fn selection_rejection_counts(
+    configs: &[String],
+    limit: usize,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> (usize, usize, usize) {
+    let mut endpoint_counts = HashMap::<(String, u16), usize>::new();
+    let mut family_counts = HashMap::<String, usize>::new();
+    let mut selected = 0usize;
+    let mut endpoint_rejected = 0usize;
+    let mut family_rejected = 0usize;
+
+    for config in configs {
+        if selected >= limit {
+            break;
+        }
+
+        if let Some(endpoint) = endpoint(config) {
+            if endpoint_counts.get(&endpoint).copied().unwrap_or(0) >= max_per_endpoint {
+                endpoint_rejected += 1;
+                continue;
+            }
+
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                family_rejected += 1;
+                continue;
+            }
+
+            *endpoint_counts.entry(endpoint).or_insert(0) += 1;
+            *family_counts.entry(family).or_insert(0) += 1;
+            selected += 1;
+        } else {
+            let family = family_key(config);
+            if family_counts.get(&family).copied().unwrap_or(0) >= max_per_family {
+                family_rejected += 1;
+                continue;
+            }
+
+            *family_counts.entry(family).or_insert(0) += 1;
+            selected += 1;
+        }
+    }
+
+    (selected, endpoint_rejected, family_rejected)
+}
+
 fn selection_potential_count(
     transfer_ranked: &[String],
     untested_strict: &[String],
@@ -917,8 +964,30 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        let eligible_remaining =
-            selection_eligible_count(&untested, max_per_endpoint, max_per_family);
+        let eligible_untested = untested
+            .into_iter()
+            .filter(|config| {
+                selection_additional_potential_count(
+                    &selected,
+                    std::slice::from_ref(config),
+                    selection_limit,
+                    max_per_endpoint,
+                    max_per_family,
+                ) > 0
+            })
+            .collect::<Vec<_>>();
+
+        if eligible_untested.is_empty() {
+            return Ok(selected.len());
+        }
+
+        let eligible_remaining = selection_additional_potential_count(
+            &selected,
+            &eligible_untested,
+            selection_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
         if selected.len().saturating_add(eligible_remaining) < selection_limit {
             println!(
                 "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {} | CONTINUING BEST-EFFORT GATE",
@@ -972,7 +1041,7 @@ async fn fill_transfer_gate(
             .min(queue_window)
             .max(1);
 
-        let batch = diversify_recheck_candidates(&untested, batch_limit, 1);
+        let batch = diversify_recheck_candidates(&eligible_untested, batch_limit, 1);
         if batch.is_empty() {
             return Ok(selected.len());
         }
@@ -1865,10 +1934,17 @@ async fn main() -> Result<(), String> {
         let mut chunk_metadata = HashMap::new();
         let mut remaining_candidates = chunk.to_vec();
 
-        for target in &early_targets {
+        for (target_index, target) in early_targets.iter().enumerate() {
             if remaining_candidates.is_empty() {
                 break;
             }
+
+            println!(
+                "[INFO] 🔎 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | EARLY TARGET {}/{} | TESTING {} REMAINING",
+                target_index + 1,
+                early_targets.len(),
+                remaining_candidates.len()
+            );
 
             let target_metadata = validate_light_batch(
                 &xray,
@@ -1886,6 +1962,15 @@ async fn main() -> Result<(), String> {
 
             remaining_candidates.retain(|config| !target_metadata.contains_key(config));
             chunk_metadata.extend(target_metadata);
+
+            println!(
+                "[INFO] 📊 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} | EARLY TARGET {}/{} COMPLETE | VERIFIED: {} | REMAINING: {} | GLOBAL VERIFIED: {}",
+                target_index + 1,
+                early_targets.len(),
+                chunk_metadata.len(),
+                remaining_candidates.len(),
+                global_verified.len() + chunk_metadata.len()
+            );
         }
 
         for config in chunk_metadata.keys() {
@@ -2156,6 +2241,13 @@ async fn main() -> Result<(), String> {
             println!("[WARN] ⚠️ {message}");
         }
 
+        println!(
+            "[INFO] 🧭 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} COMPLETE | PREFILTER VERIFIED: {} | GLOBAL VERIFIED: {} | STRICT VERIFIED: {}",
+            chunk_metadata.len(),
+            global_verified.len(),
+            final_metadata.len()
+        );
+
         sort_ranked(
             &mut final_verified,
             &final_metadata,
@@ -2262,16 +2354,30 @@ async fn main() -> Result<(), String> {
         max_per_endpoint,
         max_per_family,
     );
+    let (_, endpoint_rejected, family_rejected) = selection_rejection_counts(
+        &transfer_ranked,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    );
 
     if selected.is_empty() {
         println!(
-            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED 10 MiB GATE | PUBLISHING 0 CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION"
+            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED 10 MiB GATE | PUBLISHING 0 CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION | STRICT VERIFIED: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {}",
+            final_metadata.len(),
+            transfer_tested.len(),
+            transfer_verified.len()
         );
     } else if selected.len() < selection_limit {
         println!(
-            "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {}",
+            "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {} | STRICT VERIFIED: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {} | ENDPOINT CAP EXCLUSIONS: {} | FAMILY CAP EXCLUSIONS: {}",
             selected.len(),
-            selection_limit
+            selection_limit,
+            final_metadata.len(),
+            transfer_tested.len(),
+            transfer_verified.len(),
+            endpoint_rejected,
+            family_rejected
         );
     }
 
@@ -2351,12 +2457,49 @@ mod tests {
         has_disabled_tls_verification, history_fingerprint, light_backend, light_training_features,
         merge_light_metadata, normalize_light_config, recheck_exploration_limit,
         select_recheck_candidates, select_verified_configs, selection_additional_potential_count,
-        selection_eligible_count, selection_potential_count, transfer_reserve_target, LightBackend,
-        ProxyMetrics,
+        selection_eligible_count, selection_potential_count, selection_rejection_counts,
+        transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use std::collections::HashMap;
+
+    #[test]
+    fn selection_rejection_counts_explain_endpoint_and_family_caps() {
+        let configs = vec![
+            "vless://00000000-0000-0000-0000-000000000001@a.example:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000002@a.example:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000003@b.example:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000004@c.example:443".to_string(),
+        ];
+
+        let (selected, endpoint_rejected, family_rejected) =
+            selection_rejection_counts(&configs, 4, 1, 4);
+
+        assert_eq!(selected, 3);
+        assert_eq!(endpoint_rejected, 1);
+        assert_eq!(family_rejected, 0);
+    }
+
+    #[test]
+    fn selection_potential_excludes_duplicate_endpoint() {
+        let selected = vec![
+            "vless://00000000-0000-0000-0000-000000000001@a.example:443".to_string(),
+        ];
+        let duplicate_endpoint =
+            "vless://00000000-0000-0000-0000-000000000002@a.example:443".to_string();
+        let new_endpoint =
+            "vless://00000000-0000-0000-0000-000000000003@b.example:443".to_string();
+
+        assert_eq!(
+            selection_additional_potential_count(&selected, &[duplicate_endpoint], 200, 1, 3),
+            0
+        );
+        assert_eq!(
+            selection_additional_potential_count(&selected, &[new_endpoint], 200, 1, 3),
+            1
+        );
+    }
 
     #[test]
     fn rejects_explicit_tls_verification_bypass() {
