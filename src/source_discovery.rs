@@ -437,9 +437,12 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .map(|candidate| candidate.url.clone())
         .collect::<Vec<_>>();
 
-    let new_url_set = new_urls.iter().cloned().collect::<HashSet<_>>();
+    let discovered_new_set = new_candidates
+        .iter()
+        .map(|candidate| candidate.url.clone())
+        .collect::<HashSet<_>>();
     let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
-    let active = registry.active_urls(active_limit, &new_url_set);
+    let active = registry.active_urls(active_limit, &discovered_new_set);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
