@@ -280,8 +280,9 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
             Vec::new()
         }
     };
-    repos.sort();
-    repos.dedup();
+
+    let mut seen_repositories = HashSet::new();
+    repos.retain(|(name, _)| seen_repositories.insert(name.clone()));
     repos.truncate(MAX_DISCOVERY_REPOS);
 
     let mut discovered = if repos.is_empty() {
