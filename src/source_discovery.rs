@@ -42,6 +42,7 @@ const MAX_README_API_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_SOURCE_URL_LENGTH: usize = 8192;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_CANDIDATES: usize = 100;
+const MAX_README_URLS_SCANNED: usize = 500;
 const MAX_DISCOVERED_CANDIDATES: usize = 6000;
 
 const DEFAULT_QUERIES: [&str; 10] = [
@@ -1633,12 +1634,14 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
     let mut candidates = Vec::new();
     let mut seen_urls = HashSet::new();
     let mut start = 0;
+    let mut scanned_urls = 0usize;
 
-    while candidates.len() < MAX_README_CANDIDATES {
+    while candidates.len() < MAX_README_URLS_SCANNED && scanned_urls < MAX_README_URLS_SCANNED {
         let Some(relative) = text[start..].find("http") else {
             break;
         };
         let absolute = start + relative;
+        scanned_urls = scanned_urls.saturating_add(1);
         let end = text[absolute..]
             .find(|character: char| {
                 character.is_whitespace()
@@ -1671,11 +1674,8 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
         start = end;
     }
 
-    candidates.sort_by(|a, b| {
-        source_url_score(&b.url)
-            .cmp(&source_url_score(&a.url))
-            .then_with(|| a.url.cmp(&b.url))
-    });
+    candidates.sort_by(|a, b| source_url_score(&b.url).cmp(&source_url_score(&a.url)));
+    candidates.truncate(MAX_README_CANDIDATES);
 
     candidates
 }
@@ -1941,19 +1941,19 @@ fn source_path_score(path: &str) -> u8 {
         return 0;
     }
 
+    let filename = lowered.rsplit('/').next().unwrap_or("");
+
     let extension_ok = SOURCE_EXTENSIONS
         .iter()
         .any(|extension| lowered.ends_with(extension));
     let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
         .iter()
         .any(|extension| lowered.ends_with(extension));
-    let has_extension = lowered
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains('.'));
+    let has_extension = filename.contains('.');
     let hint_ok = has_path_hint(&lowered);
 
-    let plausible = (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok);
+    let plausible =
+        (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok);
     if !plausible {
         return 0;
     }
@@ -1962,6 +1962,13 @@ fn source_path_score(path: &str) -> u8 {
 
     if has_strong_path_hint(&lowered) {
         score += 30;
+    }
+
+    match filename.split('.').next().unwrap_or(filename) {
+        "all" | "full" | "sub" | "subs" | "subscription" | "subscriptions" | "nodes"
+        | "proxies" | "servers" => score += 10,
+        "config" | "settings" | "data" => score = score.saturating_sub(10),
+        _ => {}
     }
 
     score
