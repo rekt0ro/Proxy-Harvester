@@ -530,10 +530,7 @@ async fn discover_from_repos(
         }
     }
 
-    let discovered_repos = all
-        .iter()
-        .map(|candidate| candidate.repo.as_str())
-        .collect::<HashSet<_>>();
+    let discovered_repos = discovered_repository_names(&all, repos);
 
     let mut tree_targets = repos
         .iter()
@@ -1040,6 +1037,17 @@ fn select_known_refresh_candidates(
     selected
 }
 
+fn discovered_repository_names(
+    candidates: &[Candidate],
+    repos: &[Repository],
+) -> HashSet<String> {
+    candidates
+        .iter()
+        .filter_map(|candidate| repos.get(candidate.repo_rank))
+        .map(|repo| repo.name.clone())
+        .collect()
+}
+
 fn deduplicate_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
     let mut unique = HashMap::<String, Candidate>::new();
 
@@ -1257,6 +1265,34 @@ mod tests {
         MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn cross_repository_readme_links_preserve_tree_fallback_for_target_repo() {
+        let repos = vec![
+            Repository {
+                name: "reader/repo".to_string(),
+                branch: "main".to_string(),
+                pushed_at: String::new(),
+            },
+            Repository {
+                name: "source/repo".to_string(),
+                branch: "main".to_string(),
+                pushed_at: String::new(),
+            },
+        ];
+        let candidates = vec![Candidate {
+            url: "https://raw.githubusercontent.com/source/repo/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "source/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        }];
+
+        let discovered = super::discovered_repository_names(&candidates, &repos);
+
+        assert!(discovered.contains("reader/repo"));
+        assert!(!discovered.contains("source/repo"));
+    }
 
     #[test]
     fn discovered_candidate_cap_is_applied_after_deduplication() {
