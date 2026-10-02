@@ -358,8 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .buffer_unordered(DOWNLOAD_CONCURRENCY.min(sources.len()).max(1));
 
-    let mut source_health =
-        Vec::<(String, CollectionOutcome)>::with_capacity(sources.len());
+    let mut source_health = Vec::<(String, CollectionOutcome)>::with_capacity(sources.len());
 
     while let Some((source_index, configs, failed)) = source_results.next().await {
         source_health.push((
