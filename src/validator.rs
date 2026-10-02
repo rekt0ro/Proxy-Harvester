@@ -428,7 +428,10 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
 
     futures::pin_mut!(probes);
 
-    if let Ok(Some(ip)) = timeout(PUBLIC_DNS_TIMEOUT, probes.next()).await {
+    let preferred = timeout(PUBLIC_DNS_TIMEOUT, probes.next()).await;
+    drop(probes);
+
+    if let Ok(Some(ip)) = preferred {
         return Some(ip);
     }
 
