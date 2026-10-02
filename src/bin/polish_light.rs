@@ -218,11 +218,13 @@ fn persist_light_result(
     )?;
 
     let mut model = intelligence.clone();
-    for (config, attempts) in final_attempts {
+    for config in final_attempts.keys() {
+        // The model observes one candidate-level outcome per strict recheck.
+        // The raw number of validator attempts remains in the training dataset.
         model.update(
             config,
             global_metadata.get(config),
-            *attempts,
+            1,
             final_metadata.contains_key(config),
         );
     }

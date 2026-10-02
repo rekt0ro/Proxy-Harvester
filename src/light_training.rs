@@ -205,18 +205,136 @@ impl TrainingRow {
     }
 }
 
+const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
+    "protocol",
+    "backend",
+    "transport",
+    "security",
+    "port",
+    "query_parameter_count",
+    "has_sni",
+    "has_host",
+    "has_path",
+    "tls_enabled",
+    "reality_enabled",
+    "early_attempts",
+    "early_success_rate",
+    "early_median_ms",
+    "early_min_ms",
+    "early_jitter_ms",
+    "early_throughput_kbps",
+    "history_checks",
+    "history_pass_rate",
+];
+
+fn finite_number(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_f64).is_some_and(f64::is_finite)
+}
+
 fn valid_stored_row(value: &Value) -> bool {
-    value
-        .get("schema_version")
-        .and_then(Value::as_u64)
-        .is_some_and(|version| version == DATASET_VERSION)
-        && value
+    if value.get("schema_version").and_then(Value::as_u64) != Some(DATASET_VERSION)
+        || value
             .get("observation_id")
             .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-        && value.get("observed_at").and_then(Value::as_u64).is_some()
-        && value.get("features").and_then(Value::as_object).is_some()
-        && value.get("label").and_then(Value::as_object).is_some()
+            .is_none_or(str::is_empty)
+        || value
+            .get("candidate_fingerprint")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || value.get("observed_at").and_then(Value::as_u64).is_none()
+    {
+        return false;
+    }
+
+    let Some(features) = value.get("features").and_then(Value::as_object) else {
+        return false;
+    };
+
+    if features.len() != FEATURE_COUNT
+        || !FEATURE_NAMES
+            .iter()
+            .all(|name| features.contains_key(*name))
+    {
+        return false;
+    }
+
+    for name in ["protocol", "backend", "transport", "security"] {
+        if features
+            .get(name)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return false;
+        }
+    }
+
+    for name in [
+        "port",
+        "query_parameter_count",
+        "early_attempts",
+        "history_checks",
+    ] {
+        if features.get(name).and_then(Value::as_u64).is_none() {
+            return false;
+        }
+    }
+
+    for name in [
+        "has_sni",
+        "has_host",
+        "has_path",
+        "tls_enabled",
+        "reality_enabled",
+    ] {
+        if features.get(name).and_then(Value::as_bool).is_none() {
+            return false;
+        }
+    }
+
+    for name in [
+        "early_success_rate",
+        "early_median_ms",
+        "early_min_ms",
+        "early_jitter_ms",
+        "early_throughput_kbps",
+        "history_pass_rate",
+    ] {
+        if !finite_number(features.get(name)) {
+            return false;
+        }
+    }
+
+    let Some(label) = value.get("label").and_then(Value::as_object) else {
+        return false;
+    };
+
+    if label.get("strict_pass").and_then(Value::as_bool).is_none()
+        || label.get("strict_checks").and_then(Value::as_u64).is_none()
+        || label
+            .get("transfer_tested")
+            .and_then(Value::as_bool)
+            .is_none()
+    {
+        return false;
+    }
+
+    if label
+        .get("strict_checks")
+        .and_then(Value::as_u64)
+        .is_none_or(|checks| checks == 0)
+    {
+        return false;
+    }
+
+    let transfer_tested = label
+        .get("transfer_tested")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match label.get("transfer_pass") {
+        Some(Value::Null) if !transfer_tested => true,
+        Some(Value::Bool(_)) if transfer_tested => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -252,7 +370,24 @@ mod tests {
             observation_id: id.to_string(),
             features: BTreeMap::from([
                 ("protocol".to_string(), Value::from("vless")),
-                ("latency".to_string(), Value::from(100.0)),
+                ("backend".to_string(), Value::from("xray")),
+                ("transport".to_string(), Value::from("raw")),
+                ("security".to_string(), Value::from("tls")),
+                ("port".to_string(), Value::from(443u64)),
+                ("query_parameter_count".to_string(), Value::from(1u64)),
+                ("has_sni".to_string(), Value::from(true)),
+                ("has_host".to_string(), Value::from(false)),
+                ("has_path".to_string(), Value::from(false)),
+                ("tls_enabled".to_string(), Value::from(true)),
+                ("reality_enabled".to_string(), Value::from(false)),
+                ("early_attempts".to_string(), Value::from(3u64)),
+                ("early_success_rate".to_string(), Value::from(0.66)),
+                ("early_median_ms".to_string(), Value::from(100.0)),
+                ("early_min_ms".to_string(), Value::from(80.0)),
+                ("early_jitter_ms".to_string(), Value::from(5.0)),
+                ("early_throughput_kbps".to_string(), Value::from(1000.0)),
+                ("history_checks".to_string(), Value::from(2u64)),
+                ("history_pass_rate".to_string(), Value::from(0.5)),
             ]),
             strict_pass,
             strict_checks: 1,
@@ -320,6 +455,26 @@ mod tests {
         assert!(body.contains("\"fresh\""));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_rows_with_wrong_feature_schema() {
+        let path = temp_path();
+        let mut value = row("invalid", 1_000, true, None).to_value();
+        value["features"]
+            .as_object_mut()
+            .expect("features object")
+            .remove("history_pass_rate");
+
+        assert!(!super::valid_stored_row(&value));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_zero_strict_checks() {
+        let mut value = row("invalid-checks", 1_000, true, None).to_value();
+        value["label"]["strict_checks"] = Value::from(0u64);
+        assert!(!super::valid_stored_row(&value));
     }
 
     #[test]

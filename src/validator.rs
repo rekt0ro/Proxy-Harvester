@@ -42,6 +42,7 @@ pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TARGET_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_CORE_FAILURES_PER_VALIDATION: usize = 12;
 const MAX_ADAPTIVE_BATCH_SIZE: usize = 800;
 const MIN_ADAPTIVE_BATCH_SIZE: usize = 128;
 pub const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(5);
@@ -144,6 +145,13 @@ fn scheme_of(config: &str) -> String {
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .filter(|scheme| !scheme.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(crate) fn uses_udp_transport(config: &str) -> bool {
+    matches!(
+        scheme_of(clean(config)).as_str(),
+        "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+    )
 }
 
 pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
@@ -389,6 +397,53 @@ pub fn is_public_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
+pub async fn resolve_public_tcp_host(host: &str, port: u16) -> Option<std::net::IpAddr> {
+    let addresses = timeout(PUBLIC_DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
+        .await
+        .ok()?
+        .ok()?
+        .collect::<Vec<_>>();
+
+    let mut seen = HashSet::new();
+    let public = addresses
+        .into_iter()
+        .filter_map(|address| {
+            let ip = address.ip();
+            is_public_ip(&ip).then_some(ip)
+        })
+        .filter(|ip| seen.insert(*ip))
+        .collect::<Vec<_>>();
+
+    if public.is_empty() {
+        return None;
+    }
+
+    if public.len() == 1 {
+        return public.into_iter().next();
+    }
+
+    let fallback = public[0];
+    let probe_ips = public.clone();
+    let probes = stream::iter(probe_ips)
+        .map(|ip| async move {
+            timeout(Duration::from_millis(750), TcpStream::connect((ip, port)))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|_| ip)
+        })
+        .buffer_unordered(8)
+        .filter_map(|result| async move { result });
+
+    futures::pin_mut!(probes);
+
+    if let Ok(Some(ip)) = timeout(PUBLIC_DNS_TIMEOUT, probes.next()).await {
+        return Some(ip);
+    }
+
+    Some(fallback)
+}
+
 pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAddr> {
     let addresses = timeout(PUBLIC_DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
@@ -459,10 +514,10 @@ fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> boo
     false
 }
 
-type XrayEndpointCache = HashMap<(String, u16), IpAddr>;
+type XrayEndpointCache = HashMap<(String, u16, bool), IpAddr>;
 
-fn xray_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
-    (host.to_ascii_lowercase(), port)
+fn xray_endpoint_cache_key(host: &str, port: u16, tcp_preferred: bool) -> (String, u16, bool) {
+    (host.to_ascii_lowercase(), port, tcp_preferred)
 }
 
 async fn pin_xray_entries(
@@ -477,16 +532,19 @@ async fn pin_xray_entries(
                 return None;
             }
 
-            let key = xray_endpoint_cache_key(&host, port);
+            let key = xray_endpoint_cache_key(&host, port, !uses_udp_transport(config));
             (!cache.contains_key(&key)).then_some(key)
         })
         .collect::<HashSet<_>>();
 
     let resolved = stream::iter(missing)
-        .map(|(host, port)| async move {
-            resolve_public_host(&host, port)
-                .await
-                .map(|ip| ((host, port), ip))
+        .map(|(host, port, tcp_preferred)| async move {
+            let ip = if tcp_preferred {
+                resolve_public_tcp_host(&host, port).await
+            } else {
+                resolve_public_host(&host, port).await
+            };
+            ip.map(|ip| ((host, port, tcp_preferred), ip))
         })
         .buffer_unordered(64)
         .collect::<Vec<_>>()
@@ -502,7 +560,13 @@ async fn pin_xray_entries(
             let ip = match host.parse::<IpAddr>() {
                 Ok(ip) if is_public_ip(&ip) => Some(ip),
                 Ok(_) => None,
-                Err(_) => cache.get(&xray_endpoint_cache_key(&host, port)).copied(),
+                Err(_) => cache
+                    .get(&xray_endpoint_cache_key(
+                        &host,
+                        port,
+                        !uses_udp_transport(config),
+                    ))
+                    .copied(),
             }?;
 
             let mut value = value.clone();
@@ -1890,10 +1954,11 @@ fn split_hysteria2_endpoint_conflicts(entries: &[(String, Value)]) -> Vec<Vec<(S
             continue;
         };
 
-        if let Some((_, group)) = groups
+        if let Some((endpoints, group)) = groups
             .iter_mut()
             .find(|(endpoints, _)| !endpoints.contains(&endpoint))
         {
+            endpoints.insert(endpoint);
             group.push(entry.clone());
             continue;
         }
@@ -2227,6 +2292,7 @@ async fn check_batch(
 
     let mut pending_batches = vec![entries.to_vec()];
     let mut combined = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending_batches.pop() {
         let batch_entries = pin_xray_entries(&batch_entries, xray_cache).await;
@@ -2275,10 +2341,11 @@ async fn check_batch(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending_batches.push(batch_entries[..mid].to_vec());
                 pending_batches.push(batch_entries[mid..].to_vec());
@@ -2304,6 +2371,14 @@ async fn check_batch(
                 {
                     println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
                 }
+            }
+
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [XRAY] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                let _ = fs::remove_dir_all(&work);
+                break;
             }
 
             let _ = fs::remove_dir_all(&work);
@@ -2355,7 +2430,8 @@ async fn check_batch(
                 .map_err(|error| error.to_string())?
                 .is_some()
             {
-                if batch_entries.len() > 1 {
+                core_failures += 1;
+                if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                     let mid = batch_entries.len() / 2;
                     pending_batches.push(batch_entries[..mid].to_vec());
                     pending_batches.push(batch_entries[mid..].to_vec());
@@ -2366,6 +2442,12 @@ async fn check_batch(
                     );
                 }
                 let _ = fs::remove_dir_all(&work);
+                if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                    println!(
+                        "[WARN] ⚠️ [XRAY] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                    );
+                    break;
+                }
                 continue;
             }
 
@@ -2728,6 +2810,7 @@ async fn check_batch_targets(
 
     let mut pending_batches = vec![entries.to_vec()];
     let mut combined = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending_batches.pop() {
         let batch_entries = pin_xray_entries(&batch_entries, xray_cache).await;
@@ -2776,10 +2859,11 @@ async fn check_batch_targets(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending_batches.push(batch_entries[..mid].to_vec());
                 pending_batches.push(batch_entries[mid..].to_vec());
@@ -2808,6 +2892,12 @@ async fn check_batch_targets(
             }
 
             let _ = fs::remove_dir_all(&work);
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [XRAY] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                break;
+            }
             continue;
         }
 
@@ -3097,6 +3187,40 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderValue};
 
     #[test]
+    fn hysteria2_conflict_batches_keep_endpoints_unique() {
+        let entries = vec![
+            (
+                "hy2://a@example-a:443".to_string(),
+                json!({"settings":{"address":"example-a","port":443}}),
+            ),
+            (
+                "hy2://b@example-b:443".to_string(),
+                json!({"settings":{"address":"example-b","port":443}}),
+            ),
+            (
+                "hy2://c@example-c:443".to_string(),
+                json!({"settings":{"address":"example-c","port":443}}),
+            ),
+            (
+                "hy2://d@example-a:443".to_string(),
+                json!({"settings":{"address":"example-a","port":443}}),
+            ),
+        ];
+
+        let batches = super::split_hysteria2_endpoint_conflicts(&entries);
+        assert!(batches.len() >= 2);
+
+        for batch in batches {
+            let mut endpoints = HashSet::new();
+            for (_, value) in batch {
+                let host = value["settings"]["address"].as_str().unwrap();
+                let port = value["settings"]["port"].as_u64().unwrap() as u16;
+                assert!(endpoints.insert((host.to_string(), port)));
+            }
+        }
+    }
+
+    #[test]
     fn separates_hysteria2_configs_sharing_an_endpoint() {
         let entries = vec![
             (
@@ -3160,7 +3284,7 @@ mod tests {
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
-        let mut cache = HashMap::from([(("example.com".to_string(), 443), ip)]);
+        let mut cache = HashMap::from([(("example.com".to_string(), 443, true), ip)]);
 
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 

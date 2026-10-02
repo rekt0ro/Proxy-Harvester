@@ -101,23 +101,23 @@ impl IntelligenceModel {
         &mut self,
         config: &str,
         metrics: Option<&ProxyMetrics>,
-        attempts: usize,
+        observations: usize,
         passed: bool,
     ) {
-        if attempts == 0 {
+        if observations == 0 {
             return;
         }
 
         let successes = u64::from(passed);
-        let attempts = attempts as u64;
+        let observations = observations as u64;
         let key = feature_key(config, metrics);
         let entry = self.features.entry(key).or_default();
-        entry.attempts = entry.attempts.saturating_add(attempts);
+        entry.attempts = entry.attempts.saturating_add(observations);
         entry.successes = entry
             .successes
             .saturating_add(successes)
             .min(entry.attempts);
-        self.total_attempts = self.total_attempts.saturating_add(attempts);
+        self.total_attempts = self.total_attempts.saturating_add(observations);
         self.total_successes = self
             .total_successes
             .saturating_add(successes)
@@ -235,6 +235,20 @@ mod tests {
 
         model.rank(&mut configs, &metadata, &positions);
         assert_eq!(configs[0], "vless://a@example.com:443");
+    }
+
+    #[test]
+    fn candidate_observation_counts_success_once() {
+        let mut model = IntelligenceModel::default();
+        model.update("vless://a@example.com:443", Some(&metrics(50.0)), 6, true);
+
+        assert_eq!(model.total_attempts, 6);
+        assert_eq!(model.total_successes, 1);
+
+        let key = super::feature_key("vless://a@example.com:443", Some(&metrics(50.0)));
+        let stats = model.features.get(&key).expect("feature bucket");
+        assert_eq!(stats.attempts, 6);
+        assert_eq!(stats.successes, 1);
     }
 
     #[test]

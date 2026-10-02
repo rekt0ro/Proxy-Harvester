@@ -1,9 +1,9 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
-    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, wait_for_rate_limit,
-    ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES, EARLY_THROUGHPUT_TARGET,
-    MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET,
-    STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
+    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
+    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES,
+    EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
+    PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
     STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET,
     SUSTAINED_THROUGHPUT_TIMEOUT,
@@ -28,6 +28,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const BATCH_SIZE: usize = 500;
+const MAX_CORE_FAILURES_PER_VALIDATION: usize = 12;
 
 fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
@@ -1201,10 +1202,10 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     })
 }
 
-type SingBoxEndpointCache = HashMap<(String, u16), IpAddr>;
+type SingBoxEndpointCache = HashMap<(String, u16, bool), IpAddr>;
 
-fn singbox_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
-    (host.to_ascii_lowercase(), port)
+fn singbox_endpoint_cache_key(host: &str, port: u16, tcp_preferred: bool) -> (String, u16, bool) {
+    (host.to_ascii_lowercase(), port, tcp_preferred)
 }
 
 async fn pin_singbox_entries(
@@ -1215,16 +1216,19 @@ async fn pin_singbox_entries(
         .iter()
         .filter_map(|(config, _)| {
             let (host, port) = crate::validator::endpoint(config)?;
-            let key = singbox_endpoint_cache_key(&host, port);
+            let key = singbox_endpoint_cache_key(&host, port, !uses_udp_transport(config));
             (!cache.contains_key(&key)).then_some(key)
         })
         .collect::<HashSet<_>>();
 
     let resolved = stream::iter(missing)
-        .map(|(host, port)| async move {
-            crate::validator::resolve_public_host(&host, port)
-                .await
-                .map(|ip| ((host, port), ip))
+        .map(|(host, port, tcp_preferred)| async move {
+            let ip = if tcp_preferred {
+                crate::validator::resolve_public_tcp_host(&host, port).await
+            } else {
+                crate::validator::resolve_public_host(&host, port).await
+            };
+            ip.map(|ip| ((host, port, tcp_preferred), ip))
         })
         .buffer_unordered(64)
         .collect::<Vec<_>>()
@@ -1237,7 +1241,11 @@ async fn pin_singbox_entries(
         .filter_map(|(config, outbound)| {
             let (host, port) = crate::validator::endpoint(config)?;
             let ip = cache
-                .get(&singbox_endpoint_cache_key(&host, port))
+                .get(&singbox_endpoint_cache_key(
+                    &host,
+                    port,
+                    !uses_udp_transport(config),
+                ))
                 .copied()?;
 
             let mut outbound = outbound.clone();
@@ -1262,6 +1270,7 @@ async fn check_batch_targets(
 
     let mut pending = vec![entries.to_vec()];
     let mut verified = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending.pop() {
         let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
@@ -1297,34 +1306,41 @@ async fn check_batch_targets(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending.push(batch_entries[..mid].to_vec());
                 pending.push(batch_entries[mid..].to_vec());
-                let _ = fs::remove_dir_all(&work);
-                continue;
+            } else {
+                let tail = fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(700)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+
+                println!(
+                    "[INFO] 🧹 [SING-BOX] REJECTED | {} | core could not start for this candidate",
+                    config_label(&batch_entries[0].0)
+                );
+                if !tail.is_empty() {
+                    println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
+                }
             }
 
-            let tail = fs::read_to_string(&log_path)
-                .unwrap_or_default()
-                .chars()
-                .rev()
-                .take(700)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            println!(
-                "[INFO] 🧹 [SING-BOX] REJECTED | {} | core could not start for this candidate",
-                config_label(&batch_entries[0].0)
-            );
-            if !tail.is_empty() {
-                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
-            }
             let _ = fs::remove_dir_all(&work);
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                break;
+            }
             continue;
         }
 
@@ -1389,17 +1405,26 @@ async fn check_batch_targets(
             // A core crash is a backend failure, not a proxy-quality verdict. Split the
             // batch and retry the pieces so one bad config cannot poison unrelated candidates.
             if child.try_wait().ok().flatten().is_some() {
-                if batch_entries.len() > 1 {
+                core_failures += 1;
+                if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                     let mid = batch_entries.len() / 2;
                     pending.push(batch_entries[..mid].to_vec());
                     pending.push(batch_entries[mid..].to_vec());
                 } else {
                     println!(
-                        "[INFO] ℹ️ [SING-BOX] CORE EXITED | {}",
+                        "[WARN] ⚠️ [SING-BOX] CORE EXITED | {}",
                         config_label(&batch_entries[0].0)
                     );
                 }
+                let _ = child.kill();
+                let _ = child.wait();
                 let _ = fs::remove_dir_all(&work);
+                if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                    println!(
+                        "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                    );
+                    break;
+                }
                 continue;
             }
 
@@ -1536,6 +1561,7 @@ async fn check_batch(
 
     let mut pending = vec![entries.to_vec()];
     let mut verified = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending.pop() {
         let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
@@ -1571,34 +1597,40 @@ async fn check_batch(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending.push(batch_entries[..mid].to_vec());
                 pending.push(batch_entries[mid..].to_vec());
-                let _ = fs::remove_dir_all(&work);
-                continue;
+            } else {
+                let tail = fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(700)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                println!(
+                    "[INFO] 🧹 [SING-BOX] REJECTED | {}",
+                    config_label(&batch_entries[0].0)
+                );
+                if !tail.is_empty() {
+                    println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
+                }
             }
 
-            let tail = fs::read_to_string(&log_path)
-                .unwrap_or_default()
-                .chars()
-                .rev()
-                .take(700)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            println!(
-                "[INFO] 🧹 [SING-BOX] REJECTED | {}",
-                config_label(&batch_entries[0].0)
-            );
-            if !tail.is_empty() {
-                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
-            }
             let _ = fs::remove_dir_all(&work);
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                break;
+            }
             continue;
         }
 
@@ -1996,7 +2028,7 @@ mod tests {
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
-        let mut cache = SingBoxEndpointCache::from([(("example.com".to_string(), 443), ip)]);
+        let mut cache = SingBoxEndpointCache::from([(("example.com".to_string(), 443, true), ip)]);
 
         let pinned = pin_singbox_entries(&entries, &mut cache).await;
 
