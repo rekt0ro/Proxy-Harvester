@@ -7,6 +7,7 @@ use proxyrift::validator::{
     config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
     resolve_public_host,
 };
+use proxyrift::source_discovery::CollectionOutcome;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
@@ -207,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         println!(
                             "[WARN] ⚠️ Source #{source_number} has an invalid or unsupported URL."
                         );
-                        return (source_index, Vec::new());
+                        return (source_index, Vec::new(), true);
                     }
                 };
 
@@ -218,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         println!(
                             "[WARN] ⚠️ Source #{source_number} rejected by safety policy: {reason}."
                         );
-                        return (source_index, Vec::new());
+                        return (source_index, Vec::new(), true);
                     }
                 };
 
@@ -235,14 +236,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         "[WARN] ⚠️ Source #{source_number} exceeded the {}-redirect limit.",
                                         MAX_SOURCE_REDIRECTS
                                     );
-                                    return (source_index, Vec::new());
+                                    return (source_index, Vec::new(), true);
                                 }
 
                                 let Some(location) = response.headers().get(LOCATION) else {
                                     println!(
                                         "[WARN] ⚠️ Source #{source_number} returned HTTP status {status} without a Location header."
                                     );
-                                    return (source_index, Vec::new());
+                                    return (source_index, Vec::new(), true);
                                 };
 
                                 let location = match location.to_str() {
@@ -252,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         println!(
                                             "[WARN] ⚠️ Source #{source_number} returned an invalid redirect Location header."
                                         );
-                                        return (source_index, Vec::new());
+                                        return (source_index, Vec::new(), true);
                                     }
                                 };
 
@@ -267,7 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 println!(
                                                     "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
                                                 );
-                                                return (source_index, Vec::new());
+                                                return (source_index, Vec::new(), true);
                                             }
                                         };
 
@@ -280,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         println!(
                                             "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
                                         );
-                                        return (source_index, Vec::new());
+                                        return (source_index, Vec::new(), true);
                                     }
                                 }
                             }
@@ -304,14 +305,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if let Ok(mut warnings) = source_http_warnings.lock() {
                                     warnings.push((source_number, status.as_u16()));
                                 }
-                                return (source_index, Vec::new());
+                                return (source_index, Vec::new(), true);
                             }
 
                             if response
                                 .content_length()
                                 .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
-                                return (source_index, Vec::new());
+                                return (source_index, Vec::new(), true);
                             }
 
                             match read_source_body(response).await {
@@ -320,16 +321,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     let configs = extract_configs(&text);
 
 
-                                    return (source_index, configs);
+                                    return (source_index, configs, false);
                                 }
 
                                 Err(SourceBodyError::TooLarge) => {
-                                    return (source_index, Vec::new());
+                                    return (source_index, Vec::new(), true);
                                 }
 
                                 Err(SourceBodyError::Read) => {
                                     println!("[INFO] ↪️ Failed to read source #{source_number}.");
-                                    return (source_index, Vec::new());
+                                    return (source_index, Vec::new(), true);
                                 }
                             }
                         }
@@ -348,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             println!(
                                 "[WARN] ⚠️ Failed to download source #{source_number}: {error}"
                             );
-                            return (source_index, Vec::new());
+                            return (source_index, Vec::new(), true);
                         }
                     }
                 }
@@ -357,10 +358,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .buffer_unordered(DOWNLOAD_CONCURRENCY.min(sources.len()).max(1));
 
-    let mut source_health = Vec::<(String, usize)>::with_capacity(sources.len());
+    let mut source_health =
+        Vec::<(String, CollectionOutcome)>::with_capacity(sources.len());
 
-    while let Some((source_index, configs)) = source_results.next().await {
-        source_health.push((sources[source_index].clone(), configs.len()));
+    while let Some((source_index, configs, failed)) = source_results.next().await {
+        source_health.push((
+            sources[source_index].clone(),
+            if failed {
+                CollectionOutcome::Failed
+            } else {
+                CollectionOutcome::Success(configs.len())
+            },
+        ));
         unique.extend(configs);
     }
 
