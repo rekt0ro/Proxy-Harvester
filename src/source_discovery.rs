@@ -861,11 +861,10 @@ async fn read_limited_body(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut response = response;
     let mut body = Vec::with_capacity(max_bytes.min(64 * 1024));
-    let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+    while let Some(chunk) = response.chunk().await? {
         if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err("GitHub discovery response exceeds size limit".into());
         }
