@@ -258,9 +258,8 @@ impl Registry {
         let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
         (failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK)
-            && last_checked.is_some_and(|checked| {
-                now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
-            })
+            && last_checked
+                .is_some_and(|checked| now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS)
     }
 
     fn add_candidate(&mut self, candidate: &Candidate, now: u64) {
@@ -1329,9 +1328,7 @@ fn likely_source_url(url: &str) -> bool {
 fn is_source_path(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
 
-    if NOISE_HINTS.iter().any(|hint| lowered.contains(hint))
-        || has_noise_path_token(&lowered)
-    {
+    if NOISE_HINTS.iter().any(|hint| lowered.contains(hint)) || has_noise_path_token(&lowered) {
         return false;
     }
 
@@ -1540,13 +1537,8 @@ mod tests {
 
         registry.add_candidate(&healthy, 1);
         registry.record_outcome(&healthy.url, CollectionOutcome::Success(1), 2);
-        let active = super::select_active_sources(
-            &registry,
-            std::slice::from_ref(&new_source),
-            &[],
-            3,
-            1,
-        );
+        let active =
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 1);
 
         assert_eq!(active, vec![healthy.url.clone()]);
     }
@@ -1580,13 +1572,8 @@ mod tests {
             registry.record_outcome(&empty.url, CollectionOutcome::Success(0), now);
         }
 
-        let active = super::select_active_sources(
-            &registry,
-            std::slice::from_ref(&new_source),
-            &[],
-            10,
-            2,
-        );
+        let active =
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 10, 2);
 
         assert!(active.contains(&healthy.url));
         assert!(active.contains(&new_source.url));
