@@ -780,12 +780,11 @@ async fn fill_transfer_gate(
             selection_eligible_count(&untested, max_per_endpoint, max_per_family);
         if selected.len().saturating_add(eligible_remaining) < selection_limit {
             println!(
-                "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {}",
+                "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {} | CONTINUING BEST-EFFORT GATE",
                 selected.len(),
                 eligible_remaining,
                 selection_limit
             );
-            return Ok(selected.len());
         }
 
         let remaining = selection_limit.saturating_sub(selected.len());
