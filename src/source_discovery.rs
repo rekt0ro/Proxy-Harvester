@@ -28,6 +28,9 @@ const GITHUB_RETRY_BASE_MS: u64 = 500;
 const GITHUB_RETRY_AFTER_MAX_SECS: u64 = 10;
 const USER_AGENT: &str = "ProxyRift-source-discovery/1.0";
 const README_MAX_BYTES: usize = 256 * 1024;
+const MAX_SOURCE_URL_LENGTH: usize = 8192;
+const MAX_README_CANDIDATES: usize = 100;
+const MAX_DISCOVERED_CANDIDATES: usize = 6000;
 
 const DEFAULT_QUERIES: [&str; 10] = [
     "v2ray subscription",
@@ -608,6 +611,15 @@ async fn discover_from_repos(
         }
     }
 
+    all.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.repo_rank.cmp(&b.repo_rank))
+            .then_with(|| a.repo.cmp(&b.repo))
+            .then_with(|| a.url.cmp(&b.url))
+    });
+    all.truncate(MAX_DISCOVERED_CANDIDATES);
+
     Ok(all)
 }
 
@@ -647,7 +659,8 @@ async fn discover_repo(
 
         let body = read_limited_body(response, README_MAX_BYTES).await?;
         let text = String::from_utf8_lossy(&body);
-        let candidates = extract_source_urls(&text, name, repo_rank);
+        let mut candidates = extract_source_urls(&text, name, repo_rank);
+        candidates.truncate(MAX_README_CANDIDATES);
 
         return Ok(candidates);
     }
@@ -917,6 +930,10 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
 }
 
 fn normalize_github_source(raw: &str) -> Option<String> {
+    if raw.len() > MAX_SOURCE_URL_LENGTH {
+        return None;
+    }
+
     let mut value = Url::parse(raw).ok()?;
 
     if !matches!(value.scheme(), "http" | "https") {
@@ -1367,6 +1384,15 @@ mod tests {
         assert!(!is_source_path("docs/todo.txt"));
         assert!(is_source_path("subscriptions/all.txt"));
         assert!(is_source_path("proxies.txt"));
+    }
+
+    #[test]
+    fn rejects_oversized_source_urls() {
+        let raw = format!(
+            "https://raw.githubusercontent.com/example/project/main/{}.txt",
+            "a".repeat(MAX_SOURCE_URL_LENGTH)
+        );
+        assert!(normalize_github_source(&raw).is_none());
     }
 
     #[test]
