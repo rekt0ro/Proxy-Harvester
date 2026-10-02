@@ -403,7 +403,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     });
     repos.truncate(MAX_DISCOVERY_REPOS);
 
-    let mut discovered = if repos.is_empty() {
+    let discovered = if repos.is_empty() {
         Vec::new()
     } else {
         discover_from_repos(&client, &repos, token.as_deref()).await?
