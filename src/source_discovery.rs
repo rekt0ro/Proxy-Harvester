@@ -2380,7 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn new_sources_do_not_displace_healthy_sources() {
+    fn new_sources_get_a_fixed_exploration_slot() {
         let mut registry = Registry::new(1);
         let healthy = Candidate {
             url: "source-healthy".to_string(),
@@ -2398,9 +2398,10 @@ mod tests {
         registry.add_candidate(&healthy, 1);
         registry.record_outcome(&healthy.url, CollectionOutcome::Success(1), 2);
         let active =
-            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 1);
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 2);
 
-        assert_eq!(active, vec![healthy.url.clone()]);
+        assert!(active.contains(&healthy.url));
+        assert!(active.contains(&new_source.url));
     }
 
     #[test]
