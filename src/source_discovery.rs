@@ -154,7 +154,12 @@ impl Registry {
             .expect("registry always contains sources")
     }
 
-    fn active_urls(&self, limit: usize, excluded: &HashSet<String>, now: u64) -> Vec<String> {
+    fn active_urls(
+        &self,
+        limit: usize,
+        excluded: &HashSet<String>,
+        recoverable: &HashSet<String>,
+    ) -> Vec<String> {
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
@@ -169,11 +174,7 @@ impl Registry {
                 .unwrap_or_default();
             let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
-            if failures >= MAX_FAILURE_STREAK
-                && !last_checked.is_some_and(|checked| {
-                    now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
-                })
-            {
+            if failures >= MAX_FAILURE_STREAK && !recoverable.contains(url) {
                 continue;
             }
 
@@ -205,6 +206,20 @@ impl Registry {
                     .map(|(url, _)| url),
             )
             .collect()
+    }
+
+    fn is_recoverable(&self, url: &str, now: u64) -> bool {
+        self.sources()
+            .get(url)
+            .and_then(|record| record.get("failure_streak"))
+            .and_then(Value::as_u64)
+            .is_some_and(|streak| streak >= MAX_FAILURE_STREAK)
+            && self
+                .sources()
+                .get(url)
+                .and_then(|record| record.get("last_checked"))
+                .and_then(Value::as_u64)
+                .is_some_and(|checked| now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS)
     }
 
     fn add_candidate(&mut self, candidate: &Candidate, now: u64) {
@@ -386,7 +401,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         Ok(repos) => repos,
         Err(error) => {
             if registry
-                .active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), now)
+                .active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new())
                 .is_empty()
             {
                 return Err(error);
@@ -416,7 +431,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let discovered = deduplicate_candidates(discovered);
 
     if discovered.is_empty() {
-        if let Some(active) = persisted_active_sources(&registry, now) {
+        if let Some(active) = persisted_active_sources(&registry) {
             println!(
                 "[WARN] 🔭 [DISCOVERY] no usable GitHub sources discovered; using {} persisted active sources",
                 active.len()
@@ -469,7 +484,14 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
     let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
-    let active = registry.active_urls(active_limit, &discovered_new_set, now);
+    let recoverable_known_urls = known_candidates
+        .iter()
+        .filter(|candidate| registry.is_recoverable(&candidate.url, now))
+        .map(|candidate| candidate.url.clone())
+        .collect::<HashSet<_>>();
+
+    let active =
+        registry.active_urls(active_limit, &discovered_new_set, &recoverable_known_urls);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
@@ -1036,11 +1058,10 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
-fn persisted_active_sources(registry: &Registry, now: u64) -> Option<Vec<String>> {
-    let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), now);
+fn persisted_active_sources(registry: &Registry) -> Option<Vec<String>> {
+    let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new());
     (!active.is_empty()).then_some(active)
 }
-
 fn select_known_refresh_candidates(
     discovered: &[Candidate],
     registry: &Registry,
@@ -1054,18 +1075,7 @@ fn select_known_refresh_candidates(
             continue;
         }
 
-        let recoverable = registry
-            .sources()
-            .get(&candidate.url)
-            .and_then(|record| record.get("failure_streak"))
-            .and_then(Value::as_u64)
-            .is_some_and(|streak| streak >= MAX_FAILURE_STREAK)
-            && registry
-                .sources()
-                .get(&candidate.url)
-                .and_then(|record| record.get("last_checked"))
-                .and_then(Value::as_u64)
-                .is_some_and(|checked| now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS);
+        let recoverable = registry.is_recoverable(&candidate.url, now);
 
         if recoverable {
             selected.push(candidate.clone());
@@ -1464,6 +1474,24 @@ mod tests {
     }
 
     #[test]
+    fn persisted_active_sources_excludes_retired_sources() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-retired".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&candidate.url, 0, 1);
+        }
+
+        assert!(super::persisted_active_sources(&registry).is_none());
+    }
+
+    #[test]
     fn decodes_github_readme_base64_with_whitespace() {
         let encoded =
             STANDARD.encode("https://github.com/example/project/blob/main/subscriptions/all.txt");
@@ -1511,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_sources_stay_out_until_cooldown_expires() {
+    fn retired_sources_require_rediscovery_after_cooldown() {
         let mut registry = Registry::new(1);
         let candidate = Candidate {
             url: "source-a".to_string(),
@@ -1525,25 +1553,14 @@ mod tests {
             registry.record_result("source-a", 0, 1);
         }
 
-        let just_before_expiry = RETIRED_SOURCE_COOLDOWN_SECS;
-        registry.add_candidate(&candidate, just_before_expiry);
-        assert_eq!(
-            registry
-                .sources()
-                .get("source-a")
-                .and_then(|record| record.get("failure_streak"))
-                .and_then(Value::as_u64),
-            Some(MAX_FAILURE_STREAK)
-        );
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS);
         assert!(registry
-            .active_urls(1, &HashSet::new(), RETIRED_SOURCE_COOLDOWN_SECS)
+            .active_urls(1, &HashSet::new(), &HashSet::new())
             .is_empty());
 
-        let at_expiry = RETIRED_SOURCE_COOLDOWN_SECS + 1;
-        assert_eq!(
-            registry.active_urls(1, &HashSet::new(), at_expiry),
-            vec!["source-a".to_string()]
-        );
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
 
         assert_eq!(
             registry
@@ -1552,6 +1569,12 @@ mod tests {
                 .and_then(|record| record.get("failure_streak"))
                 .and_then(Value::as_u64),
             Some(MAX_FAILURE_STREAK)
+        );
+
+        let recovery = HashSet::from(["source-a".to_string()]);
+        assert_eq!(
+            registry.active_urls(1, &HashSet::new(), &recovery),
+            vec!["source-a".to_string()]
         );
     }
 
@@ -1581,7 +1604,11 @@ mod tests {
             Some(MAX_FAILURE_STREAK)
         );
         assert_eq!(
-            registry.active_urls(1, &HashSet::new(), RETIRED_SOURCE_COOLDOWN_SECS + 1),
+            registry.active_urls(
+                1,
+                &HashSet::new(),
+                &HashSet::from([candidate.url.clone()]),
+            ),
             vec![candidate.url]
         );
     }
@@ -1609,7 +1636,7 @@ mod tests {
         }
 
         assert_eq!(
-            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), 100),
+            registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new()),
             vec![
                 "source-a".to_string(),
                 "source-b".to_string(),
@@ -1651,7 +1678,7 @@ mod tests {
             .expect("source-d exists")
             .insert("last_checked".into(), Value::from(20u64));
 
-        let active = registry.active_urls(3, &HashSet::new(), 100);
+        let active = registry.active_urls(3, &HashSet::new(), &HashSet::new());
 
         assert_eq!(
             active,
@@ -1723,7 +1750,7 @@ mod tests {
                 .insert("last_checked".into(), Value::from(last_checked));
         }
 
-        let active = registry.active_urls(4, &HashSet::new(), 100);
+        let active = registry.active_urls(4, &HashSet::new(), &HashSet::new());
 
         assert_eq!(active.len(), 4);
         assert_eq!(
