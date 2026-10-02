@@ -964,7 +964,7 @@ fn normalize_github_source(raw: &str) -> Option<String> {
 fn has_path_hint(path: &str) -> bool {
     path.split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|segment| !segment.is_empty())
-        .any(|segment| PATH_HINTS.iter().any(|hint| segment == *hint))
+        .any(|segment| PATH_HINTS.contains(&segment))
 }
 
 fn likely_source_url(url: &str) -> bool {
