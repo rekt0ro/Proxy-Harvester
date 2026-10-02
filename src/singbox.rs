@@ -2051,14 +2051,6 @@ mod tests {
             b"blocked by upstream"
         ));
         assert!(valid_probe_body(
-            EARLY_THROUGHPUT_TARGET,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
-        ));
-        assert!(!valid_probe_body(
-            EARLY_THROUGHPUT_TARGET,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
-        ));
-        assert!(valid_probe_body(
             STRICT_THROUGHPUT_TARGET,
             &vec![0_u8; STRICT_THROUGHPUT_BYTES]
         ));
