@@ -1649,7 +1649,7 @@ mod tests {
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
         normalize_config, parse_source_redirect, push_light_candidate, safe_source_client,
         safe_source_redirect, select_all_candidates, split_concatenated_configs,
-        tcp_endpoint_groups, test_transport_configs, transport_probe_key, trim_config,
+        tcp_endpoint_groups, transport_probe_key, trim_config,
         MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
