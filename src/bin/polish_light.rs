@@ -2216,11 +2216,11 @@ async fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_recheck_limit, adaptive_transfer_test_limit, has_disabled_tls_verification,
-        history_fingerprint, light_backend, light_training_features, merge_light_metadata,
-        normalize_light_config, select_verified_configs, selection_additional_potential_count,
-        selection_eligible_count, selection_potential_count, transfer_reserve_target,
-        adjust_transfer_workers, LightBackend, ProxyMetrics,
+        adaptive_recheck_limit, adaptive_transfer_test_limit, adjust_transfer_workers,
+        has_disabled_tls_verification, history_fingerprint, light_backend, light_training_features,
+        merge_light_metadata, normalize_light_config, select_verified_configs,
+        selection_additional_potential_count, selection_eligible_count, selection_potential_count,
+        transfer_reserve_target, LightBackend, ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
