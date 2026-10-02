@@ -758,7 +758,7 @@ async fn search_repositories(
     let mut repos = Vec::new();
 
     for query in DEFAULT_QUERIES {
-        let search_query = format!("{query} archived:false fork:false");
+        let search_query = format!("{query} archived:false fork:false is:public");
         let url = format!(
             "https://api.github.com/search/repositories?q={}&sort=updated&order=desc&per_page={}",
             percent_encode(&search_query),
@@ -1190,6 +1190,12 @@ mod tests {
         MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn repository_search_requires_public_repositories() {
+        let search_query = format!("{} archived:false fork:false is:public", "v2ray subscription");
+        assert!(search_query.contains("is:public"));
+    }
 
     #[test]
     fn retired_sources_stay_out_until_cooldown_expires() {
