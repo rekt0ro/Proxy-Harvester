@@ -1109,7 +1109,30 @@ fn likely_source_url(url: &str) -> bool {
         return false;
     };
 
-    let path = parsed.path().to_ascii_lowercase();
+    let segments = parsed.path_segments().map(|segments| segments.collect::<Vec<_>>());
+
+    let Some(segments) = segments else {
+        return false;
+    };
+
+    let source_start = if parsed.host_str() == Some("raw.githubusercontent.com")
+        && segments.get(2) == Some(&"refs")
+        && segments.get(3) == Some(&"heads")
+    {
+        5
+    } else {
+        3
+    };
+
+    let Some(source_segments) = segments.get(source_start..) else {
+        return false;
+    };
+
+    if source_segments.is_empty() {
+        return false;
+    }
+
+    let path = format!("/{}", source_segments.join("/")).to_ascii_lowercase();
 
     if NOISE_HINTS.iter().any(|hint| path.contains(hint)) {
         return false;
@@ -1586,6 +1609,16 @@ mod tests {
             .as_deref(),
             Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
+    }
+
+    #[test]
+    fn ignores_repository_names_when_filtering_source_paths() {
+        assert!(!likely_source_url(
+            "https://raw.githubusercontent.com/vless-owner/project/main/data.json"
+        ));
+        assert!(likely_source_url(
+            "https://raw.githubusercontent.com/vless-owner/project/main/subscriptions/data.json"
+        ));
     }
 
     #[test]
