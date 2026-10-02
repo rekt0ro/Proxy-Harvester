@@ -29,6 +29,7 @@ const GITHUB_RETRY_AFTER_MAX_SECS: u64 = 10;
 const USER_AGENT: &str = "ProxyRift-source-discovery/1.0";
 const README_MAX_BYTES: usize = 256 * 1024;
 const MAX_SOURCE_URL_LENGTH: usize = 8192;
+const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_CANDIDATES: usize = 100;
 const MAX_DISCOVERED_CANDIDATES: usize = 6000;
 
@@ -779,13 +780,23 @@ async fn search_repositories(
             continue;
         }
 
-        let text = match response.text().await {
-            Ok(text) => text,
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_SEARCH_RESPONSE_BYTES as u64)
+        {
+            println!("[WARN] 🔭 [DISCOVERY] GitHub search response exceeds size limit");
+            continue;
+        }
+
+        let body = match read_limited_body(response, MAX_SEARCH_RESPONSE_BYTES).await {
+            Ok(body) => body,
             Err(error) => {
                 println!("[WARN] 🔭 [DISCOVERY] GitHub search response read failed: {error}");
                 continue;
             }
         };
+
+        let text = String::from_utf8_lossy(&body);
 
         let payload: Value = match serde_json::from_str(&text) {
             Ok(payload) => payload,
@@ -958,7 +969,11 @@ fn normalize_github_source(raw: &str) -> Option<String> {
 
         value.set_query(None);
         value.set_fragment(None);
-        return Some(value.to_string());
+        let normalized = value.to_string();
+        if normalized.len() > MAX_SOURCE_URL_LENGTH {
+            return None;
+        }
+        return Some(normalized);
     }
 
     if host != "github.com" {
@@ -1001,9 +1016,10 @@ fn normalize_github_source(raw: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!(
+    let normalized = format!(
         "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    ))
+    );
+    (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
 fn has_path_hint(path: &str) -> bool {
     path.split(|character: char| !character.is_ascii_alphanumeric())
