@@ -83,6 +83,7 @@ const SOURCE_EXTENSIONS: [&str; 8] = [
 struct Candidate {
     url: String,
     repo: String,
+    repo_rank: usize,
     priority: u8,
 }
 
@@ -381,6 +382,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     discovered.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
+            .then_with(|| a.repo_rank.cmp(&b.repo_rank))
             .then_with(|| a.repo.cmp(&b.repo))
             .then_with(|| a.url.cmp(&b.url))
     });
@@ -489,10 +491,10 @@ async fn discover_from_repos(
     repos: &[(String, String)],
     token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut stream = stream::iter(repos.iter().cloned().map(|repo| {
+    let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
         let client = client.clone();
         let token = token.map(str::to_owned);
-        async move { discover_repo(&client, &repo, token.as_deref()).await }
+        async move { discover_repo(&client, &repo, repo_rank, token.as_deref()).await }
     }))
     .buffer_unordered(24);
 
@@ -567,6 +569,7 @@ async fn discover_from_repos(
 async fn discover_repo(
     client: &Client,
     repo: &(String, String),
+    repo_rank: usize,
     token: Option<&str>,
 ) -> Result<(Vec<Candidate>, bool), Box<dyn std::error::Error + Send + Sync>> {
     let (name, branch) = repo;
@@ -596,7 +599,7 @@ async fn discover_repo(
             .take(README_MAX_BYTES)
             .collect::<Vec<_>>();
         let text = String::from_utf8_lossy(&body);
-        let candidates = extract_source_urls(&text, name);
+        let candidates = extract_source_urls(&text, name, repo_rank);
 
         return Ok((candidates, true));
     }
@@ -607,6 +610,7 @@ async fn discover_repo(
 async fn scan_repo_tree(
     client: &Client,
     repo: &(String, String),
+    repo_rank: usize,
     token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let (name, branch) = repo;
@@ -665,6 +669,7 @@ async fn scan_repo_tree(
                     .join("/")
             ),
             repo: name.clone(),
+            repo_rank,
             priority: 50,
         })
         .collect())
@@ -783,7 +788,7 @@ fn retry_after_delay(response: &reqwest::Response, attempt: usize) -> Duration {
     Duration::from_millis(GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)))
 }
 
-fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
+fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let mut start = 0;
 
@@ -809,6 +814,7 @@ fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
                 candidates.push(Candidate {
                     url,
                     repo: repo.to_string(),
+                    repo_rank,
                     priority: 100,
                 });
             }
@@ -1034,6 +1040,7 @@ mod tests {
                 &Candidate {
                     url: url.to_string(),
                     repo: "example/repo".to_string(),
+                    repo_rank: 0,
                     priority: 100,
                 },
                 100,
