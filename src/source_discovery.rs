@@ -1016,9 +1016,7 @@ fn normalize_github_source(raw: &str) -> Option<String> {
         return None;
     }
 
-    let normalized = format!(
-        "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    );
+    let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
 fn has_path_hint(path: &str) -> bool {
@@ -1436,12 +1434,10 @@ mod tests {
     fn rejects_malformed_raw_github_paths() {
         assert!(normalize_github_source("https://raw.githubusercontent.com/all.txt").is_none());
         assert!(normalize_github_source("https://raw.githubusercontent.com/example/project").is_none());
-        assert!(
-            normalize_github_source(
-                "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
-            )
-            .is_some()
-        );
+        assert!(normalize_github_source(
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        )
+        .is_some());
     }
 
     #[test]
