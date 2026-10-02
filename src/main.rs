@@ -43,10 +43,10 @@ const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_REDIRECTS: usize = 2;
 
-const MAX_COLLECTED_CONFIGS: usize = 35_000;
+const MAX_COLLECTED_CONFIGS: usize = 20_000;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_ALL_PER_ENDPOINT: usize = 3;
-const MAX_LIGHT_CANDIDATES: usize = 10000;
+const MAX_LIGHT_CANDIDATES: usize = 10_000;
 const MAX_LIGHT_ENDPOINT_VARIANTS: usize = 2;
 const SOURCE_RETRIES: usize = 2;
 const SOURCE_RETRY_BASE_MS: u64 = 250;
