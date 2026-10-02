@@ -203,10 +203,7 @@ impl Registry {
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if proven_set.contains(url)
-                || excluded.contains(url)
-                || is_legacy_noise_source(url)
-            {
+            if proven_set.contains(url) || excluded.contains(url) || is_legacy_noise_source(url) {
                 continue;
             }
 
@@ -258,12 +255,7 @@ impl Registry {
                     .take(unchecked_limit)
                     .map(|(url, _)| url),
             )
-            .chain(
-                checked
-                    .into_iter()
-                    .take(checked_limit)
-                    .map(|(url, _)| url),
-            )
+            .chain(checked.into_iter().take(checked_limit).map(|(url, _)| url))
             .collect()
     }
 
@@ -372,10 +364,7 @@ impl Registry {
 
         failures < MAX_FAILURE_STREAK
             && empty_streak < MAX_EMPTY_STREAK
-            && record
-                .get("permanently_failed")
-                .and_then(Value::as_bool)
-                != Some(true)
+            && record.get("permanently_failed").and_then(Value::as_bool) != Some(true)
     }
 
     fn is_recoverable(&self, url: &str, now: u64) -> bool {
@@ -1857,8 +1846,7 @@ mod tests {
         registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
 
         registry.add_candidate(&newer, 3);
-        let active =
-            super::select_active_sources(&registry, &[], &[], 4, 1);
+        let active = super::select_active_sources(&registry, &[], &[], 4, 1);
 
         assert_eq!(active, vec![proven.url]);
     }
