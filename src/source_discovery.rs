@@ -784,7 +784,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_source_path, likely_source_url, normalize_github_source, Candidate, Registry,
+        is_source_path, likely_source_url, normalize_github_source, Candidate, Registry, Value,
     };
 
     #[test]
