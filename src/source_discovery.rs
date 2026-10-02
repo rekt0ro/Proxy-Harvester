@@ -927,7 +927,8 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
 
         if let Some(url) = normalize_github_source(raw) {
             if likely_source_url(&url) {
-                let source_repo = source_repository_from_raw_url(&url).unwrap_or_else(|| repo.to_string());
+                let source_repo =
+                    source_repository_from_raw_url(&url).unwrap_or_else(|| repo.to_string());
 
                 candidates.push(Candidate {
                     url,
@@ -1212,7 +1213,10 @@ mod tests {
 
     #[test]
     fn repository_search_requires_public_repositories() {
-        let search_query = format!("{} archived:false fork:false is:public", "v2ray subscription");
+        let search_query = format!(
+            "{} archived:false fork:false is:public",
+            "v2ray subscription"
+        );
         assert!(search_query.contains("is:public"));
     }
 
@@ -1445,8 +1449,7 @@ mod tests {
 
     #[test]
     fn attributes_readme_links_to_their_source_repository() {
-        let text =
-            "https://github.com/source-owner/source-repo/blob/main/subscriptions/all.txt";
+        let text = "https://github.com/source-owner/source-repo/blob/main/subscriptions/all.txt";
         let candidates = extract_source_urls(text, "reader-owner/reader-repo", 7);
 
         assert_eq!(candidates.len(), 1);
