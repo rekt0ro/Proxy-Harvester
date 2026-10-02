@@ -906,7 +906,7 @@ async fn discover_from_repos(
         .buffer_unordered(8);
 
         let mut tree_404_skipped = 0usize;
-        let mut tree_empty_skipped = 0usize;
+        let mut tree_conflict_skipped = 0usize;
         let mut tree_expected_skips = 0usize;
 
         while let Some((repo, result)) = tree_stream.next().await {
@@ -915,10 +915,10 @@ async fn discover_from_repos(
                 Err(error) if error.to_string().contains("HTTP 404 Not Found") => {
                     tree_404_skipped += 1;
                 }
-                Err(error) if is_empty_tree_repository(&error.to_string()) => {
-                    tree_empty_skipped += 1;
+                Err(error) if error.to_string().contains("HTTP 409 Conflict") => {
+                    tree_conflict_skipped += 1;
                 }
-                Err(error) if is_expected_probe_skip(&error.to_string()) => {
+                Err(error) if is_expected_tree_probe_skip(&error.to_string()) => {
                     tree_expected_skips += 1;
                 }
                 Err(error) => println!(
@@ -934,10 +934,10 @@ async fn discover_from_repos(
                 tree_404_skipped
             );
         }
-        if tree_empty_skipped > 0 {
+        if tree_conflict_skipped > 0 {
             println!(
-                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} repositories are empty",
-                tree_empty_skipped
+                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} repositories returned HTTP 409",
+                tree_conflict_skipped
             );
         }
         if tree_expected_skips > 0 {
@@ -954,8 +954,8 @@ async fn discover_from_repos(
     Ok(all)
 }
 
-fn is_empty_tree_repository(error: &str) -> bool {
-    error.contains("HTTP 409 Conflict") && error.contains("Git Repository is empty")
+fn is_expected_tree_probe_skip(error: &str) -> bool {
+    error.contains("response exceeds discovery size limit")
 }
 
 fn is_expected_probe_skip(error: &str) -> bool {
@@ -2213,10 +2213,10 @@ mod tests {
         assert!(super::is_expected_probe_skip(
             "GitHub README exceeds discovery size limit"
         ));
-        assert!(super::is_empty_tree_repository(
-            "GitHub tree API returned HTTP 409 Conflict: Git Repository is empty."
+        assert!(super::is_expected_tree_probe_skip(
+            "GitHub tree response exceeds discovery size limit"
         ));
-        assert!(!super::is_empty_tree_repository(
+        assert!(!super::is_expected_tree_probe_skip(
             "GitHub tree API returned HTTP 409 Conflict: another conflict"
         ));
         assert!(!super::is_expected_probe_skip(
