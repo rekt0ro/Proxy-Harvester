@@ -31,9 +31,6 @@ jobs:
       singbox_key: ${{ steps.keys.outputs.singbox }}
 
     steps:
-      - name: "⏱️ Start pipeline timer"
-        run: echo "PIPELINE_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
-
       - name: "Checkout source"
         uses: actions/checkout@v7
 
@@ -283,10 +280,7 @@ jobs:
       - name: "🔎 Collect & transport-test configs"
         id: collect_transport
         run: |
-          collect_started=$SECONDS
           ./target/release/ProxyRift
-          collect_elapsed=$((SECONDS - collect_started))
-          echo "COLLECT_ELAPSED=$collect_elapsed" >> "$GITHUB_ENV"
 
       - name: "💡 Build Light subscription"
         id: build_light
@@ -296,7 +290,6 @@ jobs:
           LIGHT_MIN_PUBLISH: "50"
         run: |
           mkdir -p /tmp/proxyrift
-          light_started=$SECONDS
           set +e
           ./target/release/polish_light \
             --candidates subscriptions/.light-candidates.txt \
@@ -315,9 +308,7 @@ jobs:
             --max-per-family 3 \
             --stats /tmp/proxyrift/light-stats.json
           status=$?
-          light_elapsed=$((SECONDS - light_started))
           set -e
-          echo "LIGHT_ELAPSED=$light_elapsed" >> "$GITHUB_ENV"
           echo "[INFO] ✅ [LIGHT] VALIDATION COMPLETE | $light_elapsed"
 
           if [ "$status" -ne 0 ]; then
@@ -355,10 +346,7 @@ jobs:
       - name: "🧬 Generate Base64 subscriptions"
         id: generate_base64
         run: |
-          generation_started=$SECONDS
           ./target/release/encode_subscriptions
-          generation_elapsed=$((SECONDS - generation_started))
-          echo "GENERATION_ELAPSED=$generation_elapsed" >> "$GITHUB_ENV"
 
       - name: "📦 Prepare published outputs"
         id: prepare_outputs
@@ -371,7 +359,6 @@ jobs:
         id: publish
         run: |
           set -euo pipefail
-          publish_started=$SECONDS
 
           files="all.txt light.txt all-base64.txt light-base64.txt"
           publish_snapshot="$(mktemp -d /tmp/proxyrift-publish.XXXXXX)"
@@ -448,8 +435,6 @@ jobs:
 
 
             if git diff --cached --quiet; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
               echo "[INFO] 📤 [PUBLISH] NO CHANGES"
               exit 0
             fi
