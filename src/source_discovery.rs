@@ -565,7 +565,7 @@ async fn discover_from_repos(
                 all.extend(candidates);
             }
             Err(error) if is_expected_probe_skip(&error.to_string()) => {
-                println!("[INFO] 🔭 [DISCOVERY] repository probe skipped: {error}");
+                let _ = error;
             }
             Err(error) => {
                 println!("[WARN] 🔭 [DISCOVERY] repository probe failed: {error}");
@@ -635,7 +635,9 @@ async fn discover_from_repos(
 }
 
 fn is_expected_probe_skip(error: &str) -> bool {
-    error.contains("HTTP 404 Not Found") || error.contains("response exceeds discovery size limit")
+    error.contains("HTTP 404 Not Found")
+        || error.contains("response exceeds discovery size limit")
+        || error.contains("GitHub README exceeds discovery size limit")
 }
 
 async fn discover_repo(
@@ -1547,6 +1549,9 @@ mod tests {
         ));
         assert!(super::is_expected_probe_skip(
             "GitHub README API response exceeds discovery size limit"
+        ));
+        assert!(super::is_expected_probe_skip(
+            "GitHub README exceeds discovery size limit"
         ));
         assert!(!super::is_expected_probe_skip(
             "GitHub README API response parse failed"
