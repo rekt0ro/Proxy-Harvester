@@ -2028,7 +2028,7 @@ mod tests {
             ),
         ];
         let ip = "93.184.216.34".parse::<IpAddr>().unwrap();
-        let mut cache = SingBoxEndpointCache::from([(("example.com".to_string(), 443), ip)]);
+        let mut cache = SingBoxEndpointCache::from([(("example.com".to_string(), 443, true), ip)]);
 
         let pinned = pin_singbox_entries(&entries, &mut cache).await;
 
