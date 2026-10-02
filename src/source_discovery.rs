@@ -1932,9 +1932,7 @@ fn source_path_score(path: &str) -> u8 {
     let lowered = path.trim_start_matches('/').to_ascii_lowercase();
 
     if lowered.is_empty()
-        || NOISE_HINTS
-            .iter()
-            .any(|hint| lowered.contains(hint))
+        || NOISE_HINTS.iter().any(|hint| lowered.contains(hint))
         || has_noise_path_token(&lowered)
         || obvious_non_source_filename(&lowered)
     {
@@ -1952,8 +1950,8 @@ fn source_path_score(path: &str) -> u8 {
     let has_extension = filename.contains('.');
     let hint_ok = has_path_hint(&lowered);
 
-    let plausible = (extension_ok && (extension_without_hint || hint_ok))
-        || (!has_extension && hint_ok);
+    let plausible =
+        (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok);
     if !plausible {
         return 0;
     }
