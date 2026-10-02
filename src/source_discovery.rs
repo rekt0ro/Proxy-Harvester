@@ -929,21 +929,11 @@ async fn discover_from_repos(
             }
         }
 
-        if tree_404_skipped > 0 {
+        if tree_404_skipped > 0 || tree_conflict_skipped > 0 || tree_expected_skips > 0 {
             println!(
-                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} repositories returned HTTP 404",
-                tree_404_skipped
-            );
-        }
-        if tree_conflict_skipped > 0 {
-            println!(
-                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} repositories returned HTTP 409",
-                tree_conflict_skipped
-            );
-        }
-        if tree_expected_skips > 0 {
-            println!(
-                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} expected size-limit responses",
+                "[INFO] 🔭 [DISCOVERY] tree probes skipped | HTTP 404: {} | HTTP 409: {} | SIZE LIMIT: {}",
+                tree_404_skipped,
+                tree_conflict_skipped,
                 tree_expected_skips
             );
         }
