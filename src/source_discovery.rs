@@ -305,7 +305,10 @@ impl Registry {
                 let reliability = if total_runs == 0 {
                     0
                 } else {
-                    successes.saturating_mul(1_000) / total_runs
+                    successes
+                        .saturating_mul(1_000)
+                        .checked_div(total_runs)
+                        .unwrap_or_default()
                 };
                 let last_success = record
                     .get("last_success")
