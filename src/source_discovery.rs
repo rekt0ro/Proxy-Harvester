@@ -559,9 +559,7 @@ async fn search_repositories(
         let response = match github_get(client, &url, token).await {
             Ok(response) => response,
             Err(error) => {
-                println!(
-                    "[WARN] 🔭 [DISCOVERY] GitHub search query failed after retries: {error}"
-                );
+                println!("[WARN] 🔭 [DISCOVERY] GitHub search query failed after retries: {error}");
                 continue;
             }
         };
@@ -614,7 +612,10 @@ async fn github_get(
         }
 
         match request.send().await {
-            Ok(response) if is_retryable_github_status(response.status()) && attempt < GITHUB_REQUEST_RETRIES => {
+            Ok(response)
+                if is_retryable_github_status(response.status())
+                    && attempt < GITHUB_REQUEST_RETRIES =>
+            {
                 let delay = retry_after_delay(&response, attempt);
                 drop(response);
                 tokio::time::sleep(delay).await;
@@ -624,10 +625,8 @@ async fn github_get(
             Ok(response) => return Ok(response),
 
             Err(error) if attempt < GITHUB_REQUEST_RETRIES => {
-                let delay = Duration::from_millis(
-                    GITHUB_RETRY_BASE_MS
-                        .saturating_mul(1u64 << attempt.min(4)),
-                );
+                let delay =
+                    Duration::from_millis(GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)));
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
@@ -653,9 +652,7 @@ fn retry_after_delay(response: &reqwest::Response, attempt: usize) -> Duration {
         return Duration::from_secs(seconds.min(GITHUB_RETRY_AFTER_MAX_SECS));
     }
 
-    Duration::from_millis(
-        GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)),
-    )
+    Duration::from_millis(GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)))
 }
 
 fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
