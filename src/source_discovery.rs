@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{Map, Value};
@@ -28,6 +29,7 @@ const GITHUB_RETRY_BASE_MS: u64 = 500;
 const GITHUB_RETRY_AFTER_MAX_SECS: u64 = 10;
 const USER_AGENT: &str = "ProxyRift-source-discovery/1.0";
 const README_MAX_BYTES: usize = 256 * 1024;
+const MAX_README_API_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_SOURCE_URL_LENGTH: usize = 8192;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_CANDIDATES: usize = 100;
@@ -530,7 +532,10 @@ async fn discover_from_repos(
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
         let client = client.clone();
-        async move { discover_repo(&client, &repo, repo_rank).await }
+        let token = token.map(str::to_owned);
+        async move {
+            discover_repo(&client, &repo, repo_rank, token.as_deref()).await
+        }
     }))
     .buffer_unordered(24);
 
@@ -607,42 +612,56 @@ async fn discover_repo(
     client: &Client,
     repo: &Repository,
     repo_rank: usize,
+    token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let name = &repo.name;
     let branch = &repo.branch;
+    let url = format!(
+        "https://api.github.com/repos/{}/readme?ref={}",
+        percent_encode_path(name),
+        percent_encode(branch)
+    );
 
-    for readme in ["README.md", "README", "readme.md"] {
-        let url = raw_github_file_url(name, branch, readme);
-
-        let response = raw_get(client, &url).await?;
-        if !response.status().is_success() {
-            if response.status() == reqwest::StatusCode::NOT_FOUND {
-                continue;
-            }
-
-            return Err(
-                format!("GitHub README request returned HTTP {}", response.status()).into(),
-            );
-        }
-
-        if response
-            .content_length()
-            .is_some_and(|length| length > README_MAX_BYTES as u64)
-        {
-            continue;
-        }
-
-        let body = read_limited_body(response, README_MAX_BYTES).await?;
-        let text = String::from_utf8_lossy(&body);
-        let mut candidates = extract_source_urls(&text, name, repo_rank);
-        candidates.truncate(MAX_README_CANDIDATES);
-
-        return Ok(candidates);
+    let response = github_get(client, &url, token).await?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub README API returned HTTP {}", response.status()).into());
     }
 
-    Ok(Vec::new())
-}
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_README_API_RESPONSE_BYTES as u64)
+    {
+        return Err("GitHub README API response exceeds discovery size limit".into());
+    }
 
+    let body = read_limited_body(response, MAX_README_API_RESPONSE_BYTES).await?;
+    let payload: Value = serde_json::from_slice(&body)?;
+
+    if payload.get("encoding").and_then(Value::as_str) != Some("base64") {
+        return Err("GitHub README API response did not use base64 encoding".into());
+    }
+
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("GitHub README API response did not contain content")?;
+
+    let compact = content
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    let body = STANDARD.decode(compact)?;
+
+    if body.len() > README_MAX_BYTES {
+        return Err("GitHub README exceeds discovery size limit".into());
+    }
+
+    let text = String::from_utf8_lossy(&body);
+    let mut candidates = extract_source_urls(&text, name, repo_rank);
+    candidates.truncate(MAX_README_CANDIDATES);
+
+    Ok(candidates)
+}
 async fn scan_repo_tree(
     client: &Client,
     repo: &Repository,
@@ -1440,6 +1459,22 @@ mod tests {
         assert_eq!(
             super::persisted_active_sources(&registry, 3),
             Some(vec!["source-a".to_string()])
+        );
+    }
+
+    #[test]
+    fn decodes_github_readme_base64_with_whitespace() {
+        let encoded =
+            STANDARD.encode("https://github.com/example/project/blob/main/subscriptions/all.txt");
+        let wrapped = encoded.replace("Y", "Y\n");
+        let compact = wrapped
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            STANDARD.decode(compact).unwrap(),
+            b"https://github.com/example/project/blob/main/subscriptions/all.txt"
         );
     }
 
