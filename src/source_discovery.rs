@@ -702,7 +702,7 @@ async fn scan_repo_tree(
             url: format!(
                 "https://raw.githubusercontent.com/{}/{}/{}",
                 name,
-                branch,
+                percent_encode_path(branch),
                 path.split('/')
                     .map(percent_encode)
                     .collect::<Vec<_>>()
@@ -1301,6 +1301,18 @@ mod tests {
         assert!(!is_source_path("settings.ini"));
         assert!(is_source_path("subscriptions/config.json"));
         assert!(is_source_path("nodes/data.yaml"));
+    }
+
+    #[test]
+    fn encodes_branch_path_safely() {
+        assert_eq!(
+            percent_encode_path("feature/source list"),
+            "feature/source%20list"
+        );
+        assert_eq!(
+            percent_encode_path("feature/source#1"),
+            "feature/source%231"
+        );
     }
 
     #[test]
