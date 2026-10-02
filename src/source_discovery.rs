@@ -2815,9 +2815,9 @@ mod tests {
         assert_eq!(
             active,
             vec![
+                "source-c".to_string(),
                 "source-a".to_string(),
                 "source-b".to_string(),
-                "source-c".to_string(),
             ]
         );
     }
@@ -2888,10 +2888,10 @@ mod tests {
         assert_eq!(
             active,
             vec![
-                "source-c".to_string(),
-                "source-d".to_string(),
                 "source-a".to_string(),
                 "source-b".to_string(),
+                "source-c".to_string(),
+                "source-d".to_string(),
             ]
         );
     }
