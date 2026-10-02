@@ -655,11 +655,7 @@ fn source_transport_stats(record: &Value) -> Option<(u64, u64)> {
     let tested = record
         .get("transport_tested_last_run")
         .and_then(Value::as_u64)
-        .or_else(|| {
-            record
-                .get("configs_last_run")
-                .and_then(Value::as_u64)
-        })?;
+        .or_else(|| record.get("configs_last_run").and_then(Value::as_u64))?;
     let reachable = record
         .get("transport_reachable_last_run")
         .and_then(Value::as_u64)?;
@@ -721,8 +717,7 @@ fn source_selection_score(record: &Value) -> f64 {
         return 0.0;
     }
 
-    let transport_rate =
-        (reachable as f64 / transport_tested as f64).clamp(0.0, 1.0);
+    let transport_rate = (reachable as f64 / transport_tested as f64).clamp(0.0, 1.0);
 
     let strict_rate = match (
         record.get("strict_tested_last_run").and_then(Value::as_u64),
