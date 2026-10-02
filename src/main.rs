@@ -1,7 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
-use futures::FutureExt;
 use percent_encoding::percent_decode_str;
 use proxyrift::source_discovery::CollectionOutcome;
 use proxyrift::validator::{
@@ -33,14 +32,12 @@ use wireguard_sans_io::{
 
 const DOWNLOAD_CONCURRENCY: usize = 16;
 
-const TEST_CONCURRENCY: usize = 2;
-const TEST_CONNECTION_CONCURRENCY: usize = 64;
+const TEST_CONNECTION_CONCURRENCY: usize = 128;
 
 const MAX_TCP_ADDRESS_CONCURRENCY: usize = 8;
 const MAX_QUIC_TARGET_CONCURRENCY: usize = 8;
 const MAX_WIREGUARD_ADDRESS_CONCURRENCY: usize = 4;
 
-const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
@@ -54,8 +51,24 @@ const MAX_LIGHT_ENDPOINT_VARIANTS: usize = 2;
 const SOURCE_RETRIES: usize = 2;
 const SOURCE_RETRY_BASE_MS: u64 = 250;
 
-type TcpProbe = futures::future::Shared<futures::future::BoxFuture<'static, Option<u64>>>;
-type TcpProbeCache = Arc<HashMap<(String, u16), TcpProbe>>;
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum TransportProbeKey {
+    Tcp {
+        host: String,
+        port: u16,
+    },
+    Quic {
+        protocol: String,
+        host: String,
+        port_spec: String,
+        sni: String,
+        alpn: Vec<String>,
+        obfs: Option<String>,
+    },
+    WireGuard {
+        config: String,
+    },
+}
 
 #[derive(Debug)]
 enum SourceBodyError {
@@ -150,15 +163,6 @@ async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, 
     }
 
     Ok(target_url)
-}
-
-async fn test_chunk(
-    index: usize,
-    configs: &[String],
-    tcp_probe_cache: TcpProbeCache,
-) -> Result<(usize, Vec<(String, u64)>), Box<dyn std::error::Error + Send + Sync>> {
-    let working = test_transport_configs(configs, tcp_probe_cache).await;
-    Ok((index, working))
 }
 
 fn push_light_candidate(
@@ -493,7 +497,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let all_path = output_dir.join("all.txt");
 
-    let (tcp_probe_cache, tcp_config_count, unique_tcp_endpoints) = build_tcp_probe_cache(&configs);
+    let (tcp_config_count, unique_tcp_endpoints) = {
+        let groups = tcp_endpoint_groups(&configs);
+        (groups.values().map(Vec::len).sum::<usize>(), groups.len())
+    };
     let non_tcp_transport_count = configs
         .iter()
         .filter(|config| {
@@ -512,41 +519,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         non_tcp_transport_count
     );
 
-    let transport_chunk_count = configs.len().div_ceil(CHUNK_SIZE);
-    let test_concurrency = TEST_CONCURRENCY.min(transport_chunk_count).max(1);
-
-    let mut chunk_stream = stream::iter(configs.chunks(CHUNK_SIZE).enumerate())
-        .map(|(index, chunk)| {
-            let tcp_probe_cache = Arc::clone(&tcp_probe_cache);
-            async move { test_chunk(index, chunk, tcp_probe_cache).await }
-        })
-        .buffered(test_concurrency);
-
-    let mut chunk_results = Vec::with_capacity(transport_chunk_count);
-
-    while let Some(result) = chunk_stream.next().await {
-        let (index, working) = result?;
-
-        let tested = configs
-            .chunks(CHUNK_SIZE)
-            .nth(index)
-            .map_or(0, |chunk| chunk.len());
-
-        println!(
-            "[INFO] ✅ [TRANSPORT] CHUNK {}/{} | {} TESTED | {} REACHABLE",
-            index + 1,
-            transport_chunk_count,
-            tested,
-            working.len()
-        );
-
-        chunk_results.push((index, working));
-    }
-
-    let reachable_probes = chunk_results
+    let transport_results = test_transport_configs(&configs).await;
+    let reachable_probes = transport_results
         .iter()
-        .map(|(_, working)| working.len())
-        .sum::<usize>();
+        .filter(|latency| latency.is_some())
+        .count();
 
     println!(
         "[INFO] ✅ [TRANSPORT] COMPLETE | {} CONFIGS | {} REACHABLE",
@@ -554,11 +531,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         reachable_probes
     );
 
-    let mut ranked_working_configs = Vec::new();
-
-    for (_, working) in chunk_results {
-        ranked_working_configs.extend(working);
-    }
+    let mut ranked_working_configs = transport_results
+        .into_iter()
+        .zip(configs.iter())
+        .filter_map(|(latency, config)| latency.map(|latency| (config.clone(), latency)))
+        .collect::<Vec<_>>();
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
@@ -1672,7 +1649,7 @@ mod tests {
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
         normalize_config, parse_source_redirect, push_light_candidate, safe_source_client,
         safe_source_redirect, select_all_candidates, split_concatenated_configs,
-        tcp_endpoint_groups, trim_config, MAX_SOURCE_BYTES,
+        tcp_endpoint_groups, transport_probe_key, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -1704,6 +1681,32 @@ mod tests {
             &mut endpoint_counts
         ));
         assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
+    fn transport_probe_keys_deduplicate_equivalent_endpoints() {
+        let tcp_a =
+            transport_probe_key("vless://00000000-0000-0000-0000-000000000001@example.com:443");
+        let tcp_b = transport_probe_key("http://example.com:443");
+
+        assert_eq!(tcp_a, tcp_b);
+
+        let hy2_a =
+            transport_probe_key("hysteria2://password-a@example.com:443?sni=example.com&alpn=h3");
+        let hy2_b = transport_probe_key("hy2://password-b@example.com:443?sni=example.com&alpn=h3");
+
+        assert_eq!(hy2_a, hy2_b);
+
+        let hy2_other_sni =
+            transport_probe_key("hysteria2://password-c@example.com:443?sni=other.example&alpn=h3");
+
+        assert_ne!(hy2_a, hy2_other_sni);
+
+        let hy2_obfs = transport_probe_key(
+            "hysteria2://password-d@example.com:443?sni=example.com&alpn=h3&obfs=salamander",
+        );
+
+        assert_ne!(hy2_a, hy2_obfs);
     }
 
     #[test]
@@ -2459,89 +2462,97 @@ fn tcp_endpoint_groups(configs: &[String]) -> HashMap<(String, u16), Vec<usize>>
     tcp_by_endpoint
 }
 
-fn build_tcp_probe_cache(configs: &[String]) -> (TcpProbeCache, usize, usize) {
-    let tcp_by_endpoint = tcp_endpoint_groups(configs);
-    let tcp_config_count = tcp_by_endpoint.values().map(Vec::len).sum();
-    let unique_tcp_endpoints = tcp_by_endpoint.len();
+fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
+    match config_scheme(config).as_str() {
+        "hysteria2" | "hy2" => {
+            let (host, _, _) = hysteria2_parts(config)?;
+            let port_spec = hysteria2_port_spec(config)?;
 
-    let cache = tcp_by_endpoint
-        .into_keys()
-        .map(|(host, port)| {
-            let probe_host = host.clone();
-            let probe = async move { tcp_latency_endpoint(&probe_host, port).await }
-                .boxed()
-                .shared();
-            ((host, port), probe)
-        })
-        .collect();
+            let sni = ["sni", "peer", "server_name"]
+                .iter()
+                .find_map(|key| hysteria2_query_values(config, key).into_iter().next())
+                .unwrap_or_else(|| host.clone());
 
-    (Arc::new(cache), tcp_config_count, unique_tcp_endpoints)
+            let alpn = {
+                let values = hysteria2_query_csv_values(config, "alpn");
+                if values.is_empty() {
+                    vec!["h3".to_string()]
+                } else {
+                    values
+                }
+            };
+            let obfs = hysteria2_query_values(config, "obfs")
+                .into_iter()
+                .next()
+                .filter(|value| !value.is_empty());
+
+            Some(TransportProbeKey::Quic {
+                protocol: "hysteria2".to_string(),
+                host,
+                port_spec,
+                sni,
+                alpn,
+                obfs,
+            })
+        }
+
+        "hysteria" | "tuic" => {
+            let (host, port, sni, alpn) = quic_params(config)?;
+
+            Some(TransportProbeKey::Quic {
+                protocol: config_scheme(config),
+                host,
+                port_spec: port.to_string(),
+                sni,
+                alpn,
+                obfs: None,
+            })
+        }
+
+        "wg" => Some(TransportProbeKey::WireGuard {
+            config: config.to_string(),
+        }),
+
+        _ => {
+            let (host, port) = endpoint(config)?;
+            Some(TransportProbeKey::Tcp { host, port })
+        }
+    }
 }
 
-async fn test_transport_configs(
-    configs: &[String],
-    tcp_probe_cache: TcpProbeCache,
-) -> Vec<(String, u64)> {
-    let tcp_by_endpoint = tcp_endpoint_groups(configs);
+async fn test_transport_configs(configs: &[String]) -> Vec<Option<u64>> {
+    let mut probe_groups = HashMap::<TransportProbeKey, Vec<usize>>::new();
 
-    let tcp_results = stream::iter(tcp_by_endpoint.keys().cloned())
-        .map(|(host, port)| {
-            let probe = tcp_probe_cache.get(&(host.clone(), port)).cloned();
-
-            async move {
-                let latency = probe?.await;
-                latency.map(|latency| ((host, port), latency))
-            }
-        })
-        .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
-        .filter_map(|result| async move { result })
-        .collect::<Vec<_>>()
-        .await;
-
-    let mut working = Vec::new();
-
-    for ((host, port), latency_ms) in tcp_results {
-        if let Some(indices) = tcp_by_endpoint.get(&(host, port)) {
-            working.extend(
-                indices
-                    .iter()
-                    .map(|&index| (configs[index].clone(), latency_ms)),
-            );
+    for (index, config) in configs.iter().enumerate() {
+        if let Some(key) = transport_probe_key(config) {
+            probe_groups.entry(key).or_default().push(index);
         }
     }
 
-    let transport_indices = configs
-        .iter()
-        .enumerate()
-        .filter_map(|(index, config)| {
-            matches!(
-                config_scheme(config).as_str(),
-                "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
-            )
-            .then_some(index)
+    let probe_results = stream::iter(probe_groups)
+        .map(|(_, indices)| {
+            let representative = configs[indices[0]].clone();
+
+            async move {
+                let latency = transport_latency(&representative).await;
+                (indices, latency)
+            }
         })
-        .collect::<Vec<_>>();
+        .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
 
-    if !transport_indices.is_empty() {
-        let udp_results = stream::iter(transport_indices)
-            .map(|index| async move {
-                transport_latency(&configs[index])
-                    .await
-                    .map(|latency| (index, latency))
-            })
-            .buffer_unordered(TEST_CONNECTION_CONCURRENCY)
-            .filter_map(|result| async move { result })
-            .collect::<Vec<_>>()
-            .await;
+    let mut latencies = vec![None; configs.len()];
 
-        working.extend(
-            udp_results
-                .into_iter()
-                .map(|(index, latency)| (configs[index].clone(), latency)),
-        );
+    for (indices, latency) in probe_results {
+        if let Some(latency) = latency {
+            for index in indices {
+                latencies[index] = Some(latency);
+            }
+        }
     }
 
-    working
+    latencies
 }
 
 #[derive(Debug)]
