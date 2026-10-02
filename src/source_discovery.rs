@@ -20,6 +20,7 @@ const MAX_NEW_SOURCES_PER_REPO: usize = 25;
 const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
 const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 75;
+const BOOTSTRAP_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 75;
 const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
@@ -413,6 +414,14 @@ impl Registry {
             object.insert("failures".into(), Value::from(0u64));
             object.insert("failure_streak".into(), Value::from(0u64));
             object.insert("configs_total".into(), Value::from(0u64));
+            object.insert("transport_reachable_last_run".into(), Value::from(0u64));
+            object.insert("strict_tested_last_run".into(), Value::from(0u64));
+            object.insert("strict_pass_last_run".into(), Value::from(0u64));
+            object.insert("transfer_tested_last_run".into(), Value::from(0u64));
+            object.insert("transfer_pass_last_run".into(), Value::from(0u64));
+            object.insert("transport_low_quality_streak".into(), Value::from(0u64));
+            object.insert("strict_low_quality_streak".into(), Value::from(0u64));
+            object.insert("transfer_low_quality_streak".into(), Value::from(0u64));
             Value::Object(object)
         });
 
@@ -792,9 +801,13 @@ pub fn record_light_results(
     for config in strict_tested {
         if let Some(Value::Array(sources)) = source_map.get(config) {
             for source in sources.iter().filter_map(Value::as_str) {
-                *strict_tested_by_source.entry(source.to_string()).or_default() += 1;
+                *strict_tested_by_source
+                    .entry(source.to_string())
+                    .or_default() += 1;
                 if strict_passed.contains(config) {
-                    *strict_passed_by_source.entry(source.to_string()).or_default() += 1;
+                    *strict_passed_by_source
+                        .entry(source.to_string())
+                        .or_default() += 1;
                 }
             }
         }
@@ -803,9 +816,13 @@ pub fn record_light_results(
     for config in transfer_tested {
         if let Some(Value::Array(sources)) = source_map.get(config) {
             for source in sources.iter().filter_map(Value::as_str) {
-                *transfer_tested_by_source.entry(source.to_string()).or_default() += 1;
+                *transfer_tested_by_source
+                    .entry(source.to_string())
+                    .or_default() += 1;
                 if transfer_passed.contains(config) {
-                    *transfer_passed_by_source.entry(source.to_string()).or_default() += 1;
+                    *transfer_passed_by_source
+                        .entry(source.to_string())
+                        .or_default() += 1;
                 }
             }
         }
@@ -816,7 +833,11 @@ pub fn record_light_results(
     }
 
     let now = unix_now();
-    let mut registry = futures::executor::block_on(load_registry(&registry_path, now));
+    let registry_value = std::fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| Registry::new(now).json());
+    let mut registry = Registry::from_value(registry_value, now);
 
     let mut touched = HashSet::new();
     touched.extend(strict_tested_by_source.keys().cloned());
@@ -831,22 +852,43 @@ pub fn record_light_results(
             continue;
         };
 
-        let strict_tested = strict_tested_by_source.get(&source).copied().unwrap_or_default();
-        let strict_passed = strict_passed_by_source.get(&source).copied().unwrap_or_default();
-        let transfer_tested = transfer_tested_by_source.get(&source).copied().unwrap_or_default();
-        let transfer_passed = transfer_passed_by_source.get(&source).copied().unwrap_or_default();
+        let strict_tested = strict_tested_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let strict_passed = strict_passed_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let transfer_tested = transfer_tested_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
+        let transfer_passed = transfer_passed_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or_default();
 
-        object.insert("strict_tested_last_run".into(), Value::from(strict_tested));
+        object.insert(
+            "strict_tested_last_run".into(),
+            Value::from(strict_tested),
+        );
         object.insert("strict_pass_last_run".into(), Value::from(strict_passed));
-        object.insert("transfer_tested_last_run".into(), Value::from(transfer_tested));
-        object.insert("transfer_pass_last_run".into(), Value::from(transfer_passed));
+        object.insert(
+            "transfer_tested_last_run".into(),
+            Value::from(transfer_tested),
+        );
+        object.insert(
+            "transfer_pass_last_run".into(),
+            Value::from(transfer_passed),
+        );
 
         let strict_previous = object
             .get("strict_low_quality_streak")
             .and_then(Value::as_u64)
             .unwrap_or_default();
-        let strict_low = strict_tested >= 20
-            && strict_passed as f64 / strict_tested as f64 < 0.05;
+        let strict_low =
+            strict_tested >= 20 && (strict_passed as f64 / strict_tested as f64) < 0.05;
         object.insert(
             "strict_low_quality_streak".into(),
             Value::from(if strict_low {
@@ -860,8 +902,8 @@ pub fn record_light_results(
             .get("transfer_low_quality_streak")
             .and_then(Value::as_u64)
             .unwrap_or_default();
-        let transfer_low = transfer_tested >= 10
-            && transfer_passed as f64 / transfer_tested as f64 < 0.05;
+        let transfer_low =
+            transfer_tested >= 10 && (transfer_passed as f64 / transfer_tested as f64) < 0.05;
         object.insert(
             "transfer_low_quality_streak".into(),
             Value::from(if transfer_low {
@@ -872,10 +914,16 @@ pub fn record_light_results(
         );
     }
 
-    futures::executor::block_on(write_registry(&registry_path, &registry))?;
+    let data = serde_json::to_string_pretty(&registry.json())?;
+    let temporary = registry_path.with_extension("json.tmp");
+    std::fs::write(&temporary, format!("{data}\n"))?;
+    if let Err(error) = std::fs::rename(&temporary, &registry_path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+
     Ok(())
 }
-
 pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>>
 {
     let root = project_root()?;
@@ -1635,9 +1683,17 @@ fn select_active_sources(
     now: u64,
     limit: usize,
 ) -> Vec<String> {
+    let bootstrap = registry
+        .proven_urls(1, &HashSet::new(), &HashSet::new())
+        .is_empty();
+    let new_limit = if bootstrap {
+        BOOTSTRAP_NEW_ACTIVE_SOURCES
+    } else {
+        MAX_NEW_ACTIVE_SOURCES
+    };
     let new_urls = new_candidates
         .iter()
-        .take(MAX_NEW_ACTIVE_SOURCES)
+        .take(new_limit)
         .map(|candidate| candidate.url.clone())
         .collect::<Vec<_>>();
     let discovered_new_set = new_urls.iter().cloned().collect::<HashSet<_>>();
