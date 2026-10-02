@@ -1317,7 +1317,9 @@ fn is_legacy_noise_source(url: &str) -> bool {
         return false;
     };
 
-    let segments = parsed.path_segments().map(|segments| segments.collect::<Vec<_>>());
+    let segments = parsed
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>());
 
     let Some(segments) = segments else {
         return false;
