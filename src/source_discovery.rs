@@ -1636,7 +1636,7 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
     let mut start = 0;
     let mut scanned_urls = 0usize;
 
-    while candidates.len() < MAX_README_URLS_SCANNED && scanned_urls < MAX_README_URLS_SCANNED {
+    while scanned_urls < MAX_README_URLS_SCANNED {
         let Some(relative) = text[start..].find("http") else {
             break;
         };
@@ -1952,8 +1952,8 @@ fn source_path_score(path: &str) -> u8 {
     let has_extension = filename.contains('.');
     let hint_ok = has_path_hint(&lowered);
 
-    let plausible =
-        (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok);
+    let plausible = (extension_ok && (extension_without_hint || hint_ok))
+        || (!has_extension && hint_ok);
     if !plausible {
         return 0;
     }
@@ -2009,6 +2009,10 @@ fn is_legacy_noise_source(url: &str) -> bool {
 
 fn github_source_path(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.host_str(), Some("github.com") | Some("raw.githubusercontent.com")) {
+        return None;
+    }
+
     let segments = parsed
         .path_segments()
         .map(|segments| segments.collect::<Vec<_>>())?;
@@ -3252,9 +3256,7 @@ mod tests {
         let candidates = extract_source_urls(text, "example/reader", 0);
 
         assert_eq!(
-            candidates
-                .first()
-                .map(|candidate| candidate.url.as_str()),
+            candidates.first().map(|candidate| candidate.url.as_str()),
             Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
         );
     }
