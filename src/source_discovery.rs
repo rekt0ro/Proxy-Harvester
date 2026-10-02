@@ -625,8 +625,9 @@ async fn github_get(
             Ok(response) => return Ok(response),
 
             Err(error) if attempt < GITHUB_REQUEST_RETRIES => {
-                let delay =
-                    Duration::from_millis(GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)));
+                let delay = Duration::from_millis(
+                    GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)),
+                );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
