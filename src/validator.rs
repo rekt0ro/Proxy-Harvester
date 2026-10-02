@@ -2201,7 +2201,6 @@ pub(crate) fn is_throughput_target(url: &str) -> bool {
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
-        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
