@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use url::Url;
 
@@ -15,7 +15,11 @@ const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
 const MAX_ACTIVE_SOURCES: usize = 1200;
 const MAX_NEW_SOURCES: usize = 800;
+const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
+const GITHUB_REQUEST_RETRIES: usize = 2;
+const GITHUB_RETRY_BASE_MS: u64 = 500;
+const GITHUB_RETRY_AFTER_MAX_SECS: u64 = 10;
 const USER_AGENT: &str = "ProxyRift-source-discovery/1.0";
 const README_MAX_BYTES: usize = 256 * 1024;
 
@@ -311,8 +315,8 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .iter()
         .map(|candidate| candidate.url.clone())
         .collect::<Vec<_>>();
-    new_urls.sort();
     new_urls.dedup();
+    new_urls.truncate(MAX_NEW_ACTIVE_SOURCES);
 
     let active = registry.active_urls();
 
@@ -428,7 +432,7 @@ async fn discover_repo(
             name, branch, readme
         );
 
-        let response = client.get(&url).send().await?;
+        let response = github_get(client, &url, None).await?;
         if !response.status().is_success() {
             continue;
         }
@@ -466,7 +470,7 @@ async fn scan_repo_tree(
         percent_encode(branch)
     );
 
-    let response = client.get(&url).send().await?;
+    let response = github_get(client, &url, None).await?;
     if !response.status().is_success() {
         return Err(format!("GitHub tree API returned HTTP {}", response.status()).into());
     }
@@ -525,13 +529,15 @@ async fn search_repositories(
             SEARCH_PER_PAGE
         );
 
-        let mut request = client.get(url);
-
-        if let Some(token) = token {
-            request = request.bearer_auth(token);
-        }
-
-        let response = request.send().await?;
+        let response = match github_get(client, &url, token).await {
+            Ok(response) => response,
+            Err(error) => {
+                println!(
+                    "[WARN] 🔭 [DISCOVERY] GitHub search query failed after retries: {error}"
+                );
+                continue;
+            }
+        };
         if !response.status().is_success() {
             return Err(format!(
                 "GitHub repository search returned HTTP {}",
@@ -559,7 +565,70 @@ async fn search_repositories(
         }
     }
 
+    if repos.is_empty() {
+        return Err("GitHub repository search produced no usable repositories".into());
+    }
+
     Ok(repos)
+}
+
+async fn github_get(
+    client: &Client,
+    url: &str,
+    token: Option<&str>,
+) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+    let mut attempt = 0usize;
+
+    loop {
+        let mut request = client.get(url);
+
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+
+        match request.send().await {
+            Ok(response) if is_retryable_github_status(response.status()) && attempt < GITHUB_REQUEST_RETRIES => {
+                let delay = retry_after_delay(&response, attempt);
+                drop(response);
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+
+            Ok(response) => return Ok(response),
+
+            Err(error) if attempt < GITHUB_REQUEST_RETRIES => {
+                let delay = Duration::from_millis(
+                    GITHUB_RETRY_BASE_MS
+                        .saturating_mul(1u64 << attempt.min(4)),
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn is_retryable_github_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn retry_after_delay(response: &reqwest::Response, attempt: usize) -> Duration {
+    if let Some(seconds) = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_secs(seconds.min(GITHUB_RETRY_AFTER_MAX_SECS));
+    }
+
+    Duration::from_millis(
+        GITHUB_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(4)),
+    )
 }
 
 fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
