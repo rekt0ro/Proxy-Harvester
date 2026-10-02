@@ -612,7 +612,7 @@ fn extract_source_urls(text: &str, repo: &str) -> Vec<Candidate> {
 }
 
 fn normalize_github_source(raw: &str) -> Option<String> {
-    let mut value = Url::parse(raw).ok()?;
+    let value = Url::parse(raw).ok()?;
 
     if !matches!(value.scheme(), "http" | "https") {
         return None;
@@ -624,39 +624,60 @@ fn normalize_github_source(raw: &str) -> Option<String> {
 
     let host = value.host_str()?.to_ascii_lowercase();
 
-    if host == "github.com" {
-        let segments = value.path_segments()?.collect::<Vec<_>>();
-        if segments.len() < 5 {
-            return None;
-        }
+    if host == "raw.githubusercontent.com" {
+        value.set_query(None);
+        value.set_fragment(None);
+        return Some(value.to_string());
+    }
 
-        let owner = segments[0];
-        let repo = segments[1];
-        let marker = segments[2];
-
-        if marker != "blob" && marker != "raw" {
-            return None;
-        }
-
-        let branch = segments[3];
-        let path = segments[4..].join("/");
-        if path.is_empty() {
-            return None;
-        }
-
-        value = Url::parse(&format!(
-            "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-        ))
-        .ok()?;
-    } else if host != "raw.githubusercontent.com" {
+    if host != "github.com" {
         return None;
     }
 
-    value.set_query(None);
-    value.set_fragment(None);
-    Some(value.to_string())
-}
+    let segments = value.path_segments()?.collect::<Vec<_>>();
 
+    if segments.len() < 5 {
+        return None;
+    }
+
+    let owner = segments[0];
+    let repo = segments[1];
+    let marker = segments[2];
+
+    let (branch_start, path_start) = match marker {
+        "blob" => {
+            if segments.get(3) == Some(&"refs")
+                && segments.get(4) == Some(&"heads")
+            {
+                (5, 6)
+            } else {
+                (3, 4)
+            }
+        }
+        "raw" => {
+            if segments.get(3) == Some(&"refs")
+                && segments.get(4) == Some(&"heads")
+            {
+                (5, 6)
+            } else {
+                (3, 4)
+            }
+        }
+        _ => return None,
+    };
+
+    let branch_end = branch_start;
+    let branch = segments.get(branch_end)?;
+    let path = segments.get(path_start..)?.join("/");
+
+    if branch.is_empty() || path.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+    ))
+}
 fn likely_source_url(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
@@ -797,6 +818,19 @@ mod tests {
     #[test]
     fn rejects_github_repository_pages() {
         assert!(normalize_github_source("https://github.com/example/project").is_none());
+    }
+
+    #[test]
+    fn normalizes_modern_github_raw_refs_link() {
+        assert_eq!(
+            normalize_github_source(
+                "https://github.com/example/project/raw/refs/heads/main/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+            )
+        );
     }
 
     #[test]
