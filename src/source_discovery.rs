@@ -988,7 +988,7 @@ fn likely_source_url(url: &str) -> bool {
         .rsplit('/')
         .next()
         .is_some_and(|name| name.contains('.'));
-    let hint_ok = has_path_hint(path);
+    let hint_ok = has_path_hint(&path);
 
     (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
 }
@@ -1127,8 +1127,8 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_source_path, likely_source_url, normalize_github_source, Candidate, Registry, Value,
-        MAX_ACTIVE_SOURCES,
+        is_source_path, likely_source_url, normalize_github_source, percent_encode_path, Candidate,
+        Registry, Value, MAX_ACTIVE_SOURCES,
     };
     use std::collections::HashSet;
 
