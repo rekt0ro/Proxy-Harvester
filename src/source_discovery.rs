@@ -755,56 +755,6 @@ fn source_selection_score(record: &Value) -> f64 {
     (downstream_quality * reliability).clamp(0.0, 1.0)
 }
 
-fn source_quality_factor(record: &Value) -> f64 {
-    let collected = record
-        .get("configs_last_run")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let transport = record
-        .get("transport_reachable_last_run")
-        .and_then(Value::as_u64);
-    let strict_tested = record.get("strict_tested_last_run").and_then(Value::as_u64);
-    let strict_pass = record.get("strict_pass_last_run").and_then(Value::as_u64);
-    let transfer_tested = record
-        .get("transfer_tested_last_run")
-        .and_then(Value::as_u64);
-    let transfer_pass = record.get("transfer_pass_last_run").and_then(Value::as_u64);
-
-    let mut weighted_sum = 0.0;
-    let mut weight_sum = 0.0;
-
-    if collected > 0 && transport.is_some() {
-        let transport_rate = ((transport.unwrap_or_default() as f64 + 2.0)
-            / (collected as f64 + 4.0))
-            .clamp(0.0, 1.0);
-        weighted_sum += transport_rate * 0.60;
-        weight_sum += 0.60;
-    }
-
-    if let (Some(tested), Some(passed)) = (strict_tested, strict_pass) {
-        if tested > 0 {
-            let strict_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
-            weighted_sum += strict_rate * 0.25;
-            weight_sum += 0.25;
-        }
-    }
-
-    if let (Some(tested), Some(passed)) = (transfer_tested, transfer_pass) {
-        if tested > 0 {
-            let transfer_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
-            weighted_sum += transfer_rate * 0.15;
-            weight_sum += 0.15;
-        }
-    }
-
-    if weight_sum == 0.0 {
-        1.0
-    } else {
-        let score = weighted_sum / weight_sum;
-        0.20 + (0.80 * score)
-    }
-}
-
 fn source_quality_quarantined(record: &Value) -> bool {
     let reached_threshold = [
         "transport_low_quality_streak",
