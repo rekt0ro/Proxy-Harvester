@@ -635,8 +635,7 @@ async fn discover_from_repos(
 }
 
 fn is_expected_probe_skip(error: &str) -> bool {
-    error.contains("HTTP 404 Not Found")
-        || error.contains("response exceeds discovery size limit")
+    error.contains("HTTP 404 Not Found") || error.contains("response exceeds discovery size limit")
 }
 
 async fn discover_repo(
