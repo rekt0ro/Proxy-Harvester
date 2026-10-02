@@ -1146,7 +1146,7 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         is_source_path, likely_source_url, normalize_github_source, percent_encode_path, Candidate,
-        Registry, Value, MAX_ACTIVE_SOURCES,
+        Registry, Value, MAX_ACTIVE_SOURCES, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
 
