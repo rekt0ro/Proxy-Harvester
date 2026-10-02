@@ -270,7 +270,12 @@ impl Registry {
     }
 
     fn record_result(&mut self, url: &str, produced_configs: usize, now: u64) {
-        self.record_outcome(url, CollectionOutcome::Success(produced_configs), now);
+        let outcome = if produced_configs > 0 {
+            CollectionOutcome::Success(produced_configs)
+        } else {
+            CollectionOutcome::Failed
+        };
+        self.record_outcome(url, outcome, now);
     }
 
     fn record_outcome(&mut self, url: &str, outcome: CollectionOutcome, now: u64) {
