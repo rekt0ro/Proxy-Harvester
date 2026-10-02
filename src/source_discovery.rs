@@ -1844,7 +1844,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn proven_sources_are_preferred_over_rotation() {
         let mut registry = Registry::new(1);
         let proven = Candidate {
@@ -1853,13 +1852,6 @@ mod tests {
             repo_rank: 0,
             priority: 100,
         };
-        let newer = Candidate {
-            url: "source-newer".to_string(),
-            repo: "example/newer".to_string(),
-            repo_rank: 1,
-            priority: 100,
-        };
-
         registry.add_candidate(&proven, 1);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
@@ -1905,6 +1897,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn new_sources_do_not_displace_healthy_sources() {
         let mut registry = Registry::new(1);
         let healthy = Candidate {
