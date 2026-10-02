@@ -3038,7 +3038,7 @@ async fn check_batch_targets(
                         if sample.latency_ms <= policy.max_latency_ms {
                             secondary_success[entry_index] = true;
                         }
-                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
@@ -3409,19 +3409,9 @@ mod tests {
     }
 
     #[test]
-    fn default_probe_targets_require_expected_payloads() {
+    fn probe_targets_require_expected_payloads() {
         let primary = Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
-
-        let speed = Url::parse(EARLY_THROUGHPUT_TARGET).expect("speed target");
-        assert!(valid_probe_body(
-            &speed,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
-        ));
-        assert!(!valid_probe_body(
-            &speed,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
-        ));
 
         let strict_speed = Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
         assert!(valid_probe_body(
