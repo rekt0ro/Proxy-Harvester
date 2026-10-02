@@ -1,7 +1,6 @@
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
-use futures::FutureExt;
 use percent_encoding::percent_decode_str;
 use proxyrift::source_discovery::CollectionOutcome;
 use proxyrift::validator::{
@@ -2519,7 +2518,7 @@ async fn test_transport_configs(configs: &[String]) -> Vec<Option<u64>> {
     }
 
     let probe_results = stream::iter(probe_groups)
-        .map(|(key, indices)| {
+        .map(|(_, indices)| {
             let representative = configs[indices[0]].clone();
 
             async move {
