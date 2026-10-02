@@ -414,7 +414,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let discovered = deduplicate_candidates(discovered);
 
     if discovered.is_empty() {
-        if let Some(active) = persisted_active_sources(&registry) {
+        if let Some(active) = persisted_active_sources(&registry, now) {
             println!(
                 "[WARN] 🔭 [DISCOVERY] no usable GitHub sources discovered; using {} persisted active sources",
                 active.len()
@@ -1016,8 +1016,8 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
-fn persisted_active_sources(registry: &Registry) -> Option<Vec<String>> {
-    let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new());
+fn persisted_active_sources(registry: &Registry, now: u64) -> Option<Vec<String>> {
+    let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), now);
     (!active.is_empty()).then_some(active)
 }
 
@@ -1438,7 +1438,7 @@ mod tests {
         registry.record_result(&candidate.url, 1, 2);
 
         assert_eq!(
-            super::persisted_active_sources(&registry),
+            super::persisted_active_sources(&registry, 3),
             Some(vec!["source-a".to_string()])
         );
     }
