@@ -42,6 +42,7 @@ const MAX_README_API_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_SOURCE_URL_LENGTH: usize = 8192;
 const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_CANDIDATES: usize = 100;
+const MAX_README_URLS_SCANNED: usize = 500;
 const MAX_DISCOVERED_CANDIDATES: usize = 6000;
 
 const DEFAULT_QUERIES: [&str; 10] = [
@@ -124,6 +125,45 @@ const SOURCE_EXTENSIONS: [&str; 8] = [
     ".txt", ".yaml", ".yml", ".json", ".conf", ".list", ".sub", ".ini",
 ];
 const SOURCE_EXTENSIONS_WITHOUT_HINT: [&str; 2] = [".list", ".sub"];
+
+const STRONG_PATH_HINTS: [&str; 17] = [
+    "subscription",
+    "subscriptions",
+    "subs",
+    "proxies",
+    "proxy",
+    "nodes",
+    "servers",
+    "v2ray",
+    "vless",
+    "vmess",
+    "trojan",
+    "shadowsocks",
+    "hysteria",
+    "hysteria2",
+    "tuic",
+    "reality",
+    "singbox",
+];
+
+const OBVIOUS_NON_SOURCE_FILENAMES: [&str; 16] = [
+    ".editorconfig",
+    "cargo.lock",
+    "cargo.toml",
+    "composer.json",
+    "docker-compose.override.yml",
+    "docker-compose.override.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "go.mod",
+    "go.sum",
+    "manifest.json",
+    "metadata.json",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+];
 
 #[derive(Clone, Debug)]
 struct Repository {
@@ -1393,7 +1433,13 @@ async fn scan_repo_tree(
         }
     }
 
-    paths.sort_by_key(|path| (path.matches('/').count(), path.len(), path.clone()));
+    paths.sort_by(|a, b| {
+        source_path_score(b)
+            .cmp(&source_path_score(a))
+            .then_with(|| a.matches('/').count().cmp(&b.matches('/').count()))
+            .then_with(|| a.len().cmp(&b.len()))
+            .then_with(|| a.cmp(b))
+    });
     paths.truncate(MAX_TREE_FILES_PER_REPO);
 
     Ok(paths
@@ -1588,12 +1634,14 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
     let mut candidates = Vec::new();
     let mut seen_urls = HashSet::new();
     let mut start = 0;
+    let mut scanned_urls = 0usize;
 
-    while candidates.len() < MAX_README_CANDIDATES {
+    while scanned_urls < MAX_README_URLS_SCANNED {
         let Some(relative) = text[start..].find("http") else {
             break;
         };
         let absolute = start + relative;
+        scanned_urls = scanned_urls.saturating_add(1);
         let end = text[absolute..]
             .find(|character: char| {
                 character.is_whitespace()
@@ -1625,6 +1673,9 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
 
         start = end;
     }
+
+    candidates.sort_by_key(|a| std::cmp::Reverse(source_url_score(&a.url)));
+    candidates.truncate(MAX_README_CANDIDATES);
 
     candidates
 }
@@ -1856,10 +1907,69 @@ fn has_path_hint(path: &str) -> bool {
         .any(|segment| PATH_HINTS.contains(&segment))
 }
 
+fn has_strong_path_hint(path: &str) -> bool {
+    path.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| STRONG_PATH_HINTS.contains(&segment))
+}
+
 fn has_noise_path_token(path: &str) -> bool {
     path.split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|segment| !segment.is_empty())
         .any(|segment| NOISE_PATH_TOKENS.contains(&segment))
+}
+
+fn obvious_non_source_filename(path: &str) -> bool {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+
+    OBVIOUS_NON_SOURCE_FILENAMES.contains(&filename)
+        || filename.contains(".schema.")
+        || filename.starts_with("schema.")
+        || filename.ends_with(".schema.json")
+}
+
+fn source_path_score(path: &str) -> u8 {
+    let lowered = path.trim_start_matches('/').to_ascii_lowercase();
+
+    if lowered.is_empty()
+        || NOISE_HINTS.iter().any(|hint| lowered.contains(hint))
+        || has_noise_path_token(&lowered)
+        || obvious_non_source_filename(&lowered)
+    {
+        return 0;
+    }
+
+    let filename = lowered.rsplit('/').next().unwrap_or("");
+
+    let extension_ok = SOURCE_EXTENSIONS
+        .iter()
+        .any(|extension| lowered.ends_with(extension));
+    let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
+        .iter()
+        .any(|extension| lowered.ends_with(extension));
+    let has_extension = filename.contains('.');
+    let hint_ok = has_path_hint(&lowered);
+
+    let plausible =
+        (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok);
+    if !plausible {
+        return 0;
+    }
+
+    let mut score: u8 = if extension_without_hint { 70 } else { 50 };
+
+    if has_strong_path_hint(&lowered) {
+        score += 30;
+    }
+
+    match filename.split('.').next().unwrap_or(filename) {
+        "all" | "full" | "sub" | "subs" | "subscription" | "subscriptions" | "nodes"
+        | "proxies" | "servers" => score += 10,
+        "config" | "settings" | "data" => score = score.saturating_sub(10),
+        _ => {}
+    }
+
+    score
 }
 
 fn is_legacy_noise_source(url: &str) -> bool {
@@ -1895,18 +2005,18 @@ fn is_legacy_noise_source(url: &str) -> bool {
     has_noise_path_token(&format!("/{}", source_segments.join("/")).to_ascii_lowercase())
 }
 
-fn likely_source_url(url: &str) -> bool {
-    let Ok(parsed) = Url::parse(url) else {
-        return false;
-    };
+fn github_source_path(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if !matches!(
+        parsed.host_str(),
+        Some("github.com") | Some("raw.githubusercontent.com")
+    ) {
+        return None;
+    }
 
     let segments = parsed
         .path_segments()
-        .map(|segments| segments.collect::<Vec<_>>());
-
-    let Some(segments) = segments else {
-        return false;
-    };
+        .map(|segments| segments.collect::<Vec<_>>())?;
 
     let source_start = if parsed.host_str() == Some("raw.githubusercontent.com")
         && segments.get(2) == Some(&"refs")
@@ -1917,55 +2027,22 @@ fn likely_source_url(url: &str) -> bool {
         3
     };
 
-    let Some(source_segments) = segments.get(source_start..) else {
-        return false;
-    };
+    let source_segments = segments.get(source_start..)?;
+    (!source_segments.is_empty()).then(|| format!("/{}", source_segments.join("/")))
+}
 
-    if source_segments.is_empty() {
-        return false;
-    }
+fn source_url_score(url: &str) -> u8 {
+    github_source_path(url)
+        .map(|path| source_path_score(&path))
+        .unwrap_or_default()
+}
 
-    let path = format!("/{}", source_segments.join("/")).to_ascii_lowercase();
-
-    if NOISE_HINTS.iter().any(|hint| path.contains(hint)) || has_noise_path_token(&path) {
-        return false;
-    }
-
-    let extension_ok = SOURCE_EXTENSIONS
-        .iter()
-        .any(|extension| path.ends_with(extension));
-    let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
-        .iter()
-        .any(|extension| path.ends_with(extension));
-    let has_extension = path
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains('.'));
-    let hint_ok = has_path_hint(&path);
-
-    (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
+fn likely_source_url(url: &str) -> bool {
+    source_url_score(url) > 0
 }
 
 fn is_source_path(path: &str) -> bool {
-    let lowered = path.to_ascii_lowercase();
-
-    if NOISE_HINTS.iter().any(|hint| lowered.contains(hint)) || has_noise_path_token(&lowered) {
-        return false;
-    }
-
-    let extension_ok = SOURCE_EXTENSIONS
-        .iter()
-        .any(|extension| lowered.ends_with(extension));
-    let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
-        .iter()
-        .any(|extension| lowered.ends_with(extension));
-    let has_extension = lowered
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains('.'));
-    let hint_ok = has_path_hint(&lowered);
-
-    (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
+    source_path_score(path) > 0
 }
 
 fn percent_encode_path(value: &str) -> String {
@@ -3133,6 +3210,56 @@ mod tests {
         assert!(is_source_path("sub"));
         assert!(!is_source_path("src/config.rs"));
         assert!(!is_source_path("src/main.rs"));
+    }
+
+    #[test]
+    fn rejects_obvious_non_source_files_even_with_source_hints() {
+        for path in [
+            "subscriptions/package.json",
+            "configs/metadata.json",
+            "nodes/schema.json",
+            "proxy/package-lock.json",
+            "v2ray/docker-compose.yml",
+            "subscriptions/config.schema.json",
+        ] {
+            assert!(!is_source_path(path), "unexpected source path: {path}");
+        }
+    }
+
+    #[test]
+    fn accepts_unusual_but_plausible_source_names() {
+        assert!(is_source_path("subscriptions/today.list"));
+        assert!(is_source_path("nodes/feed.sub"));
+        assert!(is_source_path("config/proxy-links.yaml"));
+    }
+
+    #[test]
+    fn source_path_score_prefers_strong_source_hints() {
+        assert!(
+            super::source_path_score("subscriptions/config.json")
+                > super::source_path_score("config.json")
+        );
+        assert!(
+            super::source_path_score("subscriptions/all.txt")
+                > super::source_path_score("subscriptions/config.json")
+        );
+        assert_eq!(super::source_path_score("subscriptions/package.json"), 0);
+    }
+
+    #[test]
+    fn readme_candidates_prioritize_strong_source_paths() {
+        let text = concat!(
+            "https://github.com/example/project/blob/main/config.json\n",
+            "https://github.com/example/project/blob/main/subscriptions/all.txt\n",
+            "https://github.com/example/project/blob/main/nodes/feed.yaml\n",
+        );
+
+        let candidates = extract_source_urls(text, "example/reader", 0);
+
+        assert_eq!(
+            candidates.first().map(|candidate| candidate.url.as_str()),
+            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
+        );
     }
 
     #[test]
