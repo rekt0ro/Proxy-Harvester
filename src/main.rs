@@ -822,7 +822,9 @@ fn split_concatenated_configs(config: &str) -> Vec<&str> {
     let mut previous_end = SCHEMES
         .iter()
         .find(|scheme| {
-            config.len() >= scheme.len() && config[..scheme.len()].eq_ignore_ascii_case(scheme)
+            config
+                .get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
         })
         .map(|scheme| scheme.len())
         .unwrap_or_default();
@@ -1797,6 +1799,13 @@ mod tests {
 
         let configs = extract_configs(concatenated);
         assert_eq!(configs, parts);
+    }
+
+    #[test]
+    fn split_concatenated_configs_handles_unicode_near_scheme_boundary() {
+        let config = "ss://𝐕@example.com:443";
+
+        assert_eq!(split_concatenated_configs(config), vec![config]);
     }
 
     #[test]
