@@ -326,10 +326,7 @@ impl Registry {
             }
             CollectionOutcome::Success(0) => {
                 object.insert("configs_last_run".into(), Value::from(0u64));
-                object.insert(
-                    "successes".into(),
-                    Value::from(successes.saturating_add(1)),
-                );
+                object.insert("successes".into(), Value::from(successes.saturating_add(1)));
                 object.insert("failure_streak".into(), Value::from(0u64));
                 object.insert(
                     "empty_runs".into(),
@@ -343,10 +340,7 @@ impl Registry {
             }
             CollectionOutcome::Failed => {
                 object.insert("configs_last_run".into(), Value::from(0u64));
-                object.insert(
-                    "failures".into(),
-                    Value::from(failures.saturating_add(1)),
-                );
+                object.insert("failures".into(), Value::from(failures.saturating_add(1)));
                 object.insert(
                     "failure_streak".into(),
                     Value::from(streak.saturating_add(1)),
@@ -1375,7 +1369,9 @@ async fn write_sources(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temporary = path.with_file_name(format!(
         ".{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("sources")
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("sources")
     ));
     fs::write(&temporary, format!("{}\n", urls.join("\n"))).await?;
     if let Err(error) = fs::rename(&temporary, path).await {
