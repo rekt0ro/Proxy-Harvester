@@ -947,6 +947,11 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let host = value.host_str()?.to_ascii_lowercase();
 
     if host == "raw.githubusercontent.com" {
+        let segments = value.path_segments()?.collect::<Vec<_>>();
+        if segments.len() < 4 || segments.iter().any(|segment| segment.is_empty()) {
+            return None;
+        }
+
         value.set_query(None);
         value.set_fragment(None);
         return Some(value.to_string());
@@ -1404,6 +1409,18 @@ mod tests {
         assert_eq!(
             candidates[0].url,
             "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_raw_github_paths() {
+        assert!(normalize_github_source("https://raw.githubusercontent.com/all.txt").is_none());
+        assert!(normalize_github_source("https://raw.githubusercontent.com/example/project").is_none());
+        assert!(
+            normalize_github_source(
+                "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+            )
+            .is_some()
         );
     }
 
