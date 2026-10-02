@@ -15,7 +15,9 @@ const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
 const MAX_ACTIVE_SOURCES: usize = 1200;
 const MAX_NEW_SOURCES: usize = 800;
+const MAX_NEW_SOURCES_PER_REPO: usize = 25;
 const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
+const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
@@ -265,6 +267,55 @@ impl Registry {
         before.saturating_sub(self.sources().len())
     }
 
+    fn prune(&mut self, limit: usize, protected: &HashSet<String>) -> usize {
+        let source_count = self.sources().len();
+        if source_count <= limit {
+            return 0;
+        }
+
+        let removable = source_count.saturating_sub(protected.len().min(limit));
+        let mut candidates = self
+            .sources()
+            .iter()
+            .filter(|(url, _)| !protected.contains(*url))
+            .map(|(url, record)| {
+                let last_discovered = record
+                    .get("last_discovered")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let last_success = record
+                    .get("last_success")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let last_checked = record
+                    .get("last_checked")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+
+                (url.clone(), last_discovered, last_success, last_checked)
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.3.cmp(&a.3))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        let keep = candidates
+            .into_iter()
+            .take(removable.saturating_sub(source_count.saturating_sub(limit)))
+            .map(|(url, _, _, _)| url)
+            .collect::<HashSet<_>>();
+
+        let before = self.sources().len();
+        self.sources_mut()
+            .retain(|url, _| protected.contains(url) || keep.contains(url));
+
+        before.saturating_sub(self.sources().len())
+    }
+
     fn json(&self) -> Value {
         Value::Object(self.root.clone())
     }
@@ -336,12 +387,25 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
 
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
-    let new_candidates = discovered
+    let mut new_candidates = Vec::new();
+    let mut new_counts_by_repo = HashMap::<String, usize>::new();
+
+    for candidate in discovered
         .iter()
         .filter(|candidate| !existing_urls.contains(&candidate.url))
-        .take(MAX_NEW_SOURCES)
-        .cloned()
-        .collect::<Vec<_>>();
+    {
+        let count = new_counts_by_repo.entry(candidate.repo.clone()).or_default();
+        if *count >= MAX_NEW_SOURCES_PER_REPO {
+            continue;
+        }
+
+        new_candidates.push(candidate.clone());
+        *count += 1;
+
+        if new_candidates.len() >= MAX_NEW_SOURCES {
+            break;
+        }
+    }
 
     let known_candidates = discovered
         .iter()
@@ -369,6 +433,9 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     ordered.extend(active.into_iter().filter(|url| !seen.contains(url)));
     ordered.truncate(MAX_ACTIVE_SOURCES);
 
+    let protected = ordered.iter().cloned().collect::<HashSet<_>>();
+    let retired = registry.prune(MAX_REGISTRY_SOURCES, &protected);
+
     if ordered.is_empty() {
         return Err("GitHub discovery produced no usable subscription sources".into());
     }
@@ -377,10 +444,11 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     write_sources(&sources_path, &ordered).await?;
 
     println!(
-        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources",
+        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources | {} registry pruned",
         repos.len(),
         new_candidates.len(),
-        ordered.len()
+        ordered.len(),
+        retired
     );
 
     Ok((discovered.len(), ordered.len()))
@@ -1028,6 +1096,36 @@ mod tests {
                 "source-c".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn prunes_registry_beyond_capacity() {
+        let mut registry = Registry::new(1);
+        let urls = ["source-a", "source-b", "source-c"];
+
+        for (index, url) in urls.into_iter().enumerate() {
+            let now = index as u64 + 1;
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    priority: 100,
+                },
+                now,
+            );
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_discovered".into(), Value::from(now));
+        }
+
+        let protected = HashSet::from(["source-a".to_string()]);
+        assert_eq!(registry.prune(2, &protected), 1);
+        assert!(registry.sources().contains_key("source-a"));
+        assert!(registry.sources().contains_key("source-c"));
+        assert!(!registry.sources().contains_key("source-b"));
     }
 
     #[test]
