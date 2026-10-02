@@ -653,9 +653,7 @@ fn normalize_github_source(raw: &str) -> Option<String> {
             }
         }
         "raw" => {
-            if segments.get(3) == Some(&"refs")
-                && segments.get(4) == Some(&"heads")
-            {
+            if segments.get(3) == Some(&"refs") && segments.get(4) == Some(&"heads") {
                 (5, 6)
             } else {
                 (3, 4)
