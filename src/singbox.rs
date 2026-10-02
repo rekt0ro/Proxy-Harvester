@@ -28,6 +28,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_MAX_LATENCY_MS: f64 = 3000.0;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const BATCH_SIZE: usize = 500;
+const MAX_CORE_FAILURES_PER_VALIDATION: usize = 12;
 
 fn clean(url: &str) -> &str {
     url.split('#').next().unwrap_or(url)
@@ -1262,6 +1263,7 @@ async fn check_batch_targets(
 
     let mut pending = vec![entries.to_vec()];
     let mut verified = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending.pop() {
         let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
@@ -1297,34 +1299,41 @@ async fn check_batch_targets(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending.push(batch_entries[..mid].to_vec());
                 pending.push(batch_entries[mid..].to_vec());
-                let _ = fs::remove_dir_all(&work);
-                continue;
+            } else {
+                let tail = fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(700)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+
+                println!(
+                    "[INFO] 🧹 [SING-BOX] REJECTED | {} | core could not start for this candidate",
+                    config_label(&batch_entries[0].0)
+                );
+                if !tail.is_empty() {
+                    println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
+                }
             }
 
-            let tail = fs::read_to_string(&log_path)
-                .unwrap_or_default()
-                .chars()
-                .rev()
-                .take(700)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            println!(
-                "[INFO] 🧹 [SING-BOX] REJECTED | {} | core could not start for this candidate",
-                config_label(&batch_entries[0].0)
-            );
-            if !tail.is_empty() {
-                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
-            }
             let _ = fs::remove_dir_all(&work);
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                break;
+            }
             continue;
         }
 
@@ -1389,17 +1398,26 @@ async fn check_batch_targets(
             // A core crash is a backend failure, not a proxy-quality verdict. Split the
             // batch and retry the pieces so one bad config cannot poison unrelated candidates.
             if child.try_wait().ok().flatten().is_some() {
-                if batch_entries.len() > 1 {
+                core_failures += 1;
+                if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                     let mid = batch_entries.len() / 2;
                     pending.push(batch_entries[..mid].to_vec());
                     pending.push(batch_entries[mid..].to_vec());
                 } else {
                     println!(
-                        "[INFO] ℹ️ [SING-BOX] CORE EXITED | {}",
+                        "[WARN] ⚠️ [SING-BOX] CORE EXITED | {}",
                         config_label(&batch_entries[0].0)
                     );
                 }
+                let _ = child.kill();
+                let _ = child.wait();
                 let _ = fs::remove_dir_all(&work);
+                if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                    println!(
+                        "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                    );
+                    break;
+                }
                 continue;
             }
 
@@ -1536,6 +1554,7 @@ async fn check_batch(
 
     let mut pending = vec![entries.to_vec()];
     let mut verified = HashMap::new();
+    let mut core_failures = 0usize;
 
     while let Some(batch_entries) = pending.pop() {
         let batch_entries = pin_singbox_entries(&batch_entries, endpoint_cache).await;
@@ -1571,34 +1590,40 @@ async fn check_batch(
         };
 
         if !ports_ready(&mut child, &local_ports).await {
+            core_failures += 1;
             let _ = child.kill();
             let _ = child.wait();
 
-            if batch_entries.len() > 1 {
+            if batch_entries.len() > 1 && core_failures < MAX_CORE_FAILURES_PER_VALIDATION {
                 let mid = batch_entries.len() / 2;
                 pending.push(batch_entries[..mid].to_vec());
                 pending.push(batch_entries[mid..].to_vec());
-                let _ = fs::remove_dir_all(&work);
-                continue;
+            } else {
+                let tail = fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(700)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                println!(
+                    "[INFO] 🧹 [SING-BOX] REJECTED | {}",
+                    config_label(&batch_entries[0].0)
+                );
+                if !tail.is_empty() {
+                    println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
+                }
             }
 
-            let tail = fs::read_to_string(&log_path)
-                .unwrap_or_default()
-                .chars()
-                .rev()
-                .take(700)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>();
-            println!(
-                "[INFO] 🧹 [SING-BOX] REJECTED | {}",
-                config_label(&batch_entries[0].0)
-            );
-            if !tail.is_empty() {
-                println!("[INFO] ℹ️ [SING-BOX] CORE LOG | {tail}");
-            }
             let _ = fs::remove_dir_all(&work);
+            if core_failures >= MAX_CORE_FAILURES_PER_VALIDATION {
+                println!(
+                    "[WARN] ⚠️ [SING-BOX] CORE FAILURE BUDGET EXHAUSTED | STOPPING FURTHER BATCH SPLITS"
+                );
+                break;
+            }
             continue;
         }
 
