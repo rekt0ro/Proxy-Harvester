@@ -738,24 +738,11 @@ fn adjust_transfer_workers(
     clean_batches: usize,
 ) -> (usize, usize) {
     if rate_limits >= 4 {
-        (
-            current
-                .saturating_sub(2)
-                .max(FINAL_TRANSFER_MIN_WORKERS),
-            0,
-        )
+        (current.saturating_sub(2).max(FINAL_TRANSFER_MIN_WORKERS), 0)
     } else if rate_limits > 0 {
-        (
-            current
-                .saturating_sub(1)
-                .max(FINAL_TRANSFER_MIN_WORKERS),
-            0,
-        )
+        (current.saturating_sub(1).max(FINAL_TRANSFER_MIN_WORKERS), 0)
     } else if clean_batches.saturating_add(1) >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
-        (
-            (current + 1).min(FINAL_TRANSFER_WORKERS),
-            0,
-        )
+        ((current + 1).min(FINAL_TRANSFER_WORKERS), 0)
     } else {
         (current, clean_batches.saturating_add(1))
     }
