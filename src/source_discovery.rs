@@ -1146,7 +1146,7 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         is_source_path, likely_source_url, normalize_github_source, percent_encode_path, Candidate,
-        Registry, Value, MAX_ACTIVE_SOURCES, RETIRED_SOURCE_COOLDOWN_SECS,
+        Registry, Value, MAX_ACTIVE_SOURCES, MAX_FAILURE_STREAK, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
 
@@ -1165,10 +1165,12 @@ mod tests {
             registry.record_result("source-a", 0, 1);
         }
 
-        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS);
+        let just_before_expiry = RETIRED_SOURCE_COOLDOWN_SECS;
+        registry.add_candidate(&candidate, just_before_expiry);
         assert!(registry.active_urls(1, &HashSet::new()).is_empty());
 
-        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS + 1);
+        let at_expiry = RETIRED_SOURCE_COOLDOWN_SECS + 1;
+        registry.add_candidate(&candidate, at_expiry);
         assert_eq!(
             registry.active_urls(1, &HashSet::new()),
             vec!["source-a".to_string()]
