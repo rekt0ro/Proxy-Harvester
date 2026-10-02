@@ -680,7 +680,6 @@ fn likely_source_url(url: &str) -> bool {
     extension_ok || (!has_extension && hint_ok)
 }
 
-
 fn is_source_path(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
 
@@ -699,7 +698,6 @@ fn is_source_path(path: &str) -> bool {
 
     extension_ok || (!has_extension && hint_ok)
 }
-
 
 fn percent_encode(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
