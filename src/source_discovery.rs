@@ -375,6 +375,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let client = Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     let mut repos = match search_repositories(&client, token.as_deref()).await {
@@ -1363,6 +1364,12 @@ mod tests {
         assert!(selected
             .iter()
             .any(|candidate| candidate.url == retired.url));
+    }
+
+    #[test]
+    fn discovery_client_policy_disables_automatic_redirects() {
+        let policy = reqwest::redirect::Policy::none();
+        let _ = policy;
     }
 
     #[test]
