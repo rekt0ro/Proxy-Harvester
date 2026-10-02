@@ -915,11 +915,12 @@ async fn discover_from_repos(
                 Err(error) if error.to_string().contains("HTTP 404 Not Found") => {
                     tree_404_skipped += 1;
                 }
-                Err(error) if error.to_string().contains("HTTP 409 Conflict") => {
-                    tree_conflict_skipped += 1;
-                }
                 Err(error) if is_expected_tree_probe_skip(&error.to_string()) => {
-                    tree_expected_skips += 1;
+                    if error.to_string().contains("HTTP 409 Conflict") {
+                        tree_conflict_skipped += 1;
+                    } else {
+                        tree_expected_skips += 1;
+                    }
                 }
                 Err(error) => println!(
                     "[WARN] 🔭 [DISCOVERY] tree probe failed for {}: {error}",
@@ -955,7 +956,8 @@ async fn discover_from_repos(
 }
 
 fn is_expected_tree_probe_skip(error: &str) -> bool {
-    error.contains("response exceeds discovery size limit")
+    error.contains("HTTP 409 Conflict")
+        || error.contains("response exceeds discovery size limit")
 }
 
 fn is_expected_probe_skip(error: &str) -> bool {
@@ -2216,7 +2218,7 @@ mod tests {
         assert!(super::is_expected_tree_probe_skip(
             "GitHub tree response exceeds discovery size limit"
         ));
-        assert!(!super::is_expected_tree_probe_skip(
+        assert!(super::is_expected_tree_probe_skip(
             "GitHub tree API returned HTTP 409 Conflict: another conflict"
         ));
         assert!(!super::is_expected_probe_skip(
