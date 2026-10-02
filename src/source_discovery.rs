@@ -434,12 +434,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         }
     }
 
-    let known_candidates = discovered
-        .iter()
-        .filter(|candidate| existing_urls.contains(&candidate.url))
-        .take(MAX_KNOWN_REFRESH_SOURCES)
-        .cloned()
-        .collect::<Vec<_>>();
+    let known_candidates = select_known_refresh_candidates(&discovered, &registry, now);
 
     for candidate in new_candidates.iter().chain(known_candidates.iter()) {
         registry.add_candidate(candidate, now);
@@ -993,6 +988,58 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
+fn select_known_refresh_candidates(
+    discovered: &[Candidate],
+    registry: &Registry,
+    now: u64,
+) -> Vec<Candidate> {
+    let mut selected = Vec::with_capacity(MAX_KNOWN_REFRESH_SOURCES);
+    let mut selected_urls = HashSet::new();
+
+    for candidate in discovered {
+        if !registry.sources().contains_key(&candidate.url) {
+            continue;
+        }
+
+        let recoverable = registry
+            .sources()
+            .get(&candidate.url)
+            .and_then(|record| record.get("failure_streak"))
+            .and_then(Value::as_u64)
+            .is_some_and(|streak| streak >= MAX_FAILURE_STREAK)
+            && registry
+                .sources()
+                .get(&candidate.url)
+                .and_then(|record| record.get("last_checked"))
+                .and_then(Value::as_u64)
+                .is_some_and(|checked| {
+                    now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
+                });
+
+        if recoverable {
+            selected.push(candidate.clone());
+            selected_urls.insert(candidate.url.clone());
+
+            if selected.len() >= MAX_KNOWN_REFRESH_SOURCES {
+                return selected;
+            }
+        }
+    }
+
+    for candidate in discovered {
+        if selected.len() >= MAX_KNOWN_REFRESH_SOURCES
+            || !registry.sources().contains_key(&candidate.url)
+            || !selected_urls.insert(candidate.url.clone())
+        {
+            continue;
+        }
+
+        selected.push(candidate.clone());
+    }
+
+    selected
+}
+
 fn deduplicate_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
     let mut unique = HashMap::<String, Candidate>::new();
 
@@ -1243,6 +1290,42 @@ mod tests {
             deduplicated[1].url,
             "https://raw.githubusercontent.com/example/unique/main/subscriptions/all.txt"
         );
+    }
+
+    #[test]
+    fn recoverable_retired_sources_are_prioritized_for_refresh() {
+        let mut registry = Registry::new(1);
+        let mut retired = Candidate {
+            url: "https://raw.githubusercontent.com/example/retired/sub.txt".to_string(),
+            repo: "example/retired".to_string(),
+            repo_rank: 900,
+            priority: 100,
+        };
+
+        registry.add_candidate(&retired, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result(&retired.url, 0, 1);
+        }
+
+        let mut discovered = Vec::new();
+        for rank in 0..MAX_KNOWN_REFRESH_SOURCES {
+            discovered.push(Candidate {
+                url: format!("https://raw.githubusercontent.com/example/known/{rank}.sub"),
+                repo: format!("example/known-{rank}"),
+                repo_rank: rank,
+                priority: 100,
+            });
+        }
+        discovered.push(retired.clone());
+
+        let selected =
+            super::select_known_refresh_candidates(&discovered, &registry, RETIRED_SOURCE_COOLDOWN_SECS + 1);
+
+        assert_eq!(selected.len(), MAX_KNOWN_REFRESH_SOURCES);
+        assert!(selected.iter().any(|candidate| candidate.url == retired.url));
+
+        retired.repo_rank = 0;
+        assert_eq!(retired.repo_rank, 0);
     }
 
     #[test]
