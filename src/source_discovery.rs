@@ -1468,7 +1468,7 @@ mod tests {
         registry.record_result(&candidate.url, 1, 2);
 
         assert_eq!(
-            super::persisted_active_sources(&registry, 3),
+            super::persisted_active_sources(&registry),
             Some(vec!["source-a".to_string()])
         );
     }
