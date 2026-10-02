@@ -41,13 +41,16 @@ const DEFAULT_QUERIES: [&str; 10] = [
     "v2ray collector",
 ];
 
-const PATH_HINTS: [&str; 21] = [
+const PATH_HINTS: [&str; 24] = [
     "sub",
     "subs",
     "subscription",
     "subscriptions",
     "config",
     "configs",
+    "all",
+    "list",
+    "proxies",
     "v2ray",
     "vless",
     "vmess",
@@ -83,7 +86,7 @@ const NOISE_HINTS: [&str; 12] = [
 const SOURCE_EXTENSIONS: [&str; 8] = [
     ".txt", ".yaml", ".yml", ".json", ".conf", ".list", ".sub", ".ini",
 ];
-const SOURCE_EXTENSIONS_WITHOUT_HINT: [&str; 3] = [".txt", ".list", ".sub"];
+const SOURCE_EXTENSIONS_WITHOUT_HINT: [&str; 2] = [".list", ".sub"];
 
 #[derive(Clone, Debug)]
 struct Repository {
@@ -741,8 +744,21 @@ async fn search_repositories(
             continue;
         }
 
-        let text = response.text().await?;
-        let payload: Value = serde_json::from_str(&text)?;
+        let text = match response.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                println!("[WARN] 🔭 [DISCOVERY] GitHub search response read failed: {error}");
+                continue;
+            }
+        };
+
+        let payload: Value = match serde_json::from_str(&text) {
+            Ok(payload) => payload,
+            Err(error) => {
+                println!("[WARN] 🔭 [DISCOVERY] GitHub search response parse failed: {error}");
+                continue;
+            }
+        };
 
         if let Some(items) = payload.get("items").and_then(Value::as_array) {
             for item in items {
@@ -1287,6 +1303,14 @@ mod tests {
         assert!(!is_source_path("settings.ini"));
         assert!(is_source_path("subscriptions/config.json"));
         assert!(is_source_path("nodes/data.yaml"));
+    }
+
+    #[test]
+    fn rejects_unrelated_text_files() {
+        assert!(!is_source_path("docs/notes.txt"));
+        assert!(!is_source_path("docs/todo.txt"));
+        assert!(is_source_path("subscriptions/all.txt"));
+        assert!(is_source_path("proxies.txt"));
     }
 
     #[test]
