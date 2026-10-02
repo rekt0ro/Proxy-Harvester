@@ -1295,7 +1295,7 @@ mod tests {
     #[test]
     fn recoverable_retired_sources_are_prioritized_for_refresh() {
         let mut registry = Registry::new(1);
-        let mut retired = Candidate {
+        let retired = Candidate {
             url: "https://raw.githubusercontent.com/example/retired/sub.txt".to_string(),
             repo: "example/retired".to_string(),
             repo_rank: 900,
@@ -1324,8 +1324,6 @@ mod tests {
         assert_eq!(selected.len(), MAX_KNOWN_REFRESH_SOURCES);
         assert!(selected.iter().any(|candidate| candidate.url == retired.url));
 
-        retired.repo_rank = 0;
-        assert_eq!(retired.repo_rank, 0);
     }
 
     #[test]
