@@ -15,6 +15,7 @@ const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
 const MAX_ACTIVE_SOURCES: usize = 1200;
 const MAX_NEW_SOURCES: usize = 800;
+const MAX_KNOWN_REFRESH_SOURCES: usize = 800;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
@@ -325,24 +326,32 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
             .then_with(|| a.repo.cmp(&b.repo))
             .then_with(|| a.url.cmp(&b.url))
     });
-    discovered.truncate(MAX_NEW_SOURCES);
 
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
-    let mut new_urls = Vec::new();
-    for candidate in &discovered {
-        if existing_urls.contains(&candidate.url) {
-            continue;
-        }
-        new_urls.push(candidate.url.clone());
-        if new_urls.len() >= MAX_NEW_ACTIVE_SOURCES {
-            break;
-        }
-    }
+    let new_candidates = discovered
+        .iter()
+        .filter(|candidate| !existing_urls.contains(&candidate.url))
+        .take(MAX_NEW_SOURCES)
+        .cloned()
+        .collect::<Vec<_>>();
 
-    for candidate in &discovered {
+    let known_candidates = discovered
+        .iter()
+        .filter(|candidate| existing_urls.contains(&candidate.url))
+        .take(MAX_KNOWN_REFRESH_SOURCES)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for candidate in new_candidates.iter().chain(known_candidates.iter()) {
         registry.add_candidate(candidate, now);
     }
+
+    let mut new_urls = new_candidates
+        .iter()
+        .take(MAX_NEW_ACTIVE_SOURCES)
+        .map(|candidate| candidate.url.clone())
+        .collect::<Vec<_>>();
 
     let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
     let active = registry.active_urls(active_limit);
@@ -362,7 +371,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     println!(
         "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources",
         repos.len(),
-        new_urls.len(),
+        new_candidates.len(),
         ordered.len()
     );
 
