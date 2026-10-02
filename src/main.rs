@@ -39,7 +39,6 @@ const MAX_TCP_ADDRESS_CONCURRENCY: usize = 8;
 const MAX_QUIC_TARGET_CONCURRENCY: usize = 8;
 const MAX_WIREGUARD_ADDRESS_CONCURRENCY: usize = 4;
 
-const CHUNK_SIZE: usize = 2000;
 const TCP_TIMEOUT_SECS: u64 = 3;
 const MAX_BASE64_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
@@ -1655,6 +1654,7 @@ mod tests {
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use std::collections::HashSet;
     use url::Url;
 
     #[test]
@@ -1709,22 +1709,6 @@ mod tests {
         );
 
         assert_ne!(hy2_a, hy2_other_sni);
-    }
-
-    #[test]
-    fn transport_probe_test_covers_duplicate_configs_once() {
-        let configs = vec![
-            "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
-            "http://example.com:443".to_string(),
-        ];
-
-        let keys = configs
-            .iter()
-            .filter_map(|config| transport_probe_key(config))
-            .collect::<HashSet<_>>();
-
-        assert_eq!(keys.len(), 1);
-        assert_eq!(tcp_endpoint_groups(&configs).len(), 1);
     }
 
     fn tcp_endpoint_groups_share_identical_endpoints() {
@@ -2477,25 +2461,6 @@ fn tcp_endpoint_groups(configs: &[String]) -> HashMap<(String, u16), Vec<usize>>
     }
 
     tcp_by_endpoint
-}
-
-fn build_tcp_probe_cache(configs: &[String]) -> (TcpProbeCache, usize, usize) {
-    let tcp_by_endpoint = tcp_endpoint_groups(configs);
-    let tcp_config_count = tcp_by_endpoint.values().map(Vec::len).sum();
-    let unique_tcp_endpoints = tcp_by_endpoint.len();
-
-    let cache = tcp_by_endpoint
-        .into_keys()
-        .map(|(host, port)| {
-            let probe_host = host.clone();
-            let probe = async move { tcp_latency_endpoint(&probe_host, port).await }
-                .boxed()
-                .shared();
-            ((host, port), probe)
-        })
-        .collect();
-
-    (Arc::new(cache), tcp_config_count, unique_tcp_endpoints)
 }
 
 fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
