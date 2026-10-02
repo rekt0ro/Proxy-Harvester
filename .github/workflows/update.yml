@@ -267,6 +267,7 @@ jobs:
           test -x ./target/release/check_proxies
           test -x ./target/release/polish_light
           test -x ./target/release/encode_subscriptions
+          test -x ./target/release/discover_sources
 
       - name: "💾 Save Rust toolchain cache"
         if: steps.rust-toolchain-cache-restore.outputs.cache-hit != 'true'
