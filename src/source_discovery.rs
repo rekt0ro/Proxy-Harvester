@@ -838,13 +838,6 @@ async fn search_repositories(
     Ok(repos)
 }
 
-async fn raw_get(
-    client: &Client,
-    url: &str,
-) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
-    github_get(client, url, None).await
-}
-
 async fn github_get(
     client: &Client,
     url: &str,
