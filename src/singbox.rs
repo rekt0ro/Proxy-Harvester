@@ -1,8 +1,8 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
     rate_limit_wait, read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
-    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES,
-    EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
+    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, MIN_RESPONSE_BYTES,
+    MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
     PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
     STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET,
@@ -1149,7 +1149,6 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
         PRIMARY_TARGET => body.is_empty(),
-        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
