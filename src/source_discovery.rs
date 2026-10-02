@@ -1,4 +1,3 @@
-
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{Map, Value};
