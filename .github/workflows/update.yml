@@ -293,6 +293,7 @@ jobs:
         env:
           LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_SELECTION_LIMIT: "200"
+          LIGHT_MIN_PUBLISH: "50"
         run: |
           mkdir -p /tmp/proxyrift
           light_started=$SECONDS
@@ -326,13 +327,13 @@ jobs:
 
           if [ -s /tmp/proxyrift/light.next.txt ]; then
             light_count="$(awk 'NF { count++ } END { print count + 0 }' /tmp/proxyrift/light.next.txt)"
-            echo "[INFO] 🎯 [LIGHT] OUTPUT | ${light_count} CANDIDATES | MAX: ${LIGHT_SELECTION_LIMIT}"
-            if [ "$light_count" -gt 0 ]; then
+            echo "[INFO] 🎯 [LIGHT] OUTPUT | ${light_count} CANDIDATES | TARGET/MAX: ${LIGHT_SELECTION_LIMIT} | MIN PUBLISH: ${LIGHT_MIN_PUBLISH}"
+            if [ "$light_count" -ge "$LIGHT_MIN_PUBLISH" ]; then
               cp /tmp/proxyrift/light.next.txt subscriptions/.light.txt.next
               mv -f subscriptions/.light.txt.next subscriptions/light.txt
               echo "[INFO] ✅ [LIGHT] PUBLISHED REFRESHED SUBSCRIPTION"
             else
-              echo "[WARN] ⚠️ [LIGHT] POOL TOO SMALL | ${light_count}/${LIGHT_MIN_PUBLISH} | PRESERVING PREVIOUS"
+              echo "[WARN] ⚠️ [LIGHT] POOL TOO SMALL | ${light_count}/${LIGHT_MIN_PUBLISH} MINIMUM | PRESERVING PREVIOUS SUBSCRIPTION"
             fi
           else
             echo "[WARN] ⚠️ [LIGHT] NO CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION"

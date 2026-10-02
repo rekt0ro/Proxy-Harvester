@@ -22,6 +22,7 @@ const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
+const MAX_EMPTY_STREAK: u64 = 3;
 const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_TREE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const GITHUB_REQUEST_RETRIES: usize = 2;
@@ -88,6 +89,27 @@ const NOISE_HINTS: [&str; 12] = [
     "package-lock",
     "cargo.lock",
     "go.sum",
+];
+
+const NOISE_PATH_TOKENS: [&str; 18] = [
+    "archive",
+    "archives",
+    "backup",
+    "backups",
+    "broken",
+    "dead",
+    "deprecated",
+    "obsolete",
+    "old",
+    "invalid",
+    "example",
+    "examples",
+    "sample",
+    "samples",
+    "test",
+    "tests",
+    "fixture",
+    "fixtures",
 ];
 
 const SOURCE_EXTENSIONS: [&str; 8] = [
@@ -178,9 +200,15 @@ impl Registry {
                 .get("failure_streak")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
+            let empty_streak = record
+                .get("empty_streak")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
             let last_checked = record.get("last_checked").and_then(Value::as_u64);
 
-            if failures >= MAX_FAILURE_STREAK && !recoverable.contains(url) {
+            if (failures >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK)
+                && !recoverable.contains(url)
+            {
                 continue;
             }
 
@@ -215,16 +243,22 @@ impl Registry {
     }
 
     fn is_recoverable(&self, url: &str, now: u64) -> bool {
-        self.sources()
-            .get(url)
-            .and_then(|record| record.get("failure_streak"))
+        let Some(record) = self.sources().get(url) else {
+            return false;
+        };
+
+        let failure_streak = record
+            .get("failure_streak")
             .and_then(Value::as_u64)
-            .is_some_and(|streak| streak >= MAX_FAILURE_STREAK)
-            && self
-                .sources()
-                .get(url)
-                .and_then(|record| record.get("last_checked"))
-                .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let empty_streak = record
+            .get("empty_streak")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let last_checked = record.get("last_checked").and_then(Value::as_u64);
+
+        (failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK)
+            && last_checked
                 .is_some_and(|checked| now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS)
     }
 
@@ -332,7 +366,6 @@ impl Registry {
                     object.insert("empty_streak".into(), Value::from(0u64));
                     object.insert("last_success".into(), Value::from(now));
                 } else {
-                    object.insert("successes".into(), Value::from(successes.saturating_add(1)));
                     object.insert("failure_streak".into(), Value::from(0u64));
                     object.insert(
                         "empty_runs".into(),
@@ -342,7 +375,6 @@ impl Registry {
                         "empty_streak".into(),
                         Value::from(empty_streak.saturating_add(1)),
                     );
-                    object.insert("last_success".into(), Value::from(now));
                 }
             }
             CollectionOutcome::Failed => {
@@ -357,15 +389,20 @@ impl Registry {
         }
     }
 
-    fn retire_failed(&self) -> usize {
+    fn quarantined_sources(&self) -> usize {
         self.sources()
             .values()
             .filter(|record| {
-                record
+                let failure_streak = record
                     .get("failure_streak")
                     .and_then(Value::as_u64)
-                    .unwrap_or_default()
-                    >= MAX_FAILURE_STREAK
+                    .unwrap_or_default();
+                let empty_streak = record
+                    .get("empty_streak")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+
+                failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK
             })
             .count()
     }
@@ -518,29 +555,13 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         registry.add_candidate(candidate, now);
     }
 
-    let new_urls = new_candidates
-        .iter()
-        .take(MAX_NEW_ACTIVE_SOURCES)
-        .map(|candidate| candidate.url.clone())
-        .collect::<Vec<_>>();
-
-    let discovered_new_set = new_candidates
-        .iter()
-        .map(|candidate| candidate.url.clone())
-        .collect::<HashSet<_>>();
-    let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
-    let recoverable_known_urls = known_candidates
-        .iter()
-        .filter(|candidate| registry.is_recoverable(&candidate.url, now))
-        .map(|candidate| candidate.url.clone())
-        .collect::<HashSet<_>>();
-
-    let active = registry.active_urls(active_limit, &discovered_new_set, &recoverable_known_urls);
-
-    let mut ordered = new_urls;
-    let seen = ordered.iter().cloned().collect::<HashSet<_>>();
-    ordered.extend(active.into_iter().filter(|url| !seen.contains(url)));
-    ordered.truncate(MAX_ACTIVE_SOURCES);
+    let ordered = select_active_sources(
+        &registry,
+        &new_candidates,
+        &known_candidates,
+        now,
+        MAX_ACTIVE_SOURCES,
+    );
 
     let protected = ordered.iter().cloned().collect::<HashSet<_>>();
     let retired = registry.prune(MAX_REGISTRY_SOURCES, &protected);
@@ -579,20 +600,20 @@ pub async fn record_collection_results(
         registry.record_outcome(url, *outcome, now);
     }
 
-    let retired = registry.retire_failed();
+    let quarantined = registry.quarantined_sources();
     write_registry(&registry_path, &registry).await?;
 
     println!(
-        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | failed {} | retired {}",
+        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | failed {} | quarantined {}",
         results.len(),
         results
             .iter()
             .filter(|(_, outcome)| *outcome == CollectionOutcome::Failed)
             .count(),
-        retired
+        quarantined
     );
 
-    Ok(retired)
+    Ok(quarantined)
 }
 
 async fn discover_from_repos(
@@ -1119,6 +1140,32 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
+fn select_active_sources(
+    registry: &Registry,
+    new_candidates: &[Candidate],
+    known_candidates: &[Candidate],
+    now: u64,
+    limit: usize,
+) -> Vec<String> {
+    let new_urls = new_candidates
+        .iter()
+        .take(MAX_NEW_ACTIVE_SOURCES)
+        .map(|candidate| candidate.url.clone())
+        .collect::<Vec<_>>();
+    let discovered_new_set = new_urls.iter().cloned().collect::<HashSet<_>>();
+    let recoverable_known_urls = known_candidates
+        .iter()
+        .filter(|candidate| registry.is_recoverable(&candidate.url, now))
+        .map(|candidate| candidate.url.clone())
+        .collect::<HashSet<_>>();
+
+    let mut active = registry.active_urls(limit, &discovered_new_set, &recoverable_known_urls);
+    let new_slots = limit.saturating_sub(active.len());
+    active.extend(new_urls.into_iter().take(new_slots));
+    active.truncate(limit);
+    active
+}
+
 fn persisted_active_sources(registry: &Registry) -> Option<Vec<String>> {
     let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new(), &HashSet::new());
     (!active.is_empty()).then_some(active)
@@ -1221,6 +1268,12 @@ fn has_path_hint(path: &str) -> bool {
         .any(|segment| PATH_HINTS.contains(&segment))
 }
 
+fn has_noise_path_token(path: &str) -> bool {
+    path.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| NOISE_PATH_TOKENS.contains(&segment))
+}
+
 fn likely_source_url(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
@@ -1253,7 +1306,7 @@ fn likely_source_url(url: &str) -> bool {
 
     let path = format!("/{}", source_segments.join("/")).to_ascii_lowercase();
 
-    if NOISE_HINTS.iter().any(|hint| path.contains(hint)) {
+    if NOISE_HINTS.iter().any(|hint| path.contains(hint)) || has_noise_path_token(&path) {
         return false;
     }
 
@@ -1275,7 +1328,7 @@ fn likely_source_url(url: &str) -> bool {
 fn is_source_path(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
 
-    if NOISE_HINTS.iter().any(|hint| lowered.contains(hint)) {
+    if NOISE_HINTS.iter().any(|hint| lowered.contains(hint)) || has_noise_path_token(&lowered) {
         return false;
     }
 
@@ -1418,14 +1471,14 @@ mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
         percent_encode_path, Candidate, CollectionOutcome, Registry, Repository, Value,
-        MAX_ACTIVE_SOURCES, MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK,
+        MAX_ACTIVE_SOURCES, MAX_DISCOVERED_CANDIDATES, MAX_EMPTY_STREAK, MAX_FAILURE_STREAK,
         MAX_KNOWN_REFRESH_SOURCES, MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS, STANDARD,
     };
     use base64::Engine as _;
     use std::collections::HashSet;
 
     #[test]
-    fn empty_success_does_not_build_failure_streak() {
+    fn empty_success_is_not_counted_as_healthy_success() {
         let mut registry = Registry::new(1);
         let candidate = Candidate {
             url: "source-empty".to_string(),
@@ -1442,8 +1495,89 @@ mod tests {
         assert_eq!(record["failure_streak"], 0);
         assert_eq!(record["empty_streak"], 1);
         assert_eq!(record["empty_runs"], 1);
-        assert_eq!(record["successes"], 1);
-        assert_eq!(record["last_success"], 3);
+        assert_eq!(record["successes"], 0);
+        assert!(record.get("last_success").is_none());
+    }
+
+    #[test]
+    fn repeated_empty_runs_are_quarantined() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-empty".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for now in 2..=(MAX_EMPTY_STREAK + 1) {
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(0), now);
+        }
+
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn new_sources_do_not_displace_healthy_sources() {
+        let mut registry = Registry::new(1);
+        let healthy = Candidate {
+            url: "source-healthy".to_string(),
+            repo: "example/healthy".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        let new_source = Candidate {
+            url: "source-new".to_string(),
+            repo: "example/new".to_string(),
+            repo_rank: 1,
+            priority: 100,
+        };
+
+        registry.add_candidate(&healthy, 1);
+        registry.record_outcome(&healthy.url, CollectionOutcome::Success(1), 2);
+        let active =
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 3, 1);
+
+        assert_eq!(active, vec![healthy.url.clone()]);
+    }
+
+    #[test]
+    fn new_sources_fill_quarantined_slots() {
+        let mut registry = Registry::new(1);
+        let healthy = Candidate {
+            url: "source-healthy".to_string(),
+            repo: "example/healthy".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        let empty = Candidate {
+            url: "source-empty".to_string(),
+            repo: "example/empty".to_string(),
+            repo_rank: 1,
+            priority: 100,
+        };
+        let new_source = Candidate {
+            url: "source-new".to_string(),
+            repo: "example/new".to_string(),
+            repo_rank: 2,
+            priority: 100,
+        };
+
+        registry.add_candidate(&healthy, 1);
+        registry.record_outcome(&healthy.url, CollectionOutcome::Success(1), 2);
+        registry.add_candidate(&empty, 1);
+        for now in 2..=(MAX_EMPTY_STREAK + 1) {
+            registry.record_outcome(&empty.url, CollectionOutcome::Success(0), now);
+        }
+
+        let active =
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 10, 2);
+
+        assert!(active.contains(&healthy.url));
+        assert!(active.contains(&new_source.url));
+        assert!(!active.contains(&empty.url));
     }
 
     #[test]
@@ -2093,5 +2227,11 @@ mod tests {
         assert!(!likely_source_url(
             "https://raw.githubusercontent.com/example/project/main/README.md"
         ));
+        assert!(!is_source_path("archive/all.txt"));
+        assert!(!is_source_path("archive/all_broken.txt"));
+        assert!(!is_source_path("backup/subscriptions.txt"));
+        assert!(!is_source_path("deprecated/vless.txt"));
+        assert!(!is_source_path("examples/configs.txt"));
+        assert!(is_source_path("subscriptions/vless.txt"));
     }
 }
