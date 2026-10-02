@@ -408,7 +408,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     } else {
         discover_from_repos(&client, &repos, token.as_deref()).await?
     };
-    let mut discovered = deduplicate_candidates(discovered);
+    let discovered = deduplicate_candidates(discovered);
 
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
@@ -1206,7 +1206,7 @@ mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
         percent_encode_path, Candidate, Registry, Value, MAX_ACTIVE_SOURCES, MAX_FAILURE_STREAK,
-        MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
+        MAX_DISCOVERED_CANDIDATES, MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
 
