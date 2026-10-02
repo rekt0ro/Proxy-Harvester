@@ -2237,6 +2237,12 @@ mod tests {
         registry.add_candidate(&proven, 1);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&proven.url)
+            .and_then(Value::as_object_mut)
+            .expect("proven source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(100u64));
 
         let active = super::select_active_sources(&registry, &[], &[], 4, 1);
 
@@ -2275,6 +2281,105 @@ mod tests {
         for candidate in &new_sources {
             assert!(active.contains(&candidate.url));
         }
+    }
+
+    #[test]
+    fn collection_only_sources_are_not_proven() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "source-collection-only".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+
+        assert!(registry
+            .proven_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn low_transport_sources_are_not_proven() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "source-low-transport".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(10u64));
+
+        assert!(registry
+            .proven_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn self_sources_are_never_active() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "https://raw.githubusercontent.com/rekt0ro/ProxyRift/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "rekt0ro/ProxyRift".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(500), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(600), 3);
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(500u64));
+
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
+
+    #[test]
+    fn checked_sources_are_ranked_by_transport_quality() {
+        let mut registry = Registry::new(1);
+
+        for (name, reachable) in [("source-good", 400u64), ("source-bad", 20u64)] {
+            let candidate = Candidate {
+                url: name.to_string(),
+                repo: "example/repo".to_string(),
+                repo_rank: 0,
+                priority: 100,
+            };
+            registry.add_candidate(&candidate, 1);
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(500), 2);
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(500), 3);
+            registry
+                .sources_mut()
+                .get_mut(name)
+                .and_then(Value::as_object_mut)
+                .expect("source exists")
+                .insert("transport_reachable_last_run".into(), Value::from(reachable));
+        }
+
+        let active = registry.active_urls(2, &HashSet::new(), &HashSet::new());
+        assert_eq!(
+            active,
+            vec!["source-good".to_string(), "source-bad".to_string()]
+        );
     }
 
     #[test]
