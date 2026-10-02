@@ -365,6 +365,9 @@ impl Registry {
                     object.insert("successes".into(), Value::from(successes.saturating_add(1)));
                     object.insert("failure_streak".into(), Value::from(0u64));
                     object.insert("empty_streak".into(), Value::from(0u64));
+                    object.remove("permanently_failed");
+                    object.remove("last_http_status");
+                    object.remove("retired_at");
                     object.insert("last_success".into(), Value::from(now));
                 } else {
                     object.insert("failure_streak".into(), Value::from(0u64));
