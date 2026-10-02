@@ -854,8 +854,7 @@ async fn github_get(
 
         match request.send().await {
             Ok(response)
-                if is_retryable_github_status(response.status())
-                    && attempt < GITHUB_REQUEST_RETRIES =>
+                if is_retryable_github_response(&response) && attempt < GITHUB_REQUEST_RETRIES =>
             {
                 let delay = retry_after_delay(&response, attempt);
                 drop(response);
@@ -878,10 +877,21 @@ async fn github_get(
     }
 }
 
-fn is_retryable_github_status(status: reqwest::StatusCode) -> bool {
+fn github_rate_limit_status_is_retryable(
+    status: reqwest::StatusCode,
+    has_retry_after: bool,
+) -> bool {
     status == reqwest::StatusCode::REQUEST_TIMEOUT
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
+        || (status == reqwest::StatusCode::FORBIDDEN && has_retry_after)
+}
+
+fn is_retryable_github_response(response: &reqwest::Response) -> bool {
+    github_rate_limit_status_is_retryable(
+        response.status(),
+        response.headers().contains_key("retry-after"),
+    )
 }
 
 fn retry_after_delay(response: &reqwest::Response, attempt: usize) -> Duration {
@@ -1473,6 +1483,22 @@ mod tests {
     fn discovery_client_policy_disables_automatic_redirects() {
         let policy = reqwest::redirect::Policy::none();
         let _ = policy;
+    }
+
+    #[test]
+    fn github_forbidden_with_retry_after_is_retryable() {
+        assert!(super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::FORBIDDEN,
+            true
+        ));
+        assert!(!super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::FORBIDDEN,
+            false
+        ));
+        assert!(super::github_rate_limit_status_is_retryable(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            false
+        ));
     }
 
     #[test]
