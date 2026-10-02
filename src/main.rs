@@ -6,7 +6,7 @@ use percent_encoding::percent_decode_str;
 use proxyrift::source_discovery::CollectionOutcome;
 use proxyrift::validator::{
     config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
-    resolve_public_host,
+    resolve_public_host, resolve_public_tcp_host,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
@@ -115,7 +115,7 @@ async fn safe_source_client(current_url: &Url) -> Result<Client, &'static str> {
             return Err("source URL must resolve to a public address");
         }
     } else {
-        let ip = resolve_public_host(host, port)
+        let ip = resolve_public_tcp_host(host, port)
             .await
             .ok_or("source URL must resolve to a public address")?;
 
@@ -144,7 +144,7 @@ async fn safe_source_redirect(current_url: &Url, location: &str) -> Result<Url, 
         .port_or_known_default()
         .ok_or("redirect destination must have a known port")?;
 
-    if resolve_public_host(host, port).await.is_none() {
+    if resolve_public_tcp_host(host, port).await.is_none() {
         return Err("redirect destination must resolve to a public address");
     }
 
