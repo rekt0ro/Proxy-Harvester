@@ -408,30 +408,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     } else {
         discover_from_repos(&client, &repos, token.as_deref()).await?
     };
-    let mut unique = HashMap::<String, Candidate>::new();
-
-    for candidate in discovered.drain(..) {
-        unique
-            .entry(candidate.url.clone())
-            .and_modify(|existing| {
-                if candidate.priority > existing.priority
-                    || (candidate.priority == existing.priority
-                        && candidate.repo_rank < existing.repo_rank)
-                {
-                    *existing = candidate.clone();
-                }
-            })
-            .or_insert(candidate);
-    }
-
-    let mut discovered = unique.into_values().collect::<Vec<_>>();
-    discovered.sort_by(|a, b| {
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| a.repo_rank.cmp(&b.repo_rank))
-            .then_with(|| a.repo.cmp(&b.repo))
-            .then_with(|| a.url.cmp(&b.url))
-    });
+    let mut discovered = deduplicate_candidates(discovered);
 
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
@@ -612,13 +589,7 @@ async fn discover_from_repos(
         }
     }
 
-    all.sort_by(|a, b| {
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| a.repo_rank.cmp(&b.repo_rank))
-            .then_with(|| a.repo.cmp(&b.repo))
-            .then_with(|| a.url.cmp(&b.url))
-    });
+    let mut all = deduplicate_candidates(all);
     all.truncate(MAX_DISCOVERED_CANDIDATES);
 
     Ok(all)
@@ -1022,6 +993,34 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
+fn deduplicate_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut unique = HashMap::<String, Candidate>::new();
+
+    for candidate in candidates {
+        unique
+            .entry(candidate.url.clone())
+            .and_modify(|existing| {
+                if candidate.priority > existing.priority
+                    || (candidate.priority == existing.priority
+                        && candidate.repo_rank < existing.repo_rank)
+                {
+                    *existing = candidate.clone();
+                }
+            })
+            .or_insert(candidate);
+    }
+
+    let mut candidates = unique.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.repo_rank.cmp(&b.repo_rank))
+            .then_with(|| a.repo.cmp(&b.repo))
+            .then_with(|| a.url.cmp(&b.url))
+    });
+    candidates
+}
+
 fn source_repository_from_raw_url(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     if parsed.host_str()? != "raw.githubusercontent.com" {
@@ -1210,6 +1209,40 @@ mod tests {
         MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn discovered_candidate_cap_is_applied_after_deduplication() {
+        let mut candidates = Vec::new();
+        for rank in 0..(MAX_DISCOVERED_CANDIDATES + 10) {
+            candidates.push(Candidate {
+                url: "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+                    .to_string(),
+                repo: format!("example/repo-{rank}"),
+                repo_rank: rank,
+                priority: 100,
+            });
+        }
+        candidates.push(Candidate {
+            url: "https://raw.githubusercontent.com/example/unique/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "example/unique".to_string(),
+            repo_rank: MAX_DISCOVERED_CANDIDATES + 10,
+            priority: 100,
+        });
+
+        let mut deduplicated = super::deduplicate_candidates(candidates);
+        deduplicated.truncate(super::MAX_DISCOVERED_CANDIDATES);
+
+        assert_eq!(deduplicated.len(), 2);
+        assert_eq!(
+            deduplicated[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
+        assert_eq!(
+            deduplicated[1].url,
+            "https://raw.githubusercontent.com/example/unique/main/subscriptions/all.txt"
+        );
+    }
 
     #[test]
     fn repository_search_requires_public_repositories() {
