@@ -780,12 +780,11 @@ async fn fill_transfer_gate(
             selection_eligible_count(&untested, max_per_endpoint, max_per_family);
         if selected.len().saturating_add(eligible_remaining) < selection_limit {
             println!(
-                "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {}",
+                "[INFO] ⏭️ [10 MiB] TARGET UNREACHABLE WITH CURRENT STRICT POOL | SELECTABLE: {} | UNTESTED ELIGIBLE: {} | TARGET/MAX: {} | CONTINUING BEST-EFFORT GATE",
                 selected.len(),
                 eligible_remaining,
                 selection_limit
             );
-            return Ok(selected.len());
         }
 
         let remaining = selection_limit.saturating_sub(selected.len());
@@ -2111,12 +2110,10 @@ async fn main() -> Result<(), String> {
     );
 
     if selected.is_empty() {
-        return Err(
-            "selected Light validation produced no configs after the 10 MiB gate".to_string(),
+        println!(
+            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED 10 MiB GATE | PUBLISHING 0 CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION"
         );
-    }
-
-    if selected.len() < selection_limit {
+    } else if selected.len() < selection_limit {
         println!(
             "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {}",
             selected.len(),
