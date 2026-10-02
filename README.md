@@ -1,6 +1,6 @@
 # ProxyRift
 
-**Supported:** VLESS · VMess · Trojan · Shadowsocks · Hysteria · Hysteria2 · SOCKS
+**Supported:** VLESS · VMess · Trojan · Shadowsocks · Hysteria · Hysteria2 · SOCKS · HTTP
 
 ## 📡 Subscriptions
 
@@ -75,5 +75,3 @@ The **Light** list goes through deeper validation using multiple targets, endpoi
 ProxyRift regenerates its subscriptions through GitHub Actions.
 
 Each update collects fresh public configurations, screens them, builds the All and Light pools, generates the subscription formats, and publishes the results.
-
-Individual endpoints may appear, disappear, or change between updates as the source pool and network conditions change.
