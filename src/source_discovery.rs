@@ -597,11 +597,9 @@ async fn discover_repo(
                 continue;
             }
 
-            return Err(format!(
-                "GitHub README request returned HTTP {}",
-                response.status()
-            )
-            .into());
+            return Err(
+                format!("GitHub README request returned HTTP {}", response.status()).into(),
+            );
         }
 
         if response
