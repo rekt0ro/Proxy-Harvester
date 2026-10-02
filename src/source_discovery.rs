@@ -192,7 +192,7 @@ impl Registry {
         let mut unchecked = Vec::new();
 
         for (url, record) in self.sources() {
-            if excluded.contains(url) {
+            if excluded.contains(url) || is_legacy_noise_source(url) {
                 continue;
             }
 
@@ -393,6 +393,35 @@ impl Registry {
         self.sources()
             .values()
             .filter(|record| {
+                let failure_streak = record
+                    .get("failure_streak")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let empty_streak = record
+                    .get("empty_streak")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+
+                failure_streak >= MAX_FAILURE_STREAK || empty_streak >= MAX_EMPTY_STREAK
+            })
+            .count()
+    }
+
+    fn quarantined_replacement_slots(
+        &self,
+        excluded: &HashSet<String>,
+        recoverable: &HashSet<String>,
+    ) -> usize {
+        self.sources()
+            .iter()
+            .filter(|(url, record)| {
+                if excluded.contains(*url)
+                    || recoverable.contains(*url)
+                    || is_legacy_noise_source(url)
+                {
+                    return false;
+                }
+
                 let failure_streak = record
                     .get("failure_streak")
                     .and_then(Value::as_u64)
@@ -1159,9 +1188,18 @@ fn select_active_sources(
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let mut active = registry.active_urls(limit, &discovered_new_set, &recoverable_known_urls);
-    let new_slots = limit.saturating_sub(active.len());
-    active.extend(new_urls.into_iter().take(new_slots));
+    let reserved_new_slots = registry
+        .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
+        .min(limit)
+        .min(new_urls.len());
+
+    let mut active = registry.active_urls(
+        limit.saturating_sub(reserved_new_slots),
+        &discovered_new_set,
+        &recoverable_known_urls,
+    );
+    let remaining_slots = limit.saturating_sub(active.len());
+    active.extend(new_urls.into_iter().take(remaining_slots));
     active.truncate(limit);
     active
 }
@@ -1272,6 +1310,35 @@ fn has_noise_path_token(path: &str) -> bool {
     path.split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|segment| !segment.is_empty())
         .any(|segment| NOISE_PATH_TOKENS.contains(&segment))
+}
+
+fn is_legacy_noise_source(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+
+    let segments = parsed
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>());
+
+    let Some(segments) = segments else {
+        return false;
+    };
+
+    let source_start = if parsed.host_str() == Some("raw.githubusercontent.com")
+        && segments.get(2) == Some(&"refs")
+        && segments.get(3) == Some(&"heads")
+    {
+        5
+    } else {
+        3
+    };
+
+    let Some(source_segments) = segments.get(source_start..) else {
+        return false;
+    };
+
+    has_noise_path_token(&format!("/{}", source_segments.join("/")).to_ascii_lowercase())
 }
 
 fn likely_source_url(url: &str) -> bool {
@@ -1544,6 +1611,54 @@ mod tests {
     }
 
     #[test]
+    fn new_sources_replace_quarantined_slots_even_when_active_pool_is_full() {
+        let mut registry = Registry::new(1);
+        let healthy = (0..3)
+            .map(|index| Candidate {
+                url: format!("source-healthy-{index}"),
+                repo: format!("example/healthy-{index}"),
+                repo_rank: index,
+                priority: 100,
+            })
+            .collect::<Vec<_>>();
+        let quarantined = Candidate {
+            url: "source-quarantined".to_string(),
+            repo: "example/quarantined".to_string(),
+            repo_rank: 3,
+            priority: 100,
+        };
+        let new_source = Candidate {
+            url: "source-new".to_string(),
+            repo: "example/new".to_string(),
+            repo_rank: 4,
+            priority: 100,
+        };
+
+        for candidate in &healthy {
+            registry.add_candidate(candidate, 1);
+            registry.record_outcome(&candidate.url, CollectionOutcome::Success(1), 2);
+        }
+        registry.add_candidate(&quarantined, 1);
+        for now in 2..=(MAX_EMPTY_STREAK + 1) {
+            registry.record_outcome(&quarantined.url, CollectionOutcome::Success(0), now);
+        }
+
+        let active =
+            super::select_active_sources(&registry, std::slice::from_ref(&new_source), &[], 10, 3);
+
+        assert_eq!(active.len(), 3);
+        assert!(active.contains(&new_source.url));
+        assert!(!active.contains(&quarantined.url));
+        assert_eq!(
+            active
+                .iter()
+                .filter(|url| healthy.iter().any(|candidate| &candidate.url == *url))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn new_sources_fill_quarantined_slots() {
         let mut registry = Registry::new(1);
         let healthy = Candidate {
@@ -1578,6 +1693,35 @@ mod tests {
         assert!(active.contains(&healthy.url));
         assert!(active.contains(&new_source.url));
         assert!(!active.contains(&empty.url));
+    }
+
+    #[test]
+    fn legacy_noise_sources_are_excluded_from_active_selection() {
+        let mut registry = Registry::new(1);
+        let noisy = Candidate {
+            url: "https://raw.githubusercontent.com/example/repo/main/archive/all_broken.txt"
+                .to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+        let healthy = Candidate {
+            url: "https://raw.githubusercontent.com/example/repo/main/subscriptions/all.txt"
+                .to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 1,
+            priority: 100,
+        };
+
+        registry.add_candidate(&noisy, 1);
+        registry.record_outcome(&noisy.url, CollectionOutcome::Success(3), 2);
+        registry.add_candidate(&healthy, 1);
+        registry.record_outcome(&healthy.url, CollectionOutcome::Success(3), 2);
+
+        let active = registry.active_urls(10, &HashSet::new(), &HashSet::new());
+
+        assert_eq!(active, vec![healthy.url]);
+        assert_eq!(registry.sources().len(), 2);
     }
 
     #[test]
