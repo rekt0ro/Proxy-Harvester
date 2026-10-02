@@ -310,6 +310,14 @@ fn valid_stored_row(value: &Value) -> bool {
         return false;
     }
 
+    if label
+        .get("strict_checks")
+        .and_then(Value::as_u64)
+        .is_none_or(|checks| checks == 0)
+    {
+        return false;
+    }
+
     let transfer_tested = label
         .get("transfer_tested")
         .and_then(Value::as_bool)
@@ -435,6 +443,13 @@ mod tests {
 
         assert!(!super::valid_stored_row(&value));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_zero_strict_checks() {
+        let mut value = row("invalid-checks", 1_000, true, None).to_value();
+        value["label"]["strict_checks"] = Value::from(0u64);
+        assert!(!super::valid_stored_row(&value));
     }
 
     #[test]
