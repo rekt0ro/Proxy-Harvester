@@ -1020,9 +1020,7 @@ fn percent_encode_path(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
 
     for byte in value.as_bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/')
-        {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/') {
             output.push(*byte as char);
         } else {
             output.push('%');
