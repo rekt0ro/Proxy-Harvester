@@ -963,6 +963,10 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let repo = segments[1];
     let marker = segments[2];
 
+    if !matches!(marker, "blob" | "raw") {
+        return None;
+    }
+
     let tail = segments.get(3..)?.join("/");
     if tail.is_empty() {
         return None;
@@ -977,7 +981,7 @@ fn normalize_github_source(raw: &str) -> Option<String> {
         return (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized);
     }
 
-    if !matches!(marker, "blob" | "raw") || segments.len() < 5 {
+    if segments.len() < 5 {
         return None;
     }
 
@@ -1676,6 +1680,18 @@ mod tests {
     #[test]
     fn rejects_github_repository_pages() {
         assert!(normalize_github_source("https://github.com/example/project").is_none());
+    }
+
+    #[test]
+    fn rejects_non_source_github_paths_with_refs() {
+        assert!(normalize_github_source(
+            "https://github.com/example/project/commits/refs/heads/main/subscriptions/all.txt"
+        )
+        .is_none());
+        assert!(normalize_github_source(
+            "https://github.com/example/project/tree/refs/heads/main/subscriptions/all.txt"
+        )
+        .is_none());
     }
 
     #[test]
