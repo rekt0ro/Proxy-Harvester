@@ -16,7 +16,9 @@ const MAX_TREE_FILES_PER_REPO: usize = 25;
 const MAX_ACTIVE_SOURCES: usize = 1200;
 const MAX_NEW_SOURCES: usize = 800;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
+const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
+const MAX_TREE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const GITHUB_REQUEST_RETRIES: usize = 2;
 const GITHUB_RETRY_BASE_MS: u64 = 500;
 const GITHUB_RETRY_AFTER_MAX_SECS: u64 = 10;
@@ -125,7 +127,7 @@ impl Registry {
             .expect("registry always contains sources")
     }
 
-    fn active_urls(&self) -> Vec<String> {
+    fn active_urls(&self, limit: usize) -> Vec<String> {
         let mut checked = Vec::new();
         let mut unchecked = Vec::new();
 
@@ -154,13 +156,16 @@ impl Registry {
         checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-        checked
+        let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES.min(limit);
+
+        unchecked
             .into_iter()
+            .take(unchecked_limit)
             .map(|(url, _)| url)
             .chain(
-                unchecked
+                checked
                     .into_iter()
-                    .take(MAX_NEW_ACTIVE_SOURCES)
+                    .take(limit.saturating_sub(unchecked_limit))
                     .map(|(url, _)| url),
             )
             .collect()
@@ -280,7 +285,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     let mut repos = match search_repositories(&client, token.as_deref()).await {
         Ok(repos) => repos,
         Err(error) => {
-            if registry.active_urls().is_empty() {
+            if registry.active_urls(MAX_ACTIVE_SOURCES).is_empty() {
                 return Err(error);
             }
 
@@ -322,10 +327,6 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     });
     discovered.truncate(MAX_NEW_SOURCES);
 
-    for candidate in &discovered {
-        registry.add_candidate(candidate, now);
-    }
-
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
     let mut new_urls = Vec::new();
@@ -339,7 +340,12 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         }
     }
 
-    let active = registry.active_urls();
+    for candidate in &discovered {
+        registry.add_candidate(candidate, now);
+    }
+
+    let active_limit = MAX_ACTIVE_SOURCES.saturating_sub(new_urls.len());
+    let active = registry.active_urls(active_limit);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
@@ -354,9 +360,9 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     write_sources(&sources_path, &ordered).await?;
 
     println!(
-        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} newly discovered | {} active sources",
+        "[INFO] 🔭 [DISCOVERY] {} repositories searched | {} new sources | {} active sources",
         repos.len(),
-        discovered.len(),
+        new_urls.len(),
         ordered.len()
     );
 
@@ -528,7 +534,17 @@ async fn scan_repo_tree(
         return Err(format!("GitHub tree API returned HTTP {}", response.status()).into());
     }
 
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_TREE_RESPONSE_BYTES as u64)
+    {
+        return Err("GitHub tree response exceeds discovery size limit".into());
+    }
+
     let text = response.text().await?;
+    if text.len() > MAX_TREE_RESPONSE_BYTES {
+        return Err("GitHub tree response exceeds discovery size limit".into());
+    }
     let payload: Value = serde_json::from_str(&text)?;
     let tree = payload
         .get("tree")
@@ -929,7 +945,7 @@ mod tests {
         }
 
         assert_eq!(
-            registry.active_urls(),
+            registry.active_urls(MAX_ACTIVE_SOURCES),
             vec![
                 "source-a".to_string(),
                 "source-b".to_string(),
