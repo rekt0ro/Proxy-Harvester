@@ -704,7 +704,9 @@ fn source_selection_score(record: &Value) -> f64 {
         .get("empty_runs")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    let total_runs = successes.saturating_add(failures).saturating_add(empty_runs);
+    let total_runs = successes
+        .saturating_add(failures)
+        .saturating_add(empty_runs);
     let reliability = if total_runs == 0 {
         0.5
     } else {
@@ -722,15 +724,13 @@ fn source_selection_score(record: &Value) -> f64 {
         return 0.0;
     }
 
-    let transport_rate =
-        ((reachable as f64 + 4.0) / (collected as f64 + 8.0)).clamp(0.0, 1.0);
+    let transport_rate = ((reachable as f64 + 4.0) / (collected as f64 + 8.0)).clamp(0.0, 1.0);
 
     let strict_rate = match (
         record.get("strict_tested_last_run").and_then(Value::as_u64),
         record.get("strict_pass_last_run").and_then(Value::as_u64),
     ) {
-        (Some(tested), Some(passed)) if tested > 0 =>
-            (passed as f64 + 1.0) / (tested as f64 + 2.0),
+        (Some(tested), Some(passed)) if tested > 0 => (passed as f64 + 1.0) / (tested as f64 + 2.0),
         _ => 0.5,
     };
 
@@ -740,9 +740,7 @@ fn source_selection_score(record: &Value) -> f64 {
             .and_then(Value::as_u64),
         record.get("transfer_pass_last_run").and_then(Value::as_u64),
     ) {
-        (Some(tested), Some(passed)) if tested > 0 => {
-            (passed as f64 + 1.0) / (tested as f64 + 2.0)
-        }
+        (Some(tested), Some(passed)) if tested > 0 => (passed as f64 + 1.0) / (tested as f64 + 2.0),
         _ => 0.5,
     };
 
