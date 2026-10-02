@@ -967,7 +967,7 @@ fn is_source_path(path: &str) -> bool {
         .is_some_and(|name| name.contains('.'));
     let hint_ok = PATH_HINTS.iter().any(|hint| lowered.contains(hint));
 
-    extension_ok || (!has_extension && hint_ok)
+    (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
 }
 
 fn percent_encode(value: &str) -> String {
