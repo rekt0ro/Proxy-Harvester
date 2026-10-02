@@ -1434,7 +1434,7 @@ async fn check_batch_targets(
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
                         latencies[entry_index].push(sample.latency_ms);
-                        if targets[0] == crate::validator::THROUGHPUT_TARGET
+                        if crate::validator::is_throughput_target(targets[0].as_str())
                             && sample.latency_ms > 0.0
                         {
                             throughputs[entry_index]
