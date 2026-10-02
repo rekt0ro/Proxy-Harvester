@@ -1407,13 +1407,10 @@ fn select_active_sources(
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let replacement_slots = registry
+    let reserved_new_slots = registry
         .quarantined_replacement_slots(&discovered_new_set, &recoverable_known_urls)
         .min(limit)
         .min(new_urls.len());
-
-    let exploration_slots = new_urls.len().min(MAX_NEW_ACTIVE_SOURCES);
-    let reserved_new_slots = replacement_slots.max(exploration_slots);
 
     let mut active = registry.active_urls(
         limit.saturating_sub(reserved_new_slots),
