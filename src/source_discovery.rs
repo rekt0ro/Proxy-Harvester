@@ -1625,11 +1625,7 @@ mod tests {
         };
 
         registry.add_candidate(&candidate, 1);
-        registry.record_outcome(
-            &candidate.url,
-            CollectionOutcome::PermanentlyFailed(404),
-            2,
-        );
+        registry.record_outcome(&candidate.url, CollectionOutcome::PermanentlyFailed(404), 2);
 
         let record = registry.sources().get(&candidate.url).expect("record");
         assert_eq!(record["failure_streak"], MAX_FAILURE_STREAK);
