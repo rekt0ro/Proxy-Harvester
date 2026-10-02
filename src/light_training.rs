@@ -205,18 +205,120 @@ impl TrainingRow {
     }
 }
 
-fn valid_stored_row(value: &Value) -> bool {
+const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
+    "protocol",
+    "backend",
+    "transport",
+    "security",
+    "port",
+    "query_parameter_count",
+    "has_sni",
+    "has_host",
+    "has_path",
+    "tls_enabled",
+    "reality_enabled",
+    "early_attempts",
+    "early_success_rate",
+    "early_median_ms",
+    "early_min_ms",
+    "early_jitter_ms",
+    "early_throughput_kbps",
+    "history_checks",
+    "history_pass_rate",
+];
+
+fn finite_number(value: Option<&Value>) -> bool {
     value
+        .and_then(Value::as_f64)
+        .is_some_and(f64::is_finite)
+}
+
+fn valid_stored_row(value: &Value) -> bool {
+    if value
         .get("schema_version")
         .and_then(Value::as_u64)
-        .is_some_and(|version| version == DATASET_VERSION)
-        && value
+        != Some(DATASET_VERSION)
+        || value
             .get("observation_id")
             .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-        && value.get("observed_at").and_then(Value::as_u64).is_some()
-        && value.get("features").and_then(Value::as_object).is_some()
-        && value.get("label").and_then(Value::as_object).is_some()
+            .is_none_or(str::is_empty)
+        || value.get("candidate_fingerprint").and_then(Value::as_str).is_none_or(str::is_empty)
+        || value.get("observed_at").and_then(Value::as_u64).is_none()
+    {
+        return false;
+    }
+
+    let Some(features) = value.get("features").and_then(Value::as_object) else {
+        return false;
+    };
+
+    if features.len() != FEATURE_COUNT
+        || !FEATURE_NAMES.iter().all(|name| features.contains_key(*name))
+    {
+        return false;
+    }
+
+    for name in ["protocol", "backend", "transport", "security"] {
+        if features
+            .get(name)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return false;
+        }
+    }
+
+    for name in ["port", "query_parameter_count", "early_attempts", "history_checks"] {
+        if features.get(name).and_then(Value::as_u64).is_none() {
+            return false;
+        }
+    }
+
+    for name in [
+        "has_sni",
+        "has_host",
+        "has_path",
+        "tls_enabled",
+        "reality_enabled",
+    ] {
+        if features.get(name).and_then(Value::as_bool).is_none() {
+            return false;
+        }
+    }
+
+    for name in [
+        "early_success_rate",
+        "early_median_ms",
+        "early_min_ms",
+        "early_jitter_ms",
+        "early_throughput_kbps",
+        "history_pass_rate",
+    ] {
+        if !finite_number(features.get(name)) {
+            return false;
+        }
+    }
+
+    let Some(label) = value.get("label").and_then(Value::as_object) else {
+        return false;
+    };
+
+    if label.get("strict_pass").and_then(Value::as_bool).is_none()
+        || label.get("strict_checks").and_then(Value::as_u64).is_none()
+        || label.get("transfer_tested").and_then(Value::as_bool).is_none()
+    {
+        return false;
+    }
+
+    let transfer_tested = label
+        .get("transfer_tested")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match label.get("transfer_pass") {
+        Some(Value::Null) if !transfer_tested => true,
+        Some(Value::Bool(_)) if transfer_tested => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +421,19 @@ mod tests {
         assert_eq!(body.lines().count(), 1);
         assert!(body.contains("\"fresh\""));
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_rows_with_wrong_feature_schema() {
+        let path = temp_path();
+        let mut value = row("invalid", 1_000, true, None).to_value();
+        value["features"]
+            .as_object_mut()
+            .expect("features object")
+            .remove("history_pass_rate");
+
+        assert!(!super::valid_stored_row(&value));
         let _ = fs::remove_file(path);
     }
 
