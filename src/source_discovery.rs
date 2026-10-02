@@ -961,6 +961,9 @@ fn is_source_path(path: &str) -> bool {
     let extension_ok = SOURCE_EXTENSIONS
         .iter()
         .any(|extension| lowered.ends_with(extension));
+    let extension_without_hint = SOURCE_EXTENSIONS_WITHOUT_HINT
+        .iter()
+        .any(|extension| lowered.ends_with(extension));
     let has_extension = lowered
         .rsplit('/')
         .next()
