@@ -483,7 +483,7 @@ fn persist_history(
         .as_secs();
 
     let mut updated = history.clone();
-    for (config, attempts) in final_attempts {
+    for config in final_attempts.keys() {
         let fingerprint = history_fingerprint(config);
         let entry = updated.entry(fingerprint).or_default();
         // History is candidate-level. Retries must not dilute the historical pass rate.
@@ -2348,9 +2348,9 @@ async fn main() -> Result<(), String> {
 mod tests {
     use super::{
         adaptive_recheck_limit, adaptive_transfer_test_limit, adjust_transfer_workers,
-        recheck_exploration_limit, select_recheck_candidates,
         has_disabled_tls_verification, history_fingerprint, light_backend, light_training_features,
-        merge_light_metadata, normalize_light_config, select_verified_configs,
+        merge_light_metadata, normalize_light_config, recheck_exploration_limit,
+        select_recheck_candidates, select_verified_configs,
         selection_additional_potential_count, selection_eligible_count, selection_potential_count,
         transfer_reserve_target, LightBackend, ProxyMetrics,
     };
