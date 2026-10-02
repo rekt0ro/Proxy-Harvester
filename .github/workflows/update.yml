@@ -447,8 +447,6 @@ jobs:
             printf '%s\n' "$push_output"
 
             if [ "$push_status" -eq 0 ]; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
               echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
               exit 0
             fi
