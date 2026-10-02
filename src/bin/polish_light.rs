@@ -734,7 +734,7 @@ async fn validate_light_transfer_batch(
 
 fn adjust_transfer_workers(
     current: usize,
-    rate_limits: usize,
+    rate_limits: u64,
     clean_batches: usize,
 ) -> (usize, usize) {
     if rate_limits >= 4 {
