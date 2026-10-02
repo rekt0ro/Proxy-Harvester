@@ -915,7 +915,7 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
                 character.is_whitespace()
                     || matches!(
                         character,
-                        '<' | '>' | '"' | '\'' | ')' | ']' | '}' | '\u{60}'
+                        '<' | '>' | '"' | '\'' | ')' | ']' | '}' | '|' | '\u{60}'
                     )
             })
             .map(|offset| absolute + offset)
@@ -1452,6 +1452,18 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].repo, "source-owner/source-repo");
         assert_eq!(candidates[0].repo_rank, 7);
+    }
+
+    #[test]
+    fn extracts_urls_from_markdown_table_cells() {
+        let text = "| https://github.com/example/project/blob/main/subscriptions/all.txt |";
+        let candidates = extract_source_urls(text, "example/project", 0);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].url,
+            "https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt"
+        );
     }
 
     #[test]
