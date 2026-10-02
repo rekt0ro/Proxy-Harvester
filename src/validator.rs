@@ -564,7 +564,11 @@ async fn pin_xray_entries(
                 Ok(ip) if is_public_ip(&ip) => Some(ip),
                 Ok(_) => None,
                 Err(_) => cache
-                    .get(&xray_endpoint_cache_key(&host, port, !uses_udp_transport(config)))
+                    .get(&xray_endpoint_cache_key(
+                        &host,
+                        port,
+                        !uses_udp_transport(config),
+                    ))
                     .copied(),
             }?;
 
