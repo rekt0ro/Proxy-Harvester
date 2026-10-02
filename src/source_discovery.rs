@@ -26,6 +26,7 @@ const MAX_PROVEN_ACTIVE_SOURCES: usize = 650;
 const MIN_PROVEN_SUCCESSFUL_RUNS: u64 = 2;
 const MIN_PROVEN_CONFIGS_LAST_RUN: u64 = 250;
 const MAX_LOW_QUALITY_STREAK: u64 = 3;
+const QUALITY_RETRY_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60;
 const MAX_FAILURE_STREAK: u64 = 5;
 const MAX_EMPTY_STREAK: u64 = 3;
 const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -321,11 +322,10 @@ impl Registry {
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
                 let quality_factor = source_quality_factor(record);
-                let effective_yield = ((configs_last_run as f64)
-                    * (reliability as f64)
-                    * quality_factor)
-                    .round()
-                    .clamp(0.0, u64::MAX as f64) as u64;
+                let effective_yield =
+                    ((configs_last_run as f64) * (reliability as f64) * quality_factor)
+                        .round()
+                        .clamp(0.0, u64::MAX as f64) as u64;
 
                 Some((
                     url.clone(),
@@ -661,34 +661,27 @@ fn source_quality_factor(record: &Value) -> f64 {
     let transport = record
         .get("transport_reachable_last_run")
         .and_then(Value::as_u64);
-    let strict_tested = record
-        .get("strict_tested_last_run")
-        .and_then(Value::as_u64);
-    let strict_pass = record
-        .get("strict_pass_last_run")
-        .and_then(Value::as_u64);
+    let strict_tested = record.get("strict_tested_last_run").and_then(Value::as_u64);
+    let strict_pass = record.get("strict_pass_last_run").and_then(Value::as_u64);
     let transfer_tested = record
         .get("transfer_tested_last_run")
         .and_then(Value::as_u64);
-    let transfer_pass = record
-        .get("transfer_pass_last_run")
-        .and_then(Value::as_u64);
+    let transfer_pass = record.get("transfer_pass_last_run").and_then(Value::as_u64);
 
     let mut weighted_sum = 0.0;
     let mut weight_sum = 0.0;
 
     if collected > 0 && transport.is_some() {
-        let transport_rate =
-            ((transport.unwrap_or_default() as f64 + 2.0) / (collected as f64 + 4.0))
-                .clamp(0.0, 1.0);
+        let transport_rate = ((transport.unwrap_or_default() as f64 + 2.0)
+            / (collected as f64 + 4.0))
+            .clamp(0.0, 1.0);
         weighted_sum += transport_rate * 0.60;
         weight_sum += 0.60;
     }
 
     if let (Some(tested), Some(passed)) = (strict_tested, strict_pass) {
         if tested > 0 {
-            let strict_rate =
-                ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
+            let strict_rate = ((passed as f64 + 1.0) / (tested as f64 + 2.0)).clamp(0.0, 1.0);
             weighted_sum += strict_rate * 0.25;
             weight_sum += 0.25;
         }
@@ -712,19 +705,22 @@ fn source_quality_factor(record: &Value) -> f64 {
 }
 
 fn source_quality_quarantined(record: &Value) -> bool {
-    [
+    let reached_threshold = [
         "transport_low_quality_streak",
         "strict_low_quality_streak",
         "transfer_low_quality_streak",
     ]
     .into_iter()
-    .any(|key| {
-        record
-            .get(key)
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
-            >= MAX_LOW_QUALITY_STREAK
-    })
+    .any(|key| record.get(key).and_then(Value::as_u64).unwrap_or_default() >= MAX_LOW_QUALITY_STREAK);
+
+    if !reached_threshold {
+        return false;
+    }
+
+    record
+        .get("last_checked")
+        .and_then(Value::as_u64)
+        .is_none_or(|checked| unix_now().saturating_sub(checked) < QUALITY_RETRY_COOLDOWN_SECS)
 }
 
 pub async fn record_transport_results(
@@ -869,10 +865,7 @@ pub fn record_light_results(
             .copied()
             .unwrap_or_default();
 
-        object.insert(
-            "strict_tested_last_run".into(),
-            Value::from(strict_tested),
-        );
+        object.insert("strict_tested_last_run".into(), Value::from(strict_tested));
         object.insert("strict_pass_last_run".into(), Value::from(strict_passed));
         object.insert(
             "transfer_tested_last_run".into(),
