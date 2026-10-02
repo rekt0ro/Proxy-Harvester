@@ -1317,7 +1317,26 @@ fn is_legacy_noise_source(url: &str) -> bool {
         return false;
     };
 
-    has_noise_path_token(&parsed.path().to_ascii_lowercase())
+    let segments = parsed.path_segments().map(|segments| segments.collect::<Vec<_>>());
+
+    let Some(segments) = segments else {
+        return false;
+    };
+
+    let source_start = if parsed.host_str() == Some("raw.githubusercontent.com")
+        && segments.get(2) == Some(&"refs")
+        && segments.get(3) == Some(&"heads")
+    {
+        5
+    } else {
+        3
+    };
+
+    let Some(source_segments) = segments.get(source_start..) else {
+        return false;
+    };
+
+    has_noise_path_token(&format!("/{}", source_segments.join("/")).to_ascii_lowercase())
 }
 
 fn likely_source_url(url: &str) -> bool {
