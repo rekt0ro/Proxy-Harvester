@@ -50,6 +50,7 @@ const MAX_COLLECTED_CONFIGS: usize = 25_000;
 const MAX_ALL_CONFIGS: usize = 2000;
 const MAX_ALL_PER_ENDPOINT: usize = 3;
 const MAX_LIGHT_CANDIDATES: usize = 10000;
+const MAX_LIGHT_ENDPOINT_VARIANTS: usize = 2;
 const SOURCE_RETRIES: usize = 2;
 const SOURCE_RETRY_BASE_MS: u64 = 250;
 
@@ -160,6 +161,25 @@ async fn test_chunk(
     Ok((index, working))
 }
 
+fn push_light_candidate(
+    config: &str,
+    light_candidates: &mut Vec<String>,
+    endpoint_counts: &mut HashMap<(String, u16), usize>,
+) -> bool {
+    let Some(config_endpoint) = endpoint(config) else {
+        return false;
+    };
+
+    let count = endpoint_counts.entry(config_endpoint).or_default();
+    if *count >= MAX_LIGHT_ENDPOINT_VARIANTS {
+        return false;
+    }
+
+    *count += 1;
+    light_candidates.push(config.to_string());
+    true
+}
+
 async fn write_atomic(
     path: &Path,
     contents: String,
@@ -208,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         println!(
                             "[WARN] ⚠️ Source #{source_number} has an invalid or unsupported URL."
                         );
-                        return (source_index, Vec::new(), true);
+                        return (source_index, Vec::new(), CollectionOutcome::Failed);
                     }
                 };
 
@@ -219,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         println!(
                             "[WARN] ⚠️ Source #{source_number} rejected by safety policy: {reason}."
                         );
-                        return (source_index, Vec::new(), true);
+                        return (source_index, Vec::new(), CollectionOutcome::Failed);
                     }
                 };
 
@@ -236,14 +256,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         "[WARN] ⚠️ Source #{source_number} exceeded the {}-redirect limit.",
                                         MAX_SOURCE_REDIRECTS
                                     );
-                                    return (source_index, Vec::new(), true);
+                                    return (source_index, Vec::new(), CollectionOutcome::Failed);
                                 }
 
                                 let Some(location) = response.headers().get(LOCATION) else {
                                     println!(
                                         "[WARN] ⚠️ Source #{source_number} returned HTTP status {status} without a Location header."
                                     );
-                                    return (source_index, Vec::new(), true);
+                                    return (source_index, Vec::new(), CollectionOutcome::Failed);
                                 };
 
                                 let location = match location.to_str() {
@@ -253,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         println!(
                                             "[WARN] ⚠️ Source #{source_number} returned an invalid redirect Location header."
                                         );
-                                        return (source_index, Vec::new(), true);
+                                        return (source_index, Vec::new(), CollectionOutcome::Failed);
                                     }
                                 };
 
@@ -268,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                                 println!(
                                                     "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
                                                 );
-                                                return (source_index, Vec::new(), true);
+                                                return (source_index, Vec::new(), CollectionOutcome::Failed);
                                             }
                                         };
 
@@ -281,7 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         println!(
                                             "[WARN] ⚠️ Source #{source_number} redirect rejected by safety policy: {reason}."
                                         );
-                                        return (source_index, Vec::new(), true);
+                                        return (source_index, Vec::new(), CollectionOutcome::Failed);
                                     }
                                 }
                             }
@@ -305,32 +325,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 if let Ok(mut warnings) = source_http_warnings.lock() {
                                     warnings.push((source_number, status.as_u16()));
                                 }
-                                return (source_index, Vec::new(), true);
+                                let outcome = if matches!(status.as_u16(), 404 | 410) {
+                                    CollectionOutcome::PermanentlyFailed(status.as_u16())
+                                } else {
+                                    CollectionOutcome::Failed
+                                };
+                                return (source_index, Vec::new(), outcome);
                             }
 
                             if response
                                 .content_length()
                                 .is_some_and(|length| length > MAX_SOURCE_BYTES as u64)
                             {
-                                return (source_index, Vec::new(), true);
+                                return (source_index, Vec::new(), CollectionOutcome::Failed);
                             }
 
                             match read_source_body(response).await {
                                 Ok(bytes) => {
                                     let text = String::from_utf8_lossy(&bytes);
                                     let configs = extract_configs(&text);
+                                    let config_count = configs.len();
 
-
-                                    return (source_index, configs, false);
+                                    return (
+                                        source_index,
+                                        configs,
+                                        CollectionOutcome::Success(config_count),
+                                    );
                                 }
 
                                 Err(SourceBodyError::TooLarge) => {
-                                    return (source_index, Vec::new(), true);
+                                    return (source_index, Vec::new(), CollectionOutcome::Failed);
                                 }
 
                                 Err(SourceBodyError::Read) => {
                                     println!("[INFO] ↪️ Failed to read source #{source_number}.");
-                                    return (source_index, Vec::new(), true);
+                                    return (source_index, Vec::new(), CollectionOutcome::Failed);
                                 }
                             }
                         }
@@ -349,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             println!(
                                 "[WARN] ⚠️ Failed to download source #{source_number}: {error}"
                             );
-                            return (source_index, Vec::new(), true);
+                            return (source_index, Vec::new(), CollectionOutcome::Failed);
                         }
                     }
                 }
@@ -360,15 +389,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut source_health = Vec::<(String, CollectionOutcome)>::with_capacity(sources.len());
 
-    while let Some((source_index, configs, failed)) = source_results.next().await {
-        source_health.push((
-            sources[source_index].clone(),
-            if failed {
-                CollectionOutcome::Failed
-            } else {
-                CollectionOutcome::Success(configs.len())
-            },
-        ));
+    while let Some((source_index, configs, outcome)) = source_results.next().await {
+        source_health.push((sources[source_index].clone(), outcome));
         unique.extend(configs);
     }
 
@@ -549,15 +571,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let light_target = MAX_LIGHT_CANDIDATES.min(ranked_working_configs.len());
     let mut light_candidates = Vec::with_capacity(light_target);
-    let mut light_candidate_endpoints = HashSet::new();
+    let mut light_candidate_endpoint_counts = HashMap::<(String, u16), usize>::new();
 
     if light_target == ranked_working_configs.len() {
         for (config, _) in &ranked_working_configs {
-            if let Some(endpoint) = endpoint(config) {
-                if light_candidate_endpoints.insert(endpoint) {
-                    light_candidates.push(config.clone());
-                }
+            if light_candidates.len() >= MAX_LIGHT_CANDIDATES {
+                break;
             }
+
+            push_light_candidate(
+                config,
+                &mut light_candidates,
+                &mut light_candidate_endpoint_counts,
+            );
         }
     } else if light_target > 0 {
         let last_index = ranked_working_configs.len() - 1;
@@ -574,24 +600,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let (config, _) = &ranked_working_configs[index];
 
-            if let Some(endpoint) = endpoint(config) {
-                if light_candidate_endpoints.insert(endpoint) {
-                    light_candidates.push(config.clone());
-                }
-            }
+            push_light_candidate(
+                config,
+                &mut light_candidates,
+                &mut light_candidate_endpoint_counts,
+            );
         }
 
         if light_candidates.len() < light_target {
             for (config, _) in &ranked_working_configs {
-                if light_candidates.len() >= light_target {
+                if light_candidates.len() >= light_target
+                    || light_candidates.len() >= MAX_LIGHT_CANDIDATES
+                {
                     break;
                 }
 
-                if let Some(endpoint) = endpoint(config) {
-                    if light_candidate_endpoints.insert(endpoint) {
-                        light_candidates.push(config.clone());
-                    }
-                }
+                push_light_candidate(
+                    config,
+                    &mut light_candidates,
+                    &mut light_candidate_endpoint_counts,
+                );
             }
         }
     }
@@ -603,11 +631,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             break;
         }
 
-        if let Some(ep) = endpoint(config) {
-            if light_candidate_endpoints.insert(ep) {
-                light_candidates.push(config.clone());
-            }
-        }
+        push_light_candidate(
+            config,
+            &mut light_candidates,
+            &mut light_candidate_endpoint_counts,
+        );
     }
 
     let special_count = light_candidates
@@ -1636,13 +1664,41 @@ fn decode_base64_variants(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         append_limited_chunk, assign_config_names, decode_base64_variants, extract_configs,
-        normalize_config, parse_source_redirect, safe_source_client, safe_source_redirect,
-        select_all_candidates, split_concatenated_configs, tcp_endpoint_groups, trim_config,
-        MAX_SOURCE_BYTES,
+        normalize_config, parse_source_redirect, push_light_candidate, safe_source_client,
+        safe_source_redirect, select_all_candidates, split_concatenated_configs,
+        tcp_endpoint_groups, trim_config, MAX_SOURCE_BYTES,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use url::Url;
+
+    #[test]
+    fn light_candidates_allow_two_variants_per_endpoint() {
+        let configs = [
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000002@example.com:443".to_string(),
+            "vless://00000000-0000-0000-0000-000000000003@example.com:443".to_string(),
+        ];
+        let mut selected = Vec::new();
+        let mut endpoint_counts = std::collections::HashMap::new();
+
+        assert!(push_light_candidate(
+            &configs[0],
+            &mut selected,
+            &mut endpoint_counts
+        ));
+        assert!(push_light_candidate(
+            &configs[1],
+            &mut selected,
+            &mut endpoint_counts
+        ));
+        assert!(!push_light_candidate(
+            &configs[2],
+            &mut selected,
+            &mut endpoint_counts
+        ));
+        assert_eq!(selected.len(), 2);
+    }
 
     #[test]
     fn tcp_endpoint_groups_share_identical_endpoints() {

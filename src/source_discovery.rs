@@ -136,6 +136,7 @@ struct Candidate {
 pub enum CollectionOutcome {
     Success(usize),
     Failed,
+    PermanentlyFailed(u16),
 }
 
 struct Registry {
@@ -364,6 +365,9 @@ impl Registry {
                     object.insert("successes".into(), Value::from(successes.saturating_add(1)));
                     object.insert("failure_streak".into(), Value::from(0u64));
                     object.insert("empty_streak".into(), Value::from(0u64));
+                    object.remove("permanently_failed");
+                    object.remove("last_http_status");
+                    object.remove("retired_at");
                     object.insert("last_success".into(), Value::from(now));
                 } else {
                     object.insert("failure_streak".into(), Value::from(0u64));
@@ -385,6 +389,15 @@ impl Registry {
                     Value::from(streak.saturating_add(1)),
                 );
                 object.insert("empty_streak".into(), Value::from(0u64));
+            }
+            CollectionOutcome::PermanentlyFailed(status) => {
+                object.insert("configs_last_run".into(), Value::from(0u64));
+                object.insert("failures".into(), Value::from(failures.saturating_add(1)));
+                object.insert("failure_streak".into(), Value::from(MAX_FAILURE_STREAK));
+                object.insert("empty_streak".into(), Value::from(0u64));
+                object.insert("permanently_failed".into(), Value::Bool(true));
+                object.insert("last_http_status".into(), Value::from(u64::from(status)));
+                object.insert("retired_at".into(), Value::from(now));
             }
         }
     }
@@ -622,8 +635,17 @@ pub async fn record_collection_results(
 
     let root = project_root()?;
     let registry_path = root.join("subscriptions").join("source-registry.json");
+    let sources_path = root.join("sources.txt");
     let now = unix_now();
     let mut registry = load_registry(&registry_path, now).await;
+
+    let permanently_failed = results
+        .iter()
+        .filter_map(|(url, outcome)| match outcome {
+            CollectionOutcome::PermanentlyFailed(_) => Some(url.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
 
     for (url, outcome) in results {
         registry.record_outcome(url, *outcome, now);
@@ -632,13 +654,43 @@ pub async fn record_collection_results(
     let quarantined = registry.quarantined_sources();
     write_registry(&registry_path, &registry).await?;
 
+    if !permanently_failed.is_empty() {
+        if let Ok(content) = fs::read_to_string(&sources_path).await {
+            let mut active_sources = Vec::new();
+            let mut removed = 0usize;
+
+            for line in content.lines() {
+                let url = line.trim();
+                if url.is_empty() {
+                    continue;
+                }
+
+                if permanently_failed.contains(url) {
+                    removed += 1;
+                } else {
+                    active_sources.push(url.to_string());
+                }
+            }
+
+            if removed > 0 {
+                write_sources(&sources_path, &active_sources).await?;
+                println!(
+                    "[INFO] 🔭 [DISCOVERY] permanently dead sources retired | removed {} | active {}",
+                    removed,
+                    active_sources.len()
+                );
+            }
+        }
+    }
+
     println!(
-        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | failed {} | quarantined {}",
+        "[INFO] 🔭 [DISCOVERY] source health updated | checked {} | failed {} | permanent {} | quarantined {}",
         results.len(),
         results
             .iter()
             .filter(|(_, outcome)| *outcome == CollectionOutcome::Failed)
             .count(),
+        permanently_failed.len(),
         quarantined
     );
 
@@ -712,18 +764,36 @@ async fn discover_from_repos(
         }))
         .buffer_unordered(8);
 
+        let mut tree_404_skipped = 0usize;
+        let mut tree_expected_skips = 0usize;
+
         while let Some((repo, result)) = tree_stream.next().await {
             match result {
                 Ok(candidates) => all.extend(candidates),
-                Err(error) if is_expected_probe_skip(&error.to_string()) => println!(
-                    "[INFO] 🔭 [DISCOVERY] tree probe skipped for {}: {error}",
-                    repo.name
-                ),
+                Err(error) if error.to_string().contains("HTTP 404 Not Found") => {
+                    tree_404_skipped += 1;
+                }
+                Err(error) if is_expected_probe_skip(&error.to_string()) => {
+                    tree_expected_skips += 1;
+                }
                 Err(error) => println!(
                     "[WARN] 🔭 [DISCOVERY] tree probe failed for {}: {error}",
                     repo.name
                 ),
             }
+        }
+
+        if tree_404_skipped > 0 {
+            println!(
+                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} repositories returned HTTP 404",
+                tree_404_skipped
+            );
+        }
+        if tree_expected_skips > 0 {
+            println!(
+                "[INFO] 🔭 [DISCOVERY] tree probes skipped | {} expected size-limit responses",
+                tree_expected_skips
+            );
         }
     }
 
@@ -1543,6 +1613,29 @@ mod tests {
     };
     use base64::Engine as _;
     use std::collections::HashSet;
+
+    #[test]
+    fn permanent_source_failures_are_quarantined_immediately() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-gone".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        registry.record_outcome(&candidate.url, CollectionOutcome::PermanentlyFailed(404), 2);
+
+        let record = registry.sources().get(&candidate.url).expect("record");
+        assert_eq!(record["failure_streak"], MAX_FAILURE_STREAK);
+        assert_eq!(record["last_http_status"], 404);
+        assert_eq!(record["permanently_failed"], true);
+        assert_eq!(record["retired_at"], 2u64);
+        assert!(registry
+            .active_urls(1, &HashSet::new(), &HashSet::new())
+            .is_empty());
+    }
 
     #[test]
     fn empty_success_is_not_counted_as_healthy_success() {

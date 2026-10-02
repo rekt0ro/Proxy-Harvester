@@ -639,6 +639,8 @@ jobs:
             test -s "subscriptions/${f}"
             cp -- "subscriptions/${f}" "$publish_snapshot/subscriptions/${f}"
           done
+          test -s sources.txt
+          cp -- sources.txt "$publish_snapshot/sources.txt"
 
           if [ -s "subscriptions/light-history.json" ]; then
             cp -- subscriptions/light-history.json "$publish_snapshot/subscriptions/light-history.json"
@@ -667,6 +669,7 @@ jobs:
             for f in $files; do
               cp -- "$publish_snapshot/subscriptions/${f}" "subscriptions/${f}"
             done
+            cp -- "$publish_snapshot/sources.txt" sources.txt
 
             if [ -f "$publish_snapshot/subscriptions/light-history.json" ]; then
               cp -- "$publish_snapshot/subscriptions/light-history.json" subscriptions/light-history.json
@@ -684,6 +687,7 @@ jobs:
 
 
             git add -- \
+              sources.txt \
               subscriptions/all.txt \
               subscriptions/light.txt \
               subscriptions/all-base64.txt \
