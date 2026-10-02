@@ -8,8 +8,7 @@ use proxyrift::singbox::{
 };
 use proxyrift::validator::{
     endpoint, rate_limit_events, read_lines, validate_candidates_with_target_once,
-    validate_candidates_with_targets_strict, write_lines, ProxyMetrics, LIGHT_TARGETS,
-    PRIMARY_TARGET,
+    validate_candidates_with_targets_strict, write_lines, ProxyMetrics, PRIMARY_TARGET,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -45,6 +44,7 @@ const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
 const HISTORY_RETENTION_SECS: u64 = 45 * 24 * 60 * 60;
 const LIGHT_TRAINING_PATH: &str = "subscriptions/light-training.jsonl";
+const LIGHT_PREFILTER_TARGET: &str = "https://example.com/";
 
 fn adaptive_recheck_limit(
     remaining: usize,
@@ -1858,9 +1858,10 @@ async fn main() -> Result<(), String> {
         .parse::<usize>()
         .map_err(|_| "invalid --selected-batch-size".to_string())?;
     let primary_target = value(&args, "--primary-target", PRIMARY_TARGET);
-    let light_targets = [primary_target.as_str(), LIGHT_TARGETS[2]];
-    let early_targets = [light_targets[0], light_targets[1]];
-    let strict_targets = light_targets;
+    // Prefilter is a broad single-request liveness gate. Strict validation still
+    // checks the primary target plus this compatibility target with full stability.
+    let early_targets = [LIGHT_PREFILTER_TARGET];
+    let strict_targets = [primary_target.as_str(), LIGHT_PREFILTER_TARGET];
     let xray = value(&args, "--xray", "xray");
     let selection_limit = value(
         &args,

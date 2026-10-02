@@ -1,12 +1,11 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
     rate_limit_wait, read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
-    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, EARLY_THROUGHPUT_BYTES,
-    EARLY_THROUGHPUT_TARGET, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
-    PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
-    STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET,
-    SUSTAINED_THROUGHPUT_TIMEOUT,
+    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, MIN_RESPONSE_BYTES,
+    MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
+    STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+    STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
+    STRICT_THROUGHPUT_BYTES, STRICT_THROUGHPUT_TARGET, SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1149,7 +1148,6 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     match url {
         PRIMARY_TARGET => body.is_empty(),
-        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
@@ -1435,7 +1433,7 @@ async fn check_batch_targets(
                         successes[entry_index] += 1;
                         late_streak[entry_index] += 1;
                         latencies[entry_index].push(sample.latency_ms);
-                        if targets[0] == crate::validator::THROUGHPUT_TARGET
+                        if crate::validator::is_throughput_target(targets[0].as_str())
                             && sample.latency_ms > 0.0
                         {
                             throughputs[entry_index]
@@ -2050,14 +2048,6 @@ mod tests {
         assert!(!valid_probe_body(
             "https://www.google.com/generate_204",
             b"blocked by upstream"
-        ));
-        assert!(valid_probe_body(
-            EARLY_THROUGHPUT_TARGET,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
-        ));
-        assert!(!valid_probe_body(
-            EARLY_THROUGHPUT_TARGET,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
         ));
         assert!(valid_probe_body(
             STRICT_THROUGHPUT_TARGET,

@@ -15,16 +15,8 @@ use tokio::time::{sleep, timeout};
 use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
-pub const EARLY_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=1048576";
 pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=10485760";
-pub const THROUGHPUT_TARGET: &str = EARLY_THROUGHPUT_TARGET;
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
-pub const LIGHT_TARGETS: &[&str] = &[
-    PRIMARY_TARGET,
-    EARLY_THROUGHPUT_TARGET,
-    "https://example.com/",
-];
-pub const EARLY_THROUGHPUT_BYTES: usize = 1_048_576;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
 pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
@@ -2197,20 +2189,18 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
 
 pub(crate) fn response_limit_for_target(url: &str) -> usize {
     match url {
-        EARLY_THROUGHPUT_TARGET => EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => STRICT_THROUGHPUT_BYTES,
         _ => MAX_RESPONSE_BYTES,
     }
 }
 
 pub(crate) fn is_throughput_target(url: &str) -> bool {
-    matches!(url, EARLY_THROUGHPUT_TARGET | STRICT_THROUGHPUT_TARGET)
+    url == STRICT_THROUGHPUT_TARGET
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
-        EARLY_THROUGHPUT_TARGET => body.len() == EARLY_THROUGHPUT_BYTES,
         STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
@@ -3047,7 +3037,7 @@ async fn check_batch_targets(
                         if sample.latency_ms <= policy.max_latency_ms {
                             secondary_success[entry_index] = true;
                         }
-                        if target.as_str() == THROUGHPUT_TARGET && sample.latency_ms > 0.0 {
+                        if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
                             throughputs[entry_index]
                                 .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
                         }
@@ -3418,19 +3408,9 @@ mod tests {
     }
 
     #[test]
-    fn default_probe_targets_require_expected_payloads() {
+    fn probe_targets_require_expected_payloads() {
         let primary = Url::parse(PRIMARY_TARGET).expect("primary HTTPS target should parse");
         assert!(valid_probe_body(&primary, b""));
-
-        let speed = Url::parse(EARLY_THROUGHPUT_TARGET).expect("speed target");
-        assert!(valid_probe_body(
-            &speed,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES]
-        ));
-        assert!(!valid_probe_body(
-            &speed,
-            &vec![0_u8; EARLY_THROUGHPUT_BYTES - 1]
-        ));
 
         let strict_speed = Url::parse(STRICT_THROUGHPUT_TARGET).expect("strict speed target");
         assert!(valid_probe_body(
