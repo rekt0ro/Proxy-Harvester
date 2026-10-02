@@ -729,8 +729,8 @@ async fn scan_repo_tree(
 
     Ok(paths
         .into_iter()
-        .map(|path| Candidate {
-            url: format!(
+        .filter_map(|path| {
+            let url = format!(
                 "https://raw.githubusercontent.com/{}/{}/{}",
                 name,
                 percent_encode_path(branch),
@@ -738,10 +738,14 @@ async fn scan_repo_tree(
                     .map(percent_encode)
                     .collect::<Vec<_>>()
                     .join("/")
-            ),
-            repo: name.clone(),
-            repo_rank,
-            priority: 50,
+            );
+
+            (url.len() <= MAX_SOURCE_URL_LENGTH).then(|| Candidate {
+                url,
+                repo: name.clone(),
+                repo_rank,
+                priority: 50,
+            })
         })
         .collect())
 }
