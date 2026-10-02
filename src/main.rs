@@ -1654,7 +1654,6 @@ mod tests {
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    use std::collections::HashSet;
     use url::Url;
 
     #[test]
