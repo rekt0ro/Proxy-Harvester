@@ -63,6 +63,7 @@ enum TransportProbeKey {
         port_spec: String,
         sni: String,
         alpn: Vec<String>,
+        obfs: Option<String>,
     },
     WireGuard {
         config: String,
@@ -1701,6 +1702,12 @@ mod tests {
             transport_probe_key("hysteria2://password-c@example.com:443?sni=other.example&alpn=h3");
 
         assert_ne!(hy2_a, hy2_other_sni);
+
+        let hy2_obfs = transport_probe_key(
+            "hysteria2://password-d@example.com:443?sni=example.com&alpn=h3&obfs=salamander",
+        );
+
+        assert_ne!(hy2_a, hy2_obfs);
     }
 
     #[test]
@@ -2475,6 +2482,10 @@ fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
                     values
                 }
             };
+            let obfs = hysteria2_query_values(config, "obfs")
+                .into_iter()
+                .next()
+                .filter(|value| !value.is_empty());
 
             Some(TransportProbeKey::Quic {
                 protocol: "hysteria2".to_string(),
@@ -2482,6 +2493,7 @@ fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
                 port_spec,
                 sni,
                 alpn,
+                obfs,
             })
         }
 
@@ -2494,6 +2506,7 @@ fn transport_probe_key(config: &str) -> Option<TransportProbeKey> {
                 port_spec: port.to_string(),
                 sni,
                 alpn,
+                obfs: None,
             })
         }
 
