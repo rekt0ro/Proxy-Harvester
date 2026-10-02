@@ -23,7 +23,7 @@ const FINAL_RECHECK_LIMIT: usize = 350;
 const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
-const RECHECK_FAMILY_DIVERSITY: usize = 1;
+const RECHECK_FAMILY_DIVERSITY: usize = 3;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 const TRANSFER_RESERVE_DEFAULT_PASS_RATE: f64 = 0.80;
 const TRANSFER_RESERVE_SAFETY_FACTOR: f64 = 1.08;
@@ -2366,6 +2366,19 @@ mod tests {
             "vless://c@example.net:443".to_string(),
         ];
         assert_eq!(selection_eligible_count(&configs, 1, 3), 2);
+    }
+
+    #[test]
+    fn recheck_diversity_allows_multiple_configs_per_family() {
+        let configs = vec![
+            "vless://a@example.com:443?type=ws".to_string(),
+            "vless://a@example.net:443?type=ws".to_string(),
+            "vless://a@example.org:443?type=ws".to_string(),
+            "vless://b@example.net:443?type=ws".to_string(),
+        ];
+
+        let selected = super::diversify_recheck_candidates(&configs, 4, 3);
+        assert_eq!(selected.len(), 3);
     }
 
     #[test]
