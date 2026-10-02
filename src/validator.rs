@@ -147,6 +147,13 @@ fn scheme_of(config: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+pub(crate) fn uses_udp_transport(config: &str) -> bool {
+    matches!(
+        scheme_of(clean(config)).as_str(),
+        "hysteria" | "hysteria2" | "hy2" | "tuic" | "wg"
+    )
+}
+
 pub fn read_lines(path: &str) -> Result<Vec<String>, String> {
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let mut seen = HashSet::new();
@@ -510,10 +517,10 @@ fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> boo
     false
 }
 
-type XrayEndpointCache = HashMap<(String, u16), IpAddr>;
+type XrayEndpointCache = HashMap<(String, u16, bool), IpAddr>;
 
-fn xray_endpoint_cache_key(host: &str, port: u16) -> (String, u16) {
-    (host.to_ascii_lowercase(), port)
+fn xray_endpoint_cache_key(host: &str, port: u16, tcp_preferred: bool) -> (String, u16, bool) {
+    (host.to_ascii_lowercase(), port, tcp_preferred)
 }
 
 async fn pin_xray_entries(
@@ -528,16 +535,19 @@ async fn pin_xray_entries(
                 return None;
             }
 
-            let key = xray_endpoint_cache_key(&host, port);
+            let key = xray_endpoint_cache_key(&host, port, !uses_udp_transport(config));
             (!cache.contains_key(&key)).then_some(key)
         })
         .collect::<HashSet<_>>();
 
     let resolved = stream::iter(missing)
-        .map(|(host, port)| async move {
-            resolve_public_tcp_host(&host, port)
-                .await
-                .map(|ip| ((host, port), ip))
+        .map(|(host, port, tcp_preferred)| async move {
+            let ip = if tcp_preferred {
+                resolve_public_tcp_host(&host, port).await
+            } else {
+                resolve_public_host(&host, port).await
+            };
+            ip.map(|ip| ((host, port, tcp_preferred), ip))
         })
         .buffer_unordered(64)
         .collect::<Vec<_>>()
@@ -553,7 +563,9 @@ async fn pin_xray_entries(
             let ip = match host.parse::<IpAddr>() {
                 Ok(ip) if is_public_ip(&ip) => Some(ip),
                 Ok(_) => None,
-                Err(_) => cache.get(&xray_endpoint_cache_key(&host, port)).copied(),
+                Err(_) => cache
+                    .get(&xray_endpoint_cache_key(&host, port, !uses_udp_transport(config)))
+                    .copied(),
             }?;
 
             let mut value = value.clone();
