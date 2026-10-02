@@ -2483,13 +2483,11 @@ mod tests {
 
     #[test]
     fn selection_potential_excludes_duplicate_endpoint() {
-        let selected = vec![
-            "vless://00000000-0000-0000-0000-000000000001@a.example:443".to_string(),
-        ];
+        let selected =
+            vec!["vless://00000000-0000-0000-0000-000000000001@a.example:443".to_string()];
         let duplicate_endpoint =
             "vless://00000000-0000-0000-0000-000000000002@a.example:443".to_string();
-        let new_endpoint =
-            "vless://00000000-0000-0000-0000-000000000003@b.example:443".to_string();
+        let new_endpoint = "vless://00000000-0000-0000-0000-000000000003@b.example:443".to_string();
 
         assert_eq!(
             selection_additional_potential_count(&selected, &[duplicate_endpoint], 200, 1, 3),
