@@ -569,11 +569,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .filter_map(|(latency, config)| latency.map(|latency| (config.clone(), latency)))
         .collect::<Vec<_>>();
 
-    let mut reachable_by_source = sources
+    let mut transport_tested_by_source = sources
         .iter()
         .cloned()
         .map(|source| (source, 0usize))
         .collect::<HashMap<_, _>>();
+    let mut reachable_by_source = transport_tested_by_source.clone();
+
+    for config in &configs {
+        if let Some(sources_for_config) = named_config_sources.get(config) {
+            for source in sources_for_config {
+                *transport_tested_by_source
+                    .entry(source.clone())
+                    .or_default() += 1;
+            }
+        }
+    }
 
     for (config, _) in &ranked_working_configs {
         if let Some(sources_for_config) = named_config_sources.get(config) {
@@ -583,7 +594,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    proxyrift::source_discovery::record_transport_results(&reachable_by_source).await?;
+    proxyrift::source_discovery::record_transport_results(
+        &transport_tested_by_source,
+        &reachable_by_source,
+    )
+    .await?;
 
     if ranked_working_configs.is_empty() && special_hysteria_candidates.is_empty() {
         println!(
