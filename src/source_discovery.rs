@@ -597,12 +597,7 @@ async fn discover_repo(
     let branch = &repo.branch;
 
     for readme in ["README.md", "README", "readme.md"] {
-        let url = format!(
-            "https://raw.githubusercontent.com/{}/{}/{}",
-            name,
-            percent_encode_path(branch),
-            readme
-        );
+        let url = raw_github_file_url(name, branch, readme);
 
         let response = raw_get(client, &url).await?;
         if !response.status().is_success() {
@@ -695,14 +690,14 @@ async fn scan_repo_tree(
     Ok(paths
         .into_iter()
         .filter_map(|path| {
-            let url = format!(
-                "https://raw.githubusercontent.com/{}/{}/{}",
+            let url = raw_github_file_url(
                 name,
-                percent_encode_path(branch),
-                path.split('/')
+                branch,
+                &path
+                    .split('/')
                     .map(percent_encode)
                     .collect::<Vec<_>>()
-                    .join("/")
+                    .join("/"),
             );
 
             (url.len() <= MAX_SOURCE_URL_LENGTH).then(|| Candidate {
@@ -713,6 +708,15 @@ async fn scan_repo_tree(
             })
         })
         .collect())
+}
+
+fn raw_github_file_url(repository: &str, branch: &str, path: &str) -> String {
+    format!(
+        "https://raw.githubusercontent.com/{}/refs/heads/{}/{}",
+        repository,
+        percent_encode_path(branch),
+        path
+    )
 }
 
 async fn search_repositories(
@@ -959,35 +963,26 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let repo = segments[1];
     let marker = segments[2];
 
-    let (branch_start, path_start) = match marker {
-        "blob" => {
-            if segments.get(3) == Some(&"refs") {
-                if segments.get(4) == Some(&"heads") {
-                    (5, 6)
-                } else {
-                    return None;
-                }
-            } else {
-                (3, 4)
-            }
-        }
-        "raw" => {
-            if segments.get(3) == Some(&"refs") {
-                if segments.get(4) == Some(&"heads") {
-                    (5, 6)
-                } else {
-                    return None;
-                }
-            } else {
-                (3, 4)
-            }
-        }
-        _ => return None,
-    };
+    let tail = segments.get(3..)?.join("/");
+    if tail.is_empty() {
+        return None;
+    }
 
-    let branch_end = branch_start;
-    let branch = segments.get(branch_end)?;
-    let path = segments.get(path_start..)?.join("/");
+    if segments.get(3) == Some(&"refs") {
+        if segments.get(4) != Some(&"heads") || segments.len() < 7 {
+            return None;
+        }
+
+        let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{tail}");
+        return (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized);
+    }
+
+    if !matches!(marker, "blob" | "raw") || segments.len() < 5 {
+        return None;
+    }
+
+    let branch = segments.get(3)?;
+    let path = segments.get(4..)?.join("/");
 
     if branch.is_empty() || path.is_empty() {
         return None;
@@ -1696,13 +1691,36 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_modern_github_raw_refs_link() {
+    fn preserves_modern_github_refs_for_branch_paths() {
         assert_eq!(
             normalize_github_source(
-                "https://github.com/example/project/raw/refs/heads/main/subscriptions/all.txt"
+                "https://github.com/example/project/raw/refs/heads/feature/source-list/subscriptions/all.txt"
             )
             .as_deref(),
-            Some("https://raw.githubusercontent.com/example/project/main/subscriptions/all.txt")
+            Some(
+                "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+        );
+        assert_eq!(
+            normalize_github_source(
+                "https://github.com/example/project/blob/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+            .as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn builds_raw_urls_with_slash_branches_safely() {
+        assert_eq!(
+            super::raw_github_file_url(
+                "example/project",
+                "feature/source-list",
+                "subscriptions/all.txt"
+            ),
+            "https://raw.githubusercontent.com/example/project/refs/heads/feature/source-list/subscriptions/all.txt"
         );
     }
 
