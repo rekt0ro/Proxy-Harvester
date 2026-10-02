@@ -1973,6 +1973,8 @@ async fn main() -> Result<(), String> {
             );
         }
 
+        let chunk_verified_count = chunk_metadata.len();
+
         for config in chunk_metadata.keys() {
             if !global_positions.contains_key(config) {
                 let position = global_verified.len();
@@ -2243,7 +2245,7 @@ async fn main() -> Result<(), String> {
 
         println!(
             "[INFO] 🧭 [LIGHT DISCOVERY] WAVE {wave}/{chunk_count} COMPLETE | PREFILTER VERIFIED: {} | GLOBAL VERIFIED: {} | STRICT VERIFIED: {}",
-            chunk_metadata.len(),
+            chunk_verified_count,
             global_verified.len(),
             final_metadata.len()
         );
