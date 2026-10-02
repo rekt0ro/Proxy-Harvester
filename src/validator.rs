@@ -1900,6 +1900,32 @@ fn unique_parsed(candidates: &[String]) -> (Vec<ParsedConfig>, Vec<RejectedConfi
     (parsed, rejected)
 }
 
+fn xray_compatibility_filter(
+    parsed: Vec<ParsedConfig>,
+) -> (Vec<ParsedConfig>, Vec<RejectedConfig>) {
+    let mut supported = Vec::with_capacity(parsed.len());
+    let mut rejected = Vec::new();
+
+    for (config, value) in parsed {
+        let network = value
+            .get("streamSettings")
+            .and_then(|settings| settings.get("network"))
+            .and_then(Value::as_str);
+
+        if network.is_some_and(|network| network.eq_ignore_ascii_case("http")) {
+            rejected.push((
+                config,
+                "Xray HTTP transport removed; use XHTTP or a sing-box-compatible backend"
+                    .to_string(),
+            ));
+        } else {
+            supported.push((config, value));
+        }
+    }
+
+    (supported, rejected)
+}
+
 fn allocated_ports(count: usize) -> Result<Vec<u16>, String> {
     let mut ports = Vec::with_capacity(count);
     let mut listeners = Vec::with_capacity(count);
@@ -2723,7 +2749,9 @@ async fn validate_candidates_targets_inner(
         );
     }
 
-    let (parsed, rejected) = unique_parsed(candidates);
+    let (parsed, mut rejected) = unique_parsed(candidates);
+    let (parsed, mut compatibility_rejected) = xray_compatibility_filter(parsed);
+    rejected.append(&mut compatibility_rejected);
 
     println!(
         "[INFO] 🔬 [XRAY] INPUT | {} CONFIGS | ACCEPTED: {} | REJECTED: {}",
@@ -2879,15 +2907,13 @@ async fn check_batch_targets(
                     .collect::<String>();
 
                 println!(
-                    "[INFO] 🧹 [XRAY] REJECTED | {}",
+                    "[INFO] 🧹 [XRAY] REJECTED | {} | core could not start for this candidate",
                     config_label(&batch_entries[0].0)
                 );
-                if !tail.is_empty()
-                    && !tail.contains(
-                        "The feature HTTP transport (without header padding, etc.) has been removed"
-                    )
-                {
+                if !tail.is_empty() {
                     println!("[INFO] ℹ️ [XRAY] CORE LOG | {tail}");
+                } else {
+                    println!("[INFO] ℹ️ [XRAY] CORE LOG | no diagnostic output captured");
                 }
             }
 
@@ -3312,6 +3338,39 @@ mod tests {
         let pinned = pin_xray_entries(&entries, &mut cache).await;
 
         assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn xray_rejects_removed_http_transport_before_starting_core() {
+        let config =
+            parse_config("vless://00000000-0000-0000-0000-000000000001@example.com:80?type=http")
+                .expect("legacy HTTP transport should still parse for non-Xray backends");
+
+        let (supported, rejected) = xray_compatibility_filter(vec![(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:80?type=http".to_string(),
+            config,
+        )]);
+
+        assert!(supported.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].1.contains("Xray HTTP transport removed"));
+    }
+
+    #[test]
+    fn xray_keeps_httpupgrade_transport_supported() {
+        let config = parse_config(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:80?type=httpupgrade",
+        )
+        .expect("HTTPUpgrade should remain supported");
+
+        let (supported, rejected) = xray_compatibility_filter(vec![(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:80?type=httpupgrade"
+                .to_string(),
+            config,
+        )]);
+
+        assert_eq!(supported.len(), 1);
+        assert!(rejected.is_empty());
     }
 
     #[test]
