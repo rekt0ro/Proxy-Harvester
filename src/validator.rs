@@ -415,6 +415,7 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
         return public.into_iter().next();
     }
 
+    let fallback = public[0];
     let probes = stream::iter(public.iter().copied())
         .map(|ip| async move {
             timeout(Duration::from_millis(750), TcpStream::connect((ip, port)))
@@ -435,7 +436,7 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
         return Some(ip);
     }
 
-    public.into_iter().next()
+    Some(fallback)
 }
 
 fn pin_xray_endpoint(value: &mut Value, ip: &std::net::IpAddr, port: u16) -> bool {
