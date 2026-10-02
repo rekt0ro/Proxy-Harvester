@@ -1,13 +1,14 @@
+
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
 use futures::stream::{self, StreamExt};
 use futures::FutureExt;
 use percent_encoding::percent_decode_str;
+use proxyrift::source_discovery::CollectionOutcome;
 use proxyrift::validator::{
     config_label, endpoint, is_cheaply_supported_config, is_locally_supported_config, is_public_ip,
     resolve_public_host,
 };
-use proxyrift::source_discovery::CollectionOutcome;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use regex::Regex;
