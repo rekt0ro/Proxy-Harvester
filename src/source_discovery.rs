@@ -314,8 +314,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     new_urls.sort();
     new_urls.dedup();
 
-    let mut active = registry.active_urls();
-    active.sort();
+    let active = registry.active_urls();
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
