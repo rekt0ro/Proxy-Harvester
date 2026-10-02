@@ -1674,7 +1674,7 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
         start = end;
     }
 
-    candidates.sort_by(|a, b| source_url_score(&b.url).cmp(&source_url_score(&a.url)));
+    candidates.sort_by_key(|a| std::cmp::Reverse(source_url_score(&a.url)));
     candidates.truncate(MAX_README_CANDIDATES);
 
     candidates
