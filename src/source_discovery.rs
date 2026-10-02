@@ -2007,7 +2007,10 @@ fn is_legacy_noise_source(url: &str) -> bool {
 
 fn github_source_path(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
-    if !matches!(parsed.host_str(), Some("github.com") | Some("raw.githubusercontent.com")) {
+    if !matches!(
+        parsed.host_str(),
+        Some("github.com") | Some("raw.githubusercontent.com")
+    ) {
         return None;
     }
 
