@@ -278,10 +278,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          discovery_started=$SECONDS
           ./target/release/discover_sources
-          discovery_elapsed=$((SECONDS - discovery_started))
-          echo "DISCOVERY_ELAPSED=$discovery_elapsed" >> "$GITHUB_ENV"
 
       - name: "🔎 Collect & transport-test configs"
         id: collect_transport
