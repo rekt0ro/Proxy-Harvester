@@ -413,6 +413,19 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     };
     let discovered = deduplicate_candidates(discovered);
 
+    if discovered.is_empty() {
+        if let Some(active) = persisted_active_sources(&registry) {
+            println!(
+                "[WARN] 🔭 [DISCOVERY] no usable GitHub sources discovered; using {} persisted active sources",
+                active.len()
+            );
+            write_sources(&sources_path, &active).await?;
+            return Ok((0, active.len()));
+        }
+
+        return Err("GitHub discovery produced no usable subscription sources".into());
+    }
+
     let existing_urls = registry.sources().keys().cloned().collect::<HashSet<_>>();
 
     let mut new_candidates = Vec::new();
@@ -1003,6 +1016,11 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
+fn persisted_active_sources(registry: &Registry) -> Option<Vec<String>> {
+    let active = registry.active_urls(MAX_ACTIVE_SOURCES, &HashSet::new());
+    (!active.is_empty()).then_some(active)
+}
+
 fn select_known_refresh_candidates(
     discovered: &[Candidate],
     registry: &Registry,
@@ -1404,6 +1422,25 @@ mod tests {
         assert!(selected
             .iter()
             .any(|candidate| candidate.url == retired.url));
+    }
+
+    #[test]
+    fn falls_back_to_persisted_active_sources_when_discovery_is_empty() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-a".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        registry.record_result(&candidate.url, 1, 2);
+
+        assert_eq!(
+            super::persisted_active_sources(&registry),
+            Some(vec!["source-a".to_string()])
+        );
     }
 
     #[test]
