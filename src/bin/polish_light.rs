@@ -2150,8 +2150,8 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
-        if let Some(message) = intelligence
-            .anomaly_message(final_attempts.len(), final_metadata.len())
+        if let Some(message) =
+            intelligence.anomaly_message(final_attempts.len(), final_metadata.len())
         {
             println!("[WARN] ⚠️ {message}");
         }
@@ -2427,8 +2427,7 @@ mod tests {
             "socks5://f@example.xyz:1080".to_string(),
         ];
 
-        let (selected, explored) =
-            select_recheck_candidates(&configs, &configs, 4, 3, 2, 42);
+        let (selected, explored) = select_recheck_candidates(&configs, &configs, 4, 3, 2, 42);
 
         assert_eq!(selected.len(), 4);
         assert_eq!(explored, 2);
