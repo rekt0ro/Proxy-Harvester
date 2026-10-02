@@ -19,6 +19,7 @@ jobs:
   collect:
     name: "🔎 Collect & Validate"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: write
@@ -80,57 +81,35 @@ jobs:
       - name: "🔒 Verify dependency lock"
         run: test -s Cargo.lock
 
-      - name: "🌐 Resolve latest stable validation cores"
+      - name: "🌐 Resolve pinned validation cores"
         id: validation-cores
         env:
-          GH_TOKEN: ${{ github.token }}
+          XRAY_VERSION_PIN: "26.3.27"
+          XRAY_SHA256_PIN: "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
+          XRAY_ASSET_PIN: "Xray-linux-64.zip"
+          SINGBOX_VERSION_PIN: "1.14.2"
+          SINGBOX_SHA256_PIN: "a684484d7477d1437282ee411f4d131d0340aaad60a7868841ebd5d87dd8a0c6"
+          SINGBOX_ASSET_PIN: "sing-box-1.14.2-linux-amd64.tar.gz"
         run: |
           set -euo pipefail
 
-          resolve_release() {
-            local repository="$1"
-            local asset_pattern="$2"
-            local output_prefix="$3"
-            local releases stable tag version asset_name digest
+          [[ "$XRAY_VERSION_PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$XRAY_SHA256_PIN" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$SINGBOX_VERSION_PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SINGBOX_SHA256_PIN" =~ ^[0-9a-f]{64}$ ]]
+          test "$XRAY_ASSET_PIN" = "Xray-linux-64.zip"
+          test "$SINGBOX_ASSET_PIN" = "sing-box-1.14.2-linux-amd64.tar.gz"
 
-            releases="$(curl -fsSL \
-              --retry 5 \
-              --retry-delay 2 \
-              --retry-max-time 45 \
-              --retry-connrefused \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${repository}/releases/latest")"
+          {
+            echo "xray_version=$XRAY_VERSION_PIN"
+            echo "xray_sha256=$XRAY_SHA256_PIN"
+            echo "xray_asset=$XRAY_ASSET_PIN"
+            echo "singbox_version=$SINGBOX_VERSION_PIN"
+            echo "singbox_sha256=$SINGBOX_SHA256_PIN"
+            echo "singbox_asset=$SINGBOX_ASSET_PIN"
+          } >> "$GITHUB_OUTPUT"
 
-            stable="$releases"
-            test "$stable" != "null"
-
-            tag="$(jq -r '.tag_name' <<< "$stable")"
-            case "$tag" in
-              v*) version="${tag#v}" ;;
-              *) version="$tag" ;;
-            esac
-            test -n "$version"
-
-            asset_name="$(jq -r --arg pattern "$asset_pattern" '.assets[] | select(.name | test($pattern)) | .name' <<< "$stable" | head -n 1)"
-            test -n "$asset_name"
-
-            digest="$(jq -r --arg asset "$asset_name" '.assets[] | select(.name == $asset) | .digest' <<< "$stable")"
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            digest="${digest#sha256:}"
-
-            {
-              echo "${output_prefix}_version=$version"
-              echo "${output_prefix}_sha256=$digest"
-              echo "${output_prefix}_asset=$asset_name"
-            } >> "$GITHUB_OUTPUT"
-          }
-
-          resolve_release "${XRAY_REPOSITORY}" '^Xray-linux-64\.zip$' xray
-          resolve_release "${SINGBOX_REPOSITORY}" '^sing-box-[0-9]+\.[0-9]+\.[0-9]+-linux-amd64\.tar\.gz$' singbox
-
-          echo "[INFO] 🧩 [CORES] RESOLUTION COMPLETE"
+          echo "[INFO] 🧩 [CORES] PINNED RELEASES | Xray $XRAY_VERSION_PIN | sing-box $SINGBOX_VERSION_PIN"
       - name: "⚡ Compute cache keys"
         id: keys
         env:
@@ -667,6 +646,9 @@ jobs:
           if [ -s "subscriptions/light-training.jsonl" ]; then
             cp -- subscriptions/light-training.jsonl "$publish_snapshot/subscriptions/light-training.jsonl"
           fi
+          if [ -s "subscriptions/light-ai.json" ]; then
+            cp -- subscriptions/light-ai.json "$publish_snapshot/subscriptions/light-ai.json"
+          fi
           if [ -s "subscriptions/source-registry.json" ]; then
             cp -- subscriptions/source-registry.json "$publish_snapshot/subscriptions/source-registry.json"
           fi
@@ -692,6 +674,9 @@ jobs:
             if [ -f "$publish_snapshot/subscriptions/light-training.jsonl" ]; then
               cp -- "$publish_snapshot/subscriptions/light-training.jsonl" subscriptions/light-training.jsonl
             fi
+            if [ -f "$publish_snapshot/subscriptions/light-ai.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-ai.json" subscriptions/light-ai.json
+            fi
             if [ -f "$publish_snapshot/subscriptions/source-registry.json" ]; then
               cp -- "$publish_snapshot/subscriptions/source-registry.json" subscriptions/source-registry.json
             fi
@@ -710,6 +695,9 @@ jobs:
             if [ -f "subscriptions/light-training.jsonl" ]; then
               git add -- subscriptions/light-training.jsonl
             fi
+            if [ -f "subscriptions/light-ai.json" ]; then
+              git add -- subscriptions/light-ai.json
+            fi
             if [ -f "subscriptions/source-registry.json" ]; then
               git add -- subscriptions/source-registry.json
             fi
@@ -724,15 +712,26 @@ jobs:
 
             git commit -m "Update subscriptions"
 
-            if git push origin HEAD:main; then
+            push_output=""
+            push_status=0
+            push_output="$(git push origin HEAD:main 2>&1)" || push_status=$?
+            printf '%s\n' "$push_output"
+
+            if [ "$push_status" -eq 0 ]; then
               publish_elapsed=$((SECONDS - publish_started))
               echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
               echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
               exit 0
             fi
 
-            echo "[WARN] ⚠️ [PUBLISH] MAIN MOVED | RETRYING"
-            git reset --hard
+            if grep -Eiq 'non-fast-forward|fetch first|tip of your current branch is behind|updates were rejected because the tip' <<< "$push_output"; then
+              echo "[WARN] ⚠️ [PUBLISH] MAIN MOVED | RETRYING"
+              git reset --hard
+              continue
+            fi
+
+            echo "[ERROR] ❌ [PUBLISH] PUSH FAILED FOR A NON-RACE REASON" >&2
+            exit "$push_status"
           done
 
           echo "[ERROR] ❌ [PUBLISH] FAILED AFTER 5 ATTEMPTS" >&2
@@ -742,6 +741,7 @@ jobs:
     name: "🧹 Cleanup Caches"
     needs: collect
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: write
 
