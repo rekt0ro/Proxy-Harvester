@@ -274,15 +274,14 @@ jobs:
           key: ${{ steps.keys.outputs.build }}
 
       - name: "🔭 Discover GitHub subscription sources"
+        id: discovery
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          discovery_started=$SECONDS
           ./target/release/discover_sources
-          discovery_elapsed=$((SECONDS - discovery_started))
-          echo "DISCOVERY_ELAPSED=$discovery_elapsed" >> "$GITHUB_ENV"
 
       - name: "🔎 Collect & transport-test configs"
+        id: collect_transport
         run: |
           collect_started=$SECONDS
           ./target/release/ProxyRift
@@ -290,6 +289,7 @@ jobs:
           echo "COLLECT_ELAPSED=$collect_elapsed" >> "$GITHUB_ENV"
 
       - name: "💡 Build Light subscription"
+        id: build_light
         env:
           LIGHT_MAX_CANDIDATES: "10000"
           LIGHT_SELECTION_LIMIT: "200"
@@ -340,6 +340,7 @@ jobs:
           fi
 
       - name: "🏷️ Add subscription update metadata"
+        id: subscription_metadata
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt; do
             test -s "$f"
@@ -352,6 +353,7 @@ jobs:
           done
 
       - name: "🧬 Generate Base64 subscriptions"
+        id: generate_base64
         run: |
           generation_started=$SECONDS
           ./target/release/encode_subscriptions
@@ -359,15 +361,137 @@ jobs:
           echo "GENERATION_ELAPSED=$generation_elapsed" >> "$GITHUB_ENV"
 
       - name: "📦 Prepare published outputs"
+        id: prepare_outputs
         run: |
           for f in subscriptions/all.txt subscriptions/light.txt subscriptions/all-base64.txt subscriptions/light-base64.txt; do
             test -s "$f"
           done
 
+      - name: "🚀 Publish generated changes"
+        id: publish
+        run: |
+          set -euo pipefail
+          publish_started=$SECONDS
+
+          files="all.txt light.txt all-base64.txt light-base64.txt"
+          publish_snapshot="$(mktemp -d /tmp/proxyrift-publish.XXXXXX)"
+          trap 'rm -rf "$publish_snapshot"' EXIT
+
+          mkdir -p "$publish_snapshot/subscriptions"
+          for f in $files; do
+            test -s "subscriptions/${f}"
+            cp -- "subscriptions/${f}" "$publish_snapshot/subscriptions/${f}"
+          done
+
+          if [ -s "subscriptions/light-history.json" ]; then
+            cp -- subscriptions/light-history.json "$publish_snapshot/subscriptions/light-history.json"
+          fi
+
+          if [ -s "subscriptions/light-training.jsonl" ]; then
+            cp -- subscriptions/light-training.jsonl "$publish_snapshot/subscriptions/light-training.jsonl"
+          fi
+          if [ -s "subscriptions/light-ai.json" ]; then
+            cp -- subscriptions/light-ai.json "$publish_snapshot/subscriptions/light-ai.json"
+          fi
+          if [ -s "subscriptions/source-registry.json" ]; then
+            cp -- subscriptions/source-registry.json "$publish_snapshot/subscriptions/source-registry.json"
+          fi
+
+          git config user.name "rekt0ro"
+          git config user.email "104654981+rekt0ro@users.noreply.github.com"
+
+          for attempt in 1 2 3 4 5; do
+            echo "[INFO] 📤 [PUBLISH] ATTEMPT ${attempt}/5"
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Reapply the freshly generated subscription artifacts after syncing with main.
+            for f in $files; do
+              cp -- "$publish_snapshot/subscriptions/${f}" "subscriptions/${f}"
+            done
+
+            if [ -f "$publish_snapshot/subscriptions/light-history.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-history.json" subscriptions/light-history.json
+            fi
+
+            if [ -f "$publish_snapshot/subscriptions/light-training.jsonl" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-training.jsonl" subscriptions/light-training.jsonl
+            fi
+            if [ -f "$publish_snapshot/subscriptions/light-ai.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/light-ai.json" subscriptions/light-ai.json
+            fi
+            if [ -f "$publish_snapshot/subscriptions/source-registry.json" ]; then
+              cp -- "$publish_snapshot/subscriptions/source-registry.json" subscriptions/source-registry.json
+            fi
+
+
+            git add -- \
+              subscriptions/all.txt \
+              subscriptions/light.txt \
+              subscriptions/all-base64.txt \
+              subscriptions/light-base64.txt
+
+            if [ -f "subscriptions/light-history.json" ]; then
+              git add -- subscriptions/light-history.json
+            fi
+
+            if [ -f "subscriptions/light-training.jsonl" ]; then
+              git add -- subscriptions/light-training.jsonl
+            fi
+            if [ -f "subscriptions/light-ai.json" ]; then
+              git add -- subscriptions/light-ai.json
+            fi
+            if [ -f "subscriptions/source-registry.json" ]; then
+              git add -- subscriptions/source-registry.json
+            fi
+
+
+            if git diff --cached --quiet; then
+              publish_elapsed=$((SECONDS - publish_started))
+              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
+              echo "[INFO] 📤 [PUBLISH] NO CHANGES"
+              exit 0
+            fi
+
+            git commit -m "Update subscriptions"
+
+            push_output=""
+            push_status=0
+            push_output="$(git push origin HEAD:main 2>&1)" || push_status=$?
+            printf '%s\n' "$push_output"
+
+            if [ "$push_status" -eq 0 ]; then
+              publish_elapsed=$((SECONDS - publish_started))
+              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
+              echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
+              exit 0
+            fi
+
+            if grep -Eiq 'non-fast-forward|fetch first|tip of your current branch is behind|updates were rejected because the tip' <<< "$push_output"; then
+              echo "[WARN] ⚠️ [PUBLISH] MAIN MOVED | RETRYING"
+              git reset --hard
+              continue
+            fi
+
+            echo "[ERROR] ❌ [PUBLISH] PUSH FAILED FOR A NON-RACE REASON" >&2
+            exit "$push_status"
+          done
+
+          echo "[ERROR] ❌ [PUBLISH] FAILED AFTER 5 ATTEMPTS" >&2
+          exit 1
+
       - name: "📊 Write run summary"
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
+          DISCOVERY_OUTCOME: ${{ steps.discovery.outcome }}
+          COLLECT_OUTCOME: ${{ steps.collect_transport.outcome }}
+          LIGHT_OUTCOME: ${{ steps.build_light.outcome }}
+          METADATA_OUTCOME: ${{ steps.subscription_metadata.outcome }}
+          GENERATION_OUTCOME: ${{ steps.generate_base64.outcome }}
+          PREPARE_OUTCOME: ${{ steps.prepare_outputs.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
           XRAY_VERSION: ${{ steps.validation-cores.outputs.xray_version }}
@@ -375,12 +499,35 @@ jobs:
         run: |
           set +e
 
-          status_icon="✅"
-          status_text="Complete"
-          case "$JOB_STATUS" in
-            failure) status_icon="❌"; status_text="Failed" ;;
-            cancelled) status_icon="⏹️"; status_text="Cancelled" ;;
-          esac
+          stage_status() {
+            local outcome="$1"
+            case "$outcome" in
+              success) printf "✅ Complete" ;;
+              failure) printf "❌ Failed" ;;
+              cancelled) printf "⏹️ Cancelled" ;;
+              skipped) printf "⏭️ Skipped" ;;
+              *) printf "⚪ Unknown" ;;
+            esac
+          }
+
+          collection_status="$(stage_status "$DISCOVERY_OUTCOME")"
+          if [ "$collection_status" = "✅ Complete" ] && [ "$COLLECT_OUTCOME" != "success" ]; then
+            collection_status="$(stage_status "$COLLECT_OUTCOME")"
+          fi
+          if [ "$collection_status" = "✅ Complete" ] && [ "$LIGHT_OUTCOME" != "success" ]; then
+            collection_status="$(stage_status "$LIGHT_OUTCOME")"
+          fi
+
+          generation_status="$(stage_status "$METADATA_OUTCOME")"
+          if [ "$generation_status" = "✅ Complete" ] && [ "$GENERATION_OUTCOME" != "success" ]; then
+            generation_status="$(stage_status "$GENERATION_OUTCOME")"
+          fi
+          if [ "$generation_status" = "✅ Complete" ] && [ "$PREPARE_OUTCOME" != "success" ]; then
+            generation_status="$(stage_status "$PREPARE_OUTCOME")"
+          fi
+
+          publish_status="$(stage_status "$PUBLISH_OUTCOME")"
+          overall_status="$(stage_status "$JOB_STATUS")"
 
           count_configs() {
             if [ -s "$1" ]; then
@@ -565,8 +712,10 @@ jobs:
             echo
             echo "| Stage | Status |"
             echo "|---|---|"
-            echo "| Collection & validation | $status_icon $status_text |"
-            echo "| Subscription generation | $status_icon $status_text |"
+            echo "| Workflow | $overall_status |"
+            echo "| Collection & validation | $collection_status |"
+            echo "| Subscription generation | $generation_status |"
+            echo "| Publish | $publish_status |"
             echo
             echo "### ⏱️ Benchmark"
             echo
@@ -624,123 +773,6 @@ jobs:
             echo
             echo "_Generated by the ProxyRift update workflow._"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "🚀 Publish generated changes"
-        run: |
-          set -euo pipefail
-          publish_started=$SECONDS
-
-          files="all.txt light.txt all-base64.txt light-base64.txt"
-          publish_snapshot="$(mktemp -d /tmp/proxyrift-publish.XXXXXX)"
-          trap 'rm -rf "$publish_snapshot"' EXIT
-
-          mkdir -p "$publish_snapshot/subscriptions"
-          for f in $files; do
-            test -s "subscriptions/${f}"
-            cp -- "subscriptions/${f}" "$publish_snapshot/subscriptions/${f}"
-          done
-          test -s sources.txt
-          cp -- sources.txt "$publish_snapshot/sources.txt"
-
-          if [ -s "subscriptions/light-history.json" ]; then
-            cp -- subscriptions/light-history.json "$publish_snapshot/subscriptions/light-history.json"
-          fi
-
-          if [ -s "subscriptions/light-training.jsonl" ]; then
-            cp -- subscriptions/light-training.jsonl "$publish_snapshot/subscriptions/light-training.jsonl"
-          fi
-          if [ -s "subscriptions/light-ai.json" ]; then
-            cp -- subscriptions/light-ai.json "$publish_snapshot/subscriptions/light-ai.json"
-          fi
-          if [ -s "subscriptions/source-registry.json" ]; then
-            cp -- subscriptions/source-registry.json "$publish_snapshot/subscriptions/source-registry.json"
-          fi
-
-          git config user.name "rekt0ro"
-          git config user.email "104654981+rekt0ro@users.noreply.github.com"
-
-          for attempt in 1 2 3 4 5; do
-            echo "[INFO] 📤 [PUBLISH] ATTEMPT ${attempt}/5"
-
-            git fetch origin main
-            git reset --hard origin/main
-
-            # Reapply the freshly generated subscription artifacts after syncing with main.
-            for f in $files; do
-              cp -- "$publish_snapshot/subscriptions/${f}" "subscriptions/${f}"
-            done
-            cp -- "$publish_snapshot/sources.txt" sources.txt
-
-            if [ -f "$publish_snapshot/subscriptions/light-history.json" ]; then
-              cp -- "$publish_snapshot/subscriptions/light-history.json" subscriptions/light-history.json
-            fi
-
-            if [ -f "$publish_snapshot/subscriptions/light-training.jsonl" ]; then
-              cp -- "$publish_snapshot/subscriptions/light-training.jsonl" subscriptions/light-training.jsonl
-            fi
-            if [ -f "$publish_snapshot/subscriptions/light-ai.json" ]; then
-              cp -- "$publish_snapshot/subscriptions/light-ai.json" subscriptions/light-ai.json
-            fi
-            if [ -f "$publish_snapshot/subscriptions/source-registry.json" ]; then
-              cp -- "$publish_snapshot/subscriptions/source-registry.json" subscriptions/source-registry.json
-            fi
-
-
-            git add -- \
-              sources.txt \
-              subscriptions/all.txt \
-              subscriptions/light.txt \
-              subscriptions/all-base64.txt \
-              subscriptions/light-base64.txt
-
-            if [ -f "subscriptions/light-history.json" ]; then
-              git add -- subscriptions/light-history.json
-            fi
-
-            if [ -f "subscriptions/light-training.jsonl" ]; then
-              git add -- subscriptions/light-training.jsonl
-            fi
-            if [ -f "subscriptions/light-ai.json" ]; then
-              git add -- subscriptions/light-ai.json
-            fi
-            if [ -f "subscriptions/source-registry.json" ]; then
-              git add -- subscriptions/source-registry.json
-            fi
-
-
-            if git diff --cached --quiet; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
-              echo "[INFO] 📤 [PUBLISH] NO CHANGES"
-              exit 0
-            fi
-
-            git commit -m "Update subscriptions"
-
-            push_output=""
-            push_status=0
-            push_output="$(git push origin HEAD:main 2>&1)" || push_status=$?
-            printf '%s\n' "$push_output"
-
-            if [ "$push_status" -eq 0 ]; then
-              publish_elapsed=$((SECONDS - publish_started))
-              echo "PUBLISH_ELAPSED=$publish_elapsed" >> "$GITHUB_ENV"
-              echo "[INFO] ✅ [PUBLISH] SUBSCRIPTION UPDATE PUBLISHED"
-              exit 0
-            fi
-
-            if grep -Eiq 'non-fast-forward|fetch first|tip of your current branch is behind|updates were rejected because the tip' <<< "$push_output"; then
-              echo "[WARN] ⚠️ [PUBLISH] MAIN MOVED | RETRYING"
-              git reset --hard
-              continue
-            fi
-
-            echo "[ERROR] ❌ [PUBLISH] PUSH FAILED FOR A NON-RACE REASON" >&2
-            exit "$push_status"
-          done
-
-          echo "[ERROR] ❌ [PUBLISH] FAILED AFTER 5 ATTEMPTS" >&2
-          exit 1
 
   cleanup:
     name: "🧹 Cleanup Caches"
