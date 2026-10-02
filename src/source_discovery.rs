@@ -546,7 +546,16 @@ async fn discover_from_repos(
             async move {
                 (
                     repo.clone(),
-                    scan_repo_tree(&client, &repo, token.as_deref()).await,
+                    scan_repo_tree(
+                        &client,
+                        &repo,
+                        repos
+                            .iter()
+                            .position(|candidate| candidate.0 == repo.0)
+                            .unwrap_or(MAX_DISCOVERY_REPOS),
+                        token.as_deref(),
+                    )
+                    .await,
                 )
             }
         }))
@@ -1029,7 +1038,9 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         is_source_path, likely_source_url, normalize_github_source, Candidate, Registry, Value,
+        MAX_ACTIVE_SOURCES,
     };
+    use std::collections::HashSet;
 
     #[test]
     fn preserves_oldest_source_rotation_order() {
