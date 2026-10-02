@@ -502,7 +502,7 @@ async fn discover_repo(
             continue;
         }
 
-        let body = response.bytes().await?;
+        let body = read_limited_body(response, README_MAX_BYTES).await?;
         let body = body
             .iter()
             .copied()
@@ -541,10 +541,8 @@ async fn scan_repo_tree(
         return Err("GitHub tree response exceeds discovery size limit".into());
     }
 
-    let text = response.text().await?;
-    if text.len() > MAX_TREE_RESPONSE_BYTES {
-        return Err("GitHub tree response exceeds discovery size limit".into());
-    }
+    let body = read_limited_body(response, MAX_TREE_RESPONSE_BYTES).await?;
+    let text = String::from_utf8(body)?;
     let payload: Value = serde_json::from_str(&text)?;
     let tree = payload
         .get("tree")
@@ -859,6 +857,24 @@ fn percent_encode(value: &str) -> String {
     output
 }
 
+async fn read_limited_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut body = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err("GitHub discovery response exceeds size limit".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 async fn load_registry(path: &Path, now: u64) -> Registry {
     match fs::read_to_string(path).await {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
@@ -950,6 +966,47 @@ mod tests {
                 "source-a".to_string(),
                 "source-b".to_string(),
                 "source-c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn limits_unchecked_sources_during_rotation() {
+        let mut registry = Registry::new(1);
+
+        for (index, url) in ["source-a", "source-b", "source-c", "source-d"].into_iter().enumerate() {
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    priority: 100,
+                },
+                index as u64 + 1,
+            );
+        }
+
+        registry
+            .sources_mut()
+            .get_mut("source-c")
+            .and_then(Value::as_object_mut)
+            .expect("source-c exists")
+            .insert("last_checked".into(), Value::from(10u64));
+
+        registry
+            .sources_mut()
+            .get_mut("source-d")
+            .and_then(Value::as_object_mut)
+            .expect("source-d exists")
+            .insert("last_checked".into(), Value::from(20u64));
+
+        let active = registry.active_urls(3);
+
+        assert_eq!(
+            active,
+            vec![
+                "source-a".to_string(),
+                "source-b".to_string(),
+                "source-c".to_string(),
             ]
         );
     }
