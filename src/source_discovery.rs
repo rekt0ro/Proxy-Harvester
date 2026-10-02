@@ -1037,10 +1037,7 @@ fn select_known_refresh_candidates(
     selected
 }
 
-fn discovered_repository_names(
-    candidates: &[Candidate],
-    repos: &[Repository],
-) -> HashSet<String> {
+fn discovered_repository_names(candidates: &[Candidate], repos: &[Repository]) -> HashSet<String> {
     candidates
         .iter()
         .filter_map(|candidate| repos.get(candidate.repo_rank))
