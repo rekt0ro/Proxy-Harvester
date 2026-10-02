@@ -336,7 +336,6 @@ impl Registry {
                 .then_with(|| b.4.cmp(&a.4))
                 .then_with(|| b.5.cmp(&a.5))
                 .then_with(|| b.6.cmp(&a.6))
-                .then_with(|| b.6.cmp(&a.7))
                 .then_with(|| a.0.cmp(&b.0))
         });
 
