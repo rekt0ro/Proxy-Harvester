@@ -490,8 +490,7 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .map(|candidate| candidate.url.clone())
         .collect::<HashSet<_>>();
 
-    let active =
-        registry.active_urls(active_limit, &discovered_new_set, &recoverable_known_urls);
+    let active = registry.active_urls(active_limit, &discovered_new_set, &recoverable_known_urls);
 
     let mut ordered = new_urls;
     let seen = ordered.iter().cloned().collect::<HashSet<_>>();
@@ -1346,9 +1345,9 @@ fn unix_now() -> u64 {
 mod tests {
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
-        percent_encode_path, Candidate, Registry, Repository, Value, STANDARD, MAX_ACTIVE_SOURCES,
+        percent_encode_path, Candidate, Registry, Repository, Value, MAX_ACTIVE_SOURCES,
         MAX_DISCOVERED_CANDIDATES, MAX_FAILURE_STREAK, MAX_KNOWN_REFRESH_SOURCES,
-        MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS,
+        MAX_SOURCE_URL_LENGTH, RETIRED_SOURCE_COOLDOWN_SECS, STANDARD,
     };
     use std::collections::HashSet;
 
@@ -1604,11 +1603,7 @@ mod tests {
             Some(MAX_FAILURE_STREAK)
         );
         assert_eq!(
-            registry.active_urls(
-                1,
-                &HashSet::new(),
-                &HashSet::from([candidate.url.clone()]),
-            ),
+            registry.active_urls(1, &HashSet::new(), &HashSet::from([candidate.url.clone()])),
             vec![candidate.url]
         );
     }
