@@ -1343,6 +1343,7 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use super::{
         extract_source_urls, is_source_path, likely_source_url, normalize_github_source,
         percent_encode_path, Candidate, Registry, Repository, Value, MAX_ACTIVE_SOURCES,
