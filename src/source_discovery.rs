@@ -874,9 +874,13 @@ fn retry_after_delay(response: &reqwest::Response, attempt: usize) -> Duration {
 
 fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidate> {
     let mut candidates = Vec::new();
+    let mut seen_urls = HashSet::new();
     let mut start = 0;
 
-    while let Some(relative) = text[start..].find("http") {
+    while candidates.len() < MAX_README_CANDIDATES {
+        let Some(relative) = text[start..].find("http") else {
+            break;
+        };
         let absolute = start + relative;
         let end = text[absolute..]
             .find(|character: char| {
@@ -894,7 +898,7 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
             .trim_end_matches(&['.', ',', ';', ':', '!', '?'][..]);
 
         if let Some(url) = normalize_github_source(raw) {
-            if likely_source_url(&url) {
+            if likely_source_url(&url) && seen_urls.insert(url.clone()) {
                 let source_repo =
                     source_repository_from_raw_url(&url).unwrap_or_else(|| repo.to_string());
 
@@ -910,8 +914,6 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
         start = end;
     }
 
-    candidates.sort_by(|a, b| a.url.cmp(&b.url));
-    candidates.dedup_by(|a, b| a.url == b.url);
     candidates
 }
 
@@ -1673,6 +1675,20 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].repo, "source-owner/source-repo");
         assert_eq!(candidates[0].repo_rank, 7);
+    }
+
+    #[test]
+    fn caps_readme_candidate_extraction() {
+        let mut text = String::new();
+        for index in 0..(super::MAX_README_CANDIDATES + 50) {
+            text.push_str(&format!(
+                "https://github.com/example/project-{index}/blob/main/subscriptions/all.txt\n"
+            ));
+        }
+
+        let candidates = extract_source_urls(&text, "reader/example", 0);
+
+        assert_eq!(candidates.len(), super::MAX_README_CANDIDATES);
     }
 
     #[test]
