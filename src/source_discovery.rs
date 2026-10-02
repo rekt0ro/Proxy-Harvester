@@ -495,14 +495,14 @@ async fn discover_from_repos(
     let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
         let client = client.clone();
         let token = token.map(str::to_owned);
-        async move { discover_repo(&client, &repo, repo_rank, token.as_deref()).await }
+        async move { discover_repo(&client, &repo, repo_rank).await }
     }))
     .buffer_unordered(24);
 
     let mut all = Vec::new();
     while let Some(result) = stream.next().await {
         match result {
-            Ok((candidates, _needs_tree)) => {
+            Ok(candidates) => {
                 all.extend(candidates);
             }
             Err(error) => {
@@ -580,8 +580,7 @@ async fn discover_repo(
     client: &Client,
     repo: &(String, String),
     repo_rank: usize,
-    token: Option<&str>,
-) -> Result<(Vec<Candidate>, bool), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let (name, branch) = repo;
 
     for readme in ["README.md", "README", "readme.md"] {
@@ -611,18 +610,13 @@ async fn discover_repo(
         }
 
         let body = read_limited_body(response, README_MAX_BYTES).await?;
-        let body = body
-            .iter()
-            .copied()
-            .take(README_MAX_BYTES)
-            .collect::<Vec<_>>();
         let text = String::from_utf8_lossy(&body);
         let candidates = extract_source_urls(&text, name, repo_rank);
 
-        return Ok((candidates, true));
+        return Ok(candidates);
     }
 
-    Ok((Vec::new(), true))
+    Ok(Vec::new())
 }
 
 async fn scan_repo_tree(
