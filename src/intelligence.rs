@@ -212,12 +212,14 @@ fn wilson_interval(successes: f64, attempts: f64, z: f64) -> (f64, f64) {
     let denominator = 1.0 + z_squared / attempts;
     let center = (proportion + z_squared / (2.0 * attempts)) / denominator;
     let margin = z
-        * ((proportion * (1.0 - proportion) / attempts)
-            + z_squared / (4.0 * attempts * attempts))
+        * ((proportion * (1.0 - proportion) / attempts) + z_squared / (4.0 * attempts * attempts))
             .sqrt()
         / denominator;
 
-    ((center - margin).clamp(0.0, 1.0), (center + margin).clamp(0.0, 1.0))
+    (
+        (center - margin).clamp(0.0, 1.0),
+        (center + margin).clamp(0.0, 1.0),
+    )
 }
 
 fn feature_key(config: &str, metrics: Option<&ProxyMetrics>) -> String {
