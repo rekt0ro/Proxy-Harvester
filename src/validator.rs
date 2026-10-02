@@ -417,14 +417,11 @@ pub async fn resolve_public_host(host: &str, port: u16) -> Option<std::net::IpAd
 
     let probes = stream::iter(public.iter().copied())
         .map(|ip| async move {
-            timeout(
-                Duration::from_millis(750),
-                TcpStream::connect((ip, port)),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map(|_| ip)
+            timeout(Duration::from_millis(750), TcpStream::connect((ip, port)))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|_| ip)
         })
         .buffer_unordered(8)
         .filter_map(|result| async move { result });
