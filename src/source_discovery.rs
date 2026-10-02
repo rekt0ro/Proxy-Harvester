@@ -163,7 +163,7 @@ impl Registry {
         checked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         unchecked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-        let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES.min(limit);
+        let unchecked_limit = MAX_UNCHECKED_ACTIVE_SOURCES.min(limit).min(unchecked.len());
 
         unchecked
             .into_iter()
@@ -1126,6 +1126,48 @@ mod tests {
         assert!(registry.sources().contains_key("source-a"));
         assert!(registry.sources().contains_key("source-c"));
         assert!(!registry.sources().contains_key("source-b"));
+    }
+
+    #[test]
+    fn fills_remaining_rotation_slots_when_unchecked_pool_is_small() {
+        let mut registry = Registry::new(1);
+
+        for (index, url) in ["source-a", "source-b", "source-c", "source-d"]
+            .into_iter()
+            .enumerate()
+        {
+            let now = index as u64 + 1;
+            registry.add_candidate(
+                &Candidate {
+                    url: url.to_string(),
+                    repo: "example/repo".to_string(),
+                    priority: 100,
+                },
+                now,
+            );
+        }
+
+        for (url, last_checked) in [("source-a", 10u64), ("source-b", 20u64)] {
+            registry
+                .sources_mut()
+                .get_mut(url)
+                .and_then(Value::as_object_mut)
+                .expect("source record exists")
+                .insert("last_checked".into(), Value::from(last_checked));
+        }
+
+        let active = registry.active_urls(4, &HashSet::new());
+
+        assert_eq!(active.len(), 4);
+        assert_eq!(
+            active,
+            vec![
+                "source-c".to_string(),
+                "source-d".to_string(),
+                "source-a".to_string(),
+                "source-b".to_string(),
+            ]
+        );
     }
 
     #[test]
