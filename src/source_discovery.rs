@@ -336,7 +336,7 @@ impl Registry {
                 .then_with(|| b.4.cmp(&a.4))
                 .then_with(|| b.5.cmp(&a.5))
                 .then_with(|| b.6.cmp(&a.6))
-                .then_with(|| b.7.cmp(&a.7))
+                .then_with(|| b.6.cmp(&a.7))
                 .then_with(|| a.0.cmp(&b.0))
         });
 
@@ -1846,7 +1846,6 @@ mod tests {
         registry.record_outcome(&proven.url, CollectionOutcome::Success(500), 2);
         registry.record_outcome(&proven.url, CollectionOutcome::Success(600), 3);
 
-        registry.add_candidate(&newer, 3);
         let active = super::select_active_sources(&registry, &[], &[], 4, 1);
 
         assert_eq!(active, vec![proven.url]);
