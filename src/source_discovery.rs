@@ -231,6 +231,16 @@ impl Registry {
                 continue;
             }
 
+            if !recoverable.contains(url)
+                && record
+                    .get("transport_reachable_last_run")
+                    .and_then(Value::as_u64)
+                    .is_some()
+                && !source_has_acceptable_transport_history(record)
+            {
+                continue;
+            }
+
             let first_seen = record
                 .get("first_seen")
                 .and_then(Value::as_u64)
@@ -337,7 +347,7 @@ impl Registry {
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
                 let effective_yield = source_selection_score(record)
-                    .mul_add(configs_last_run as f64, 0.0)
+                    .mul_add(transport_tested as f64, 0.0)
                     .round()
                     .clamp(0.0, u64::MAX as f64) as u64;
 
@@ -428,6 +438,7 @@ impl Registry {
             object.insert("failures".into(), Value::from(0u64));
             object.insert("failure_streak".into(), Value::from(0u64));
             object.insert("configs_total".into(), Value::from(0u64));
+            object.insert("transport_tested_last_run".into(), Value::from(0u64));
             object.insert("transport_reachable_last_run".into(), Value::from(0u64));
             object.insert("strict_tested_last_run".into(), Value::from(0u64));
             object.insert("strict_pass_last_run".into(), Value::from(0u64));
@@ -640,26 +651,43 @@ fn is_self_source(url: &str) -> bool {
     url.starts_with("https://raw.githubusercontent.com/rekt0ro/ProxyRift/")
 }
 
-fn source_has_meaningful_transport_history(record: &Value) -> bool {
-    let collected = record
-        .get("configs_last_run")
+fn source_transport_stats(record: &Value) -> Option<(u64, u64)> {
+    let tested = record
+        .get("transport_tested_last_run")
         .and_then(Value::as_u64)
-        .unwrap_or_default();
+        .or_else(|| {
+            record
+                .get("configs_last_run")
+                .and_then(Value::as_u64)
+        })?;
     let reachable = record
         .get("transport_reachable_last_run")
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)?;
 
-    collected >= MIN_PROVEN_CONFIGS_LAST_RUN
-        && reachable.is_some_and(|reachable| {
-            reachable >= MIN_KNOWN_TRANSPORT_REACHABLE
-                && (reachable as f64 / collected.max(1) as f64) >= MIN_PROVEN_TRANSPORT_RATE
-        })
+    Some((tested, reachable))
+}
+
+fn source_has_acceptable_transport_history(record: &Value) -> bool {
+    source_transport_stats(record).is_some_and(|(tested, reachable)| {
+        tested >= MIN_KNOWN_TRANSPORT_REACHABLE
+            && reachable >= MIN_KNOWN_TRANSPORT_REACHABLE
+            && (reachable as f64 / tested.max(1) as f64) >= MIN_PROVEN_TRANSPORT_RATE
+    })
+}
+
+fn source_has_meaningful_transport_history(record: &Value) -> bool {
+    source_transport_stats(record).is_some_and(|(tested, reachable)| {
+        tested >= MIN_PROVEN_CONFIGS_LAST_RUN
+            && reachable >= MIN_KNOWN_TRANSPORT_REACHABLE
+            && (reachable as f64 / tested.max(1) as f64) >= MIN_PROVEN_TRANSPORT_RATE
+    })
 }
 
 fn source_selection_score(record: &Value) -> f64 {
-    let collected = record
-        .get("configs_last_run")
+    let transport_tested = record
+        .get("transport_tested_last_run")
         .and_then(Value::as_u64)
+        .or_else(|| record.get("configs_last_run").and_then(Value::as_u64))
         .unwrap_or_default();
     let successes = record
         .get("successes")
@@ -689,11 +717,12 @@ fn source_selection_score(record: &Value) -> f64 {
         return 0.05 * reliability;
     };
 
-    if collected == 0 {
+    if transport_tested == 0 {
         return 0.0;
     }
 
-    let transport_rate = ((reachable as f64 + 4.0) / (collected as f64 + 8.0)).clamp(0.0, 1.0);
+    let transport_rate =
+        (reachable as f64 / transport_tested as f64).clamp(0.0, 1.0);
 
     let strict_rate = match (
         record.get("strict_tested_last_run").and_then(Value::as_u64),
@@ -741,9 +770,10 @@ fn source_quality_quarantined(record: &Value) -> bool {
 }
 
 pub async fn record_transport_results(
+    tested_by_source: &std::collections::HashMap<String, usize>,
     reachable_by_source: &std::collections::HashMap<String, usize>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if reachable_by_source.is_empty() {
+    if tested_by_source.is_empty() {
         return Ok(());
     }
 
@@ -752,7 +782,7 @@ pub async fn record_transport_results(
     let now = unix_now();
     let mut registry = load_registry(&registry_path, now).await;
 
-    for (url, reachable) in reachable_by_source {
+    for (url, tested) in tested_by_source {
         let Some(object) = registry
             .sources_mut()
             .get_mut(url)
@@ -761,21 +791,22 @@ pub async fn record_transport_results(
             continue;
         };
 
-        let collected = object
-            .get("configs_last_run")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
+        let reachable = reachable_by_source.get(url).copied().unwrap_or_default();
         let previous = object
             .get("transport_low_quality_streak")
             .and_then(Value::as_u64)
             .unwrap_or_default();
 
         object.insert(
+            "transport_tested_last_run".into(),
+            Value::from(*tested as u64),
+        );
+        object.insert(
             "transport_reachable_last_run".into(),
-            Value::from(*reachable as u64),
+            Value::from(reachable as u64),
         );
 
-        let low_quality = collected >= 100 && (*reachable as f64 / collected as f64) < 0.08;
+        let low_quality = *tested >= 100 && (reachable as f64 / *tested as f64) < 0.08;
         object.insert(
             "transport_low_quality_streak".into(),
             Value::from(if low_quality {
@@ -2239,6 +2270,37 @@ mod tests {
     }
 
     #[test]
+    fn retained_transport_sample_is_used_for_quality() {
+        let mut registry = Registry::new(1);
+        let source = Candidate {
+            url: "source-retained-sample".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&source, 1);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(10_000), 2);
+        registry.record_outcome(&source.url, CollectionOutcome::Success(10_000), 3);
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_tested_last_run".into(), Value::from(250u64));
+        registry
+            .sources_mut()
+            .get_mut(&source.url)
+            .and_then(Value::as_object_mut)
+            .expect("source exists")
+            .insert("transport_reachable_last_run".into(), Value::from(20u64));
+
+        assert!(super::source_has_meaningful_transport_history(
+            registry.sources().get(&source.url).expect("source exists")
+        ));
+    }
+
+    #[test]
     fn self_sources_are_never_active() {
         let mut registry = Registry::new(1);
         let source = Candidate {
@@ -2290,10 +2352,7 @@ mod tests {
         }
 
         let active = registry.active_urls(2, &HashSet::new(), &HashSet::new());
-        assert_eq!(
-            active,
-            vec!["source-good".to_string(), "source-bad".to_string()]
-        );
+        assert_eq!(active, vec!["source-good".to_string()]);
     }
 
     #[test]
