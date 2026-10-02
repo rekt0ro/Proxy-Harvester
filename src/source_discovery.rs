@@ -9,7 +9,7 @@ use tokio::fs;
 use url::Url;
 
 const REGISTRY_VERSION: u64 = 1;
-const SEARCH_PER_PAGE: usize = 50;
+const SEARCH_PER_PAGE: usize = 100;
 const MAX_DISCOVERY_REPOS: usize = 300;
 const MAX_TREE_SCANS: usize = 60;
 const MAX_TREE_FILES_PER_REPO: usize = 25;
@@ -84,6 +84,13 @@ const SOURCE_EXTENSIONS: [&str; 8] = [
     ".txt", ".yaml", ".yml", ".json", ".conf", ".list", ".sub", ".ini",
 ];
 const SOURCE_EXTENSIONS_WITHOUT_HINT: [&str; 3] = [".txt", ".list", ".sub"];
+
+#[derive(Clone, Debug)]
+struct Repository {
+    name: String,
+    branch: String,
+    pushed_at: String,
+}
 
 #[derive(Clone, Debug)]
 struct Candidate {
@@ -363,7 +370,12 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
     };
 
     let mut seen_repositories = HashSet::new();
-    repos.retain(|(name, _)| seen_repositories.insert(name.clone()));
+    repos.retain(|repo| seen_repositories.insert(repo.name.clone()));
+    repos.sort_by(|a, b| {
+        b.pushed_at
+            .cmp(&a.pushed_at)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     repos.truncate(MAX_DISCOVERY_REPOS);
 
     let mut discovered = if repos.is_empty() {
@@ -500,7 +512,7 @@ pub async fn record_collection_results(
 
 async fn discover_from_repos(
     client: &Client,
-    repos: &[(String, String)],
+    repos: &[Repository],
     token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut stream = stream::iter(repos.iter().cloned().enumerate().map(|(repo_rank, repo)| {
@@ -529,14 +541,14 @@ async fn discover_from_repos(
     let mut tree_targets = repos
         .iter()
         .enumerate()
-        .filter(|(_, (repo, _))| !discovered_repos.contains(repo.as_str()))
+        .filter(|(_, repo)| !discovered_repos.contains(repo.name.as_str()))
         .take(MAX_TREE_SCANS)
         .map(|(repo_rank, repo)| (repo_rank, repo.clone()))
         .collect::<Vec<_>>();
 
     let mut selected = tree_targets
         .iter()
-        .map(|(_, (repo, _))| repo.clone())
+        .map(|(_, repo)| repo.name.clone())
         .collect::<HashSet<_>>();
 
     if tree_targets.len() < MAX_TREE_SCANS {
@@ -545,7 +557,7 @@ async fn discover_from_repos(
                 break;
             }
 
-            if selected.insert(repo.0.clone()) {
+            if selected.insert(repo.name.clone()) {
                 tree_targets.push((repo_rank, repo.clone()));
             }
         }
@@ -580,15 +592,18 @@ async fn discover_from_repos(
 
 async fn discover_repo(
     client: &Client,
-    repo: &(String, String),
+    repo: &Repository,
     repo_rank: usize,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
-    let (name, branch) = repo;
+    let name = &repo.name;
+    let branch = &repo.branch;
 
     for readme in ["README.md", "README", "readme.md"] {
         let url = format!(
             "https://raw.githubusercontent.com/{}/{}/{}",
-            name, branch, readme
+            name,
+            percent_encode_path(branch),
+            readme
         );
 
         let response = raw_get(client, &url).await?;
@@ -621,11 +636,12 @@ async fn discover_repo(
 
 async fn scan_repo_tree(
     client: &Client,
-    repo: &(String, String),
+    repo: &Repository,
     repo_rank: usize,
     token: Option<&str>,
 ) -> Result<Vec<Candidate>, Box<dyn std::error::Error + Send + Sync>> {
-    let (name, branch) = repo;
+    let name = &repo.name;
+    let branch = &repo.branch;
     let url = format!(
         "https://api.github.com/repos/{}/git/trees/{}?recursive=1",
         name,
@@ -739,7 +755,16 @@ async fn search_repositories(
                     .and_then(Value::as_str)
                     .unwrap_or("main");
 
-                repos.push((name.to_string(), branch.to_string()));
+                let pushed_at = item
+            .get("pushed_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        repos.push(Repository {
+            name: name.to_string(),
+            branch: branch.to_string(),
+            pushed_at: pushed_at.to_string(),
+        });
             }
         }
     }
@@ -972,6 +997,25 @@ fn is_source_path(path: &str) -> bool {
     let hint_ok = has_path_hint(&lowered);
 
     (extension_ok && (extension_without_hint || hint_ok)) || (!has_extension && hint_ok)
+}
+
+fn percent_encode_path(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(value.len());
+
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/')
+        {
+            output.push(*byte as char);
+        } else {
+            output.push('%');
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+
+    output
 }
 
 fn percent_encode(value: &str) -> String {
