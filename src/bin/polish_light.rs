@@ -24,6 +24,8 @@ const DEFAULT_SELECTION_LIMIT: usize = 200;
 const DEFAULT_MAX_PER_ENDPOINT: usize = 1;
 const DEFAULT_MAX_PER_FAMILY: usize = 3;
 const RECHECK_FAMILY_DIVERSITY: usize = 3;
+const RECHECK_EXPLORATION_PERCENT: usize = 15;
+const MAX_RECHECK_EXPLORATION: usize = 64;
 const MAX_FINAL_RECHECK_ATTEMPTS: usize = 2;
 const TRANSFER_RESERVE_DEFAULT_PASS_RATE: f64 = 0.80;
 const TRANSFER_RESERVE_SAFETY_FACTOR: f64 = 1.08;
@@ -47,27 +49,147 @@ const LIGHT_TRAINING_PATH: &str = "subscriptions/light-training.jsonl";
 fn adaptive_recheck_limit(
     remaining: usize,
     configured_limit: usize,
-    strict_attempts: usize,
+    checked_candidates: usize,
     strict_verified: usize,
 ) -> usize {
     if remaining == 0 || configured_limit == 0 {
         return 0;
     }
 
-    let observed_rate = if strict_attempts < 20 {
+    let observed_rate = if checked_candidates < 20 {
         0.20
     } else {
-        ((strict_verified as f64 + 2.0) / (strict_attempts as f64 + 4.0)).clamp(0.05, 1.0)
+        ((strict_verified as f64 + 2.0) / (checked_candidates as f64 + 4.0)).clamp(0.05, 1.0)
     };
 
     let estimated = ((remaining as f64 / observed_rate) * 1.25).ceil() as usize;
-    let exploration_floor = if strict_attempts == 0 {
+    let exploration_floor = if checked_candidates == 0 {
         remaining.saturating_mul(4).saturating_add(50)
     } else {
         remaining.saturating_mul(2).saturating_add(20)
     };
 
     estimated.max(exploration_floor).min(configured_limit)
+}
+
+fn recheck_exploration_limit(total_limit: usize) -> usize {
+    if total_limit == 0 {
+        return 0;
+    }
+
+    total_limit
+        .saturating_mul(RECHECK_EXPLORATION_PERCENT)
+        .div_ceil(100)
+        .clamp(1, MAX_RECHECK_EXPLORATION)
+        .min(total_limit)
+}
+
+fn recheck_exploration_seed(wave: usize) -> u64 {
+    let base = env::var("GITHUB_RUN_ID")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default()
+        });
+
+    base ^ (wave as u64).wrapping_mul(0x9e3779b97f4a7c15)
+}
+
+fn exploration_sort_key(config: &str, seed: u64) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64 ^ seed;
+
+    for byte in config.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    hash
+}
+
+fn select_recheck_candidates(
+    model_ranked: &[String],
+    untested: &[String],
+    limit: usize,
+    max_family: usize,
+    exploration_limit: usize,
+    seed: u64,
+) -> (Vec<String>, usize) {
+    if limit == 0 || model_ranked.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let mut selected = Vec::with_capacity(limit.min(model_ranked.len()));
+    let mut selected_set = HashSet::new();
+    let mut seen_endpoints = HashSet::new();
+    let mut family_counts = HashMap::<String, usize>::new();
+
+    let mut exploration_ranked = untested.to_vec();
+    exploration_ranked.sort_unstable_by_key(|config| exploration_sort_key(config, seed));
+
+    let try_add = |config: &String,
+                   selected: &mut Vec<String>,
+                   selected_set: &mut HashSet<String>,
+                   seen_endpoints: &mut HashSet<(String, u16)>,
+                   family_counts: &mut HashMap<String, usize>|
+     -> bool {
+        if selected.len() >= limit || !selected_set.insert(config.clone()) {
+            return false;
+        }
+
+        let family = family_key(config);
+        if family_counts.get(&family).copied().unwrap_or(0) >= max_family {
+            selected_set.remove(config);
+            return false;
+        }
+
+        if let Some(ep) = endpoint(config) {
+            if seen_endpoints.contains(&ep) {
+                selected_set.remove(config);
+                return false;
+            }
+            seen_endpoints.insert(ep);
+        }
+
+        *family_counts.entry(family).or_default() += 1;
+        selected.push(config.clone());
+        true
+    };
+
+    let mut exploration_selected = 0usize;
+    for config in exploration_ranked {
+        if selected.len() >= limit || exploration_selected >= exploration_limit {
+            break;
+        }
+
+        if try_add(
+            &config,
+            &mut selected,
+            &mut selected_set,
+            &mut seen_endpoints,
+            &mut family_counts,
+        ) {
+            exploration_selected += 1;
+        }
+    }
+
+    for config in model_ranked {
+        if selected.len() >= limit {
+            break;
+        }
+
+        let _ = try_add(
+            config,
+            &mut selected,
+            &mut selected_set,
+            &mut seen_endpoints,
+            &mut family_counts,
+        );
+    }
+
+    (selected, exploration_selected)
 }
 
 fn selection_eligible_count(
@@ -361,10 +483,11 @@ fn persist_history(
         .as_secs();
 
     let mut updated = history.clone();
-    for (config, attempts) in final_attempts {
+    for config in final_attempts.keys() {
         let fingerprint = history_fingerprint(config);
         let entry = updated.entry(fingerprint).or_default();
-        entry.checks = entry.checks.saturating_add(*attempts as u64);
+        // History is candidate-level. Retries must not dilute the historical pass rate.
+        entry.checks = entry.checks.saturating_add(1);
         entry.passes = entry
             .passes
             .saturating_add(u64::from(final_metadata.contains_key(config)));
@@ -1956,11 +2079,11 @@ async fn main() -> Result<(), String> {
 
         let remaining = selection_limit.saturating_sub(transfer_selected);
 
-        let strict_attempts = final_attempts.values().copied().sum::<usize>();
+        let checked_candidates = final_attempts.len();
         let dynamic_limit = adaptive_recheck_limit(
             remaining,
             final_recheck_limit,
-            strict_attempts,
+            checked_candidates,
             final_metadata.len(),
         );
 
@@ -1974,10 +2097,18 @@ async fn main() -> Result<(), String> {
             .cloned()
             .collect::<Vec<_>>();
 
-        let mut ai_ranked = untested;
+        let mut ai_ranked = untested.clone();
         intelligence.rank(&mut ai_ranked, &global_metadata, &global_positions);
-        let final_candidates =
-            diversify_recheck_candidates(&ai_ranked, dynamic_limit, RECHECK_FAMILY_DIVERSITY);
+
+        let exploration_limit = recheck_exploration_limit(dynamic_limit);
+        let (final_candidates, exploration_selected) = select_recheck_candidates(
+            &ai_ranked,
+            &untested,
+            dynamic_limit,
+            RECHECK_FAMILY_DIVERSITY,
+            exploration_limit,
+            recheck_exploration_seed(wave),
+        );
 
         if final_candidates.is_empty() {
             continue;
@@ -1988,8 +2119,9 @@ async fn main() -> Result<(), String> {
         }
 
         println!(
-            "[INFO] 🔎 [LIGHT RECHECK] WAVE {wave} | TESTING {} CANDIDATES",
-            final_candidates.len()
+            "[INFO] 🔎 [LIGHT RECHECK] WAVE {wave} | TESTING {} CANDIDATES | EXPLORATION: {}",
+            final_candidates.len(),
+            exploration_selected
         );
 
         let primary_metadata = validate_light_batch(
@@ -2018,8 +2150,8 @@ async fn main() -> Result<(), String> {
             final_metadata.insert(config, metrics);
         }
 
-        if let Some(message) = intelligence
-            .anomaly_message(final_attempts.values().copied().sum(), final_metadata.len())
+        if let Some(message) =
+            intelligence.anomaly_message(final_attempts.len(), final_metadata.len())
         {
             println!("[WARN] ⚠️ {message}");
         }
@@ -2217,9 +2349,10 @@ mod tests {
     use super::{
         adaptive_recheck_limit, adaptive_transfer_test_limit, adjust_transfer_workers,
         has_disabled_tls_verification, history_fingerprint, light_backend, light_training_features,
-        merge_light_metadata, normalize_light_config, select_verified_configs,
-        selection_additional_potential_count, selection_eligible_count, selection_potential_count,
-        transfer_reserve_target, LightBackend, ProxyMetrics,
+        merge_light_metadata, normalize_light_config, recheck_exploration_limit,
+        select_recheck_candidates, select_verified_configs, selection_additional_potential_count,
+        selection_eligible_count, selection_potential_count, transfer_reserve_target, LightBackend,
+        ProxyMetrics,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
@@ -2274,6 +2407,30 @@ mod tests {
         assert_eq!(adaptive_recheck_limit(100, 500, 0, 0), 500);
         assert_eq!(adaptive_recheck_limit(100, 500, 100, 50), 250);
         assert_eq!(adaptive_recheck_limit(100, 500, 100, 20), 500);
+    }
+
+    #[test]
+    fn recheck_exploration_is_capped_and_scales_with_budget() {
+        assert_eq!(recheck_exploration_limit(350), 53);
+        assert_eq!(recheck_exploration_limit(1000), 64);
+        assert_eq!(recheck_exploration_limit(2), 1);
+    }
+
+    #[test]
+    fn recheck_selection_keeps_a_controlled_exploration_slice() {
+        let configs = vec![
+            "vless://a@example.com:443".to_string(),
+            "vless://b@example.net:443".to_string(),
+            "trojan://c@example.org:8443".to_string(),
+            "vmess://d@example.dev:9443".to_string(),
+            "hysteria2://e@example.io:443".to_string(),
+            "socks5://f@example.xyz:1080".to_string(),
+        ];
+
+        let (selected, explored) = select_recheck_candidates(&configs, &configs, 4, 3, 2, 42);
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(explored, 2);
     }
 
     #[test]

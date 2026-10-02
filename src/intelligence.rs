@@ -7,7 +7,7 @@ const MODEL_VERSION: u64 = 1;
 const MIN_TRAINING_SAMPLES: u64 = 50;
 const MIN_FEATURES: usize = 3;
 const MIN_ANOMALY_TRAINING_SAMPLES: u64 = 200;
-const MIN_ANOMALY_ATTEMPTS: usize = 50;
+const MIN_ANOMALY_CANDIDATES: usize = 50;
 const MIN_ANOMALY_GAP: f64 = 0.15;
 const ANOMALY_Z_SCORE: f64 = 1.96;
 
@@ -152,17 +152,17 @@ impl IntelligenceModel {
         });
     }
 
-    pub fn anomaly_message(&self, attempts: usize, successes: usize) -> Option<String> {
+    pub fn anomaly_message(&self, checked_candidates: usize, successes: usize) -> Option<String> {
         if !self.is_mature()
             || self.total_attempts < MIN_ANOMALY_TRAINING_SAMPLES
-            || attempts < MIN_ANOMALY_ATTEMPTS
+            || checked_candidates < MIN_ANOMALY_CANDIDATES
         {
             return None;
         }
 
-        let attempts = attempts as f64;
-        let successes = (successes as f64).min(attempts);
-        let observed = successes / attempts;
+        let checked_candidates = checked_candidates as f64;
+        let successes = (successes as f64).min(checked_candidates);
+        let observed = successes / checked_candidates;
         let expected = (self.total_successes as f64 + 2.0) / (self.total_attempts as f64 + 4.0);
         let gap = (observed - expected).abs();
 
@@ -170,7 +170,7 @@ impl IntelligenceModel {
             return None;
         }
 
-        let (lower, upper) = wilson_interval(successes, attempts, ANOMALY_Z_SCORE);
+        let (lower, upper) = wilson_interval(successes, checked_candidates, ANOMALY_Z_SCORE);
         let statistically_distinct = if observed < expected {
             upper < expected
         } else {
@@ -289,6 +289,14 @@ mod tests {
 
         assert!(model.anomaly_message(50, 34).is_none());
         assert!(model.anomaly_message(50, 32).is_some());
+    }
+
+    #[test]
+    fn anomaly_signal_uses_unique_candidate_checks() {
+        let model = mature_model_with_baseline(200, 160);
+
+        assert!(model.anomaly_message(100, 52).is_some());
+        assert!(model.anomaly_message(100, 75).is_none());
     }
 
     #[test]

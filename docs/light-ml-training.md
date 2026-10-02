@@ -55,8 +55,18 @@ Rows older than 45 days are removed during persistence. The dataset is capped
 at 50,000 rows. Malformed or incompatible rows are ignored rather than causing
 the Light validation pipeline to fail.
 
+History pass rates and AI anomaly measurements are candidate-level metrics.
+Repeated strict rechecks of the same candidate do not count as additional
+candidate observations, so retries cannot artificially dilute those rates.
+
 Persistence is atomic and observation IDs are idempotent, so retrying the same
 update run does not duplicate its observations.
+
+Light strict rechecks reserve 15% of each recheck budget, capped at 64
+candidates, for run-seeded exploration. Exploration candidates are selected
+without the learned ranking signal while still respecting endpoint and family
+diversity limits. This creates a controlled source of off-policy examples for
+future model training without removing the deterministic safety gates.
 
 ## Future LightGBM gate
 
