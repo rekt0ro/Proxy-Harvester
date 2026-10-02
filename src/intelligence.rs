@@ -6,6 +6,10 @@ use std::fs;
 const MODEL_VERSION: u64 = 1;
 const MIN_TRAINING_SAMPLES: u64 = 50;
 const MIN_FEATURES: usize = 3;
+const MIN_ANOMALY_TRAINING_SAMPLES: u64 = 200;
+const MIN_ANOMALY_ATTEMPTS: usize = 50;
+const MIN_ANOMALY_GAP: f64 = 0.15;
+const ANOMALY_Z_SCORE: f64 = 1.96;
 
 #[derive(Clone, Debug, Default)]
 struct FeatureStats {
@@ -149,14 +153,31 @@ impl IntelligenceModel {
     }
 
     pub fn anomaly_message(&self, attempts: usize, successes: usize) -> Option<String> {
-        if !self.is_mature() || attempts < 20 {
+        if !self.is_mature()
+            || self.total_attempts < MIN_ANOMALY_TRAINING_SAMPLES
+            || attempts < MIN_ANOMALY_ATTEMPTS
+        {
             return None;
         }
 
-        let observed = successes as f64 / attempts as f64;
+        let attempts = attempts as f64;
+        let successes = (successes as f64).min(attempts);
+        let observed = successes / attempts;
         let expected = (self.total_successes as f64 + 2.0) / (self.total_attempts as f64 + 4.0);
+        let gap = (observed - expected).abs();
 
-        if (observed - expected).abs() < 0.20 {
+        if gap < MIN_ANOMALY_GAP {
+            return None;
+        }
+
+        let (lower, upper) = wilson_interval(successes, attempts, ANOMALY_Z_SCORE);
+        let statistically_distinct = if observed < expected {
+            upper < expected
+        } else {
+            lower > expected
+        };
+
+        if !statistically_distinct {
             return None;
         }
 
@@ -183,6 +204,20 @@ impl IntelligenceModel {
         let exploration = 0.05 / ((attempts + 1) as f64).sqrt();
         (mean + exploration).clamp(0.0, 1.0)
     }
+}
+
+fn wilson_interval(successes: f64, attempts: f64, z: f64) -> (f64, f64) {
+    let proportion = (successes / attempts).clamp(0.0, 1.0);
+    let z_squared = z * z;
+    let denominator = 1.0 + z_squared / attempts;
+    let center = (proportion + z_squared / (2.0 * attempts)) / denominator;
+    let margin = z
+        * ((proportion * (1.0 - proportion) / attempts)
+            + z_squared / (4.0 * attempts * attempts))
+            .sqrt()
+        / denominator;
+
+    ((center - margin).clamp(0.0, 1.0), (center + margin).clamp(0.0, 1.0))
 }
 
 fn feature_key(config: &str, metrics: Option<&ProxyMetrics>) -> String {
@@ -215,6 +250,52 @@ mod tests {
             jitter_ms: 1.0,
             throughput_kbps: 1000.0,
         }
+    }
+
+    fn mature_model_with_baseline(attempts: usize, successes: usize) -> IntelligenceModel {
+        let mut model = IntelligenceModel::default();
+        let configs = [
+            "vless://a@example.com:443",
+            "trojan://b@example.com:443",
+            "hysteria2://c@example.com:443",
+        ];
+
+        for index in 0..attempts {
+            model.update(
+                configs[index % configs.len()],
+                Some(&metrics((index % 3 * 100 + 100) as f64)),
+                1,
+                index < successes,
+            );
+        }
+
+        model
+    }
+
+    #[test]
+    fn anomaly_signal_waits_for_historical_and_current_sample_sizes() {
+        let model = mature_model_with_baseline(100, 80);
+        assert!(model.anomaly_message(50, 10).is_none());
+
+        let model = mature_model_with_baseline(200, 160);
+        assert!(model.anomaly_message(30, 18).is_none());
+    }
+
+    #[test]
+    fn anomaly_signal_requires_meaningful_gap_and_statistical_separation() {
+        let model = mature_model_with_baseline(200, 160);
+
+        assert!(model.anomaly_message(50, 34).is_none());
+        assert!(model.anomaly_message(50, 32).is_some());
+    }
+
+    #[test]
+    fn wilson_interval_stays_within_probability_bounds() {
+        let (lower, upper) = super::wilson_interval(32.0, 50.0, 1.96);
+        assert!((0.0..=1.0).contains(&lower));
+        assert!((0.0..=1.0).contains(&upper));
+        assert!(lower < 0.64);
+        assert!(upper > 0.64);
     }
 
     #[test]
