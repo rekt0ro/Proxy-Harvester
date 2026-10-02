@@ -21,6 +21,7 @@ const MAX_REGISTRY_SOURCES: usize = 10_000;
 const MAX_NEW_ACTIVE_SOURCES: usize = 300;
 const MAX_UNCHECKED_ACTIVE_SOURCES: usize = 300;
 const MAX_FAILURE_STREAK: u64 = 5;
+const RETIRED_SOURCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_TREE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const GITHUB_REQUEST_RETRIES: usize = 2;
 const GITHUB_RETRY_BASE_MS: u64 = 500;
@@ -212,7 +213,23 @@ impl Registry {
         });
 
         if let Some(object) = record.as_object_mut() {
-            object.insert("last_discovered".into(), Value::from(now));
+            let failure_streak = object
+                .get("failure_streak")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let last_checked = object.get("last_checked").and_then(Value::as_u64);
+
+            if failure_streak >= MAX_FAILURE_STREAK
+                && last_checked.is_some_and(|checked| {
+                    now.saturating_sub(checked) >= RETIRED_SOURCE_COOLDOWN_SECS
+                })
+            {
+                object.insert("failure_streak".into(), Value::from(0u64));
+                object.insert("last_discovered".into(), Value::from(now));
+            } else if failure_streak < MAX_FAILURE_STREAK {
+                object.insert("last_discovered".into(), Value::from(now));
+            }
+
             if object
                 .get("repo")
                 .and_then(Value::as_str)
@@ -272,16 +289,17 @@ impl Registry {
         }
     }
 
-    fn retire_failed(&mut self) -> usize {
-        let before = self.sources().len();
-        self.sources_mut().retain(|_, record| {
-            record
-                .get("failure_streak")
-                .and_then(Value::as_u64)
-                .unwrap_or_default()
-                < MAX_FAILURE_STREAK
-        });
-        before.saturating_sub(self.sources().len())
+    fn retire_failed(&self) -> usize {
+        self.sources()
+            .values()
+            .filter(|record| {
+                record
+                    .get("failure_streak")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    >= MAX_FAILURE_STREAK
+            })
+            .count()
     }
 
     fn prune(&mut self, limit: usize, protected: &HashSet<String>) -> usize {
@@ -1131,6 +1149,31 @@ mod tests {
         Registry, Value, MAX_ACTIVE_SOURCES,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn retired_sources_stay_out_until_cooldown_expires() {
+        let mut registry = Registry::new(1);
+        let candidate = Candidate {
+            url: "source-a".to_string(),
+            repo: "example/repo".to_string(),
+            repo_rank: 0,
+            priority: 100,
+        };
+
+        registry.add_candidate(&candidate, 1);
+        for _ in 0..MAX_FAILURE_STREAK {
+            registry.record_result("source-a", 0, 1);
+        }
+
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS);
+        assert!(registry.active_urls(1, &HashSet::new()).is_empty());
+
+        registry.add_candidate(&candidate, RETIRED_SOURCE_COOLDOWN_SECS + 1);
+        assert_eq!(
+            registry.active_urls(1, &HashSet::new()),
+            vec!["source-a".to_string()]
+        );
+    }
 
     #[test]
     fn preserves_oldest_source_rotation_order() {
