@@ -394,7 +394,9 @@ pub async fn discover_and_write() -> Result<(usize, usize), Box<dyn std::error::
         .iter()
         .filter(|candidate| !existing_urls.contains(&candidate.url))
     {
-        let count = new_counts_by_repo.entry(candidate.repo.clone()).or_default();
+        let count = new_counts_by_repo
+            .entry(candidate.repo.clone())
+            .or_default();
         if *count >= MAX_NEW_SOURCES_PER_REPO {
             continue;
         }
