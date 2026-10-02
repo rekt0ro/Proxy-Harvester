@@ -2110,12 +2110,10 @@ async fn main() -> Result<(), String> {
     );
 
     if selected.is_empty() {
-        return Err(
-            "selected Light validation produced no configs after the 10 MiB gate".to_string(),
+        println!(
+            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED 10 MiB GATE | PUBLISHING 0 CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION"
         );
-    }
-
-    if selected.len() < selection_limit {
+    } else if selected.len() < selection_limit {
         println!(
             "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {}",
             selected.len(),
