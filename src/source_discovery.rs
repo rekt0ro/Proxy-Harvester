@@ -927,9 +927,11 @@ fn extract_source_urls(text: &str, repo: &str, repo_rank: usize) -> Vec<Candidat
 
         if let Some(url) = normalize_github_source(raw) {
             if likely_source_url(&url) {
+                let source_repo = source_repository_from_raw_url(&url).unwrap_or_else(|| repo.to_string());
+
                 candidates.push(Candidate {
                     url,
-                    repo: repo.to_string(),
+                    repo: source_repo,
                     repo_rank,
                     priority: 100,
                 });
@@ -1019,6 +1021,23 @@ fn normalize_github_source(raw: &str) -> Option<String> {
     let normalized = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
     (normalized.len() <= MAX_SOURCE_URL_LENGTH).then_some(normalized)
 }
+fn source_repository_from_raw_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if parsed.host_str()? != "raw.githubusercontent.com" {
+        return None;
+    }
+
+    let mut segments = parsed.path_segments()?;
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+
+    Some(format!("{owner}/{repo}"))
+}
+
 fn has_path_hint(path: &str) -> bool {
     path.split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|segment| !segment.is_empty())
@@ -1422,6 +1441,17 @@ mod tests {
             "a".repeat(MAX_SOURCE_URL_LENGTH)
         );
         assert!(normalize_github_source(&raw).is_none());
+    }
+
+    #[test]
+    fn attributes_readme_links_to_their_source_repository() {
+        let text =
+            "https://github.com/source-owner/source-repo/blob/main/subscriptions/all.txt";
+        let candidates = extract_source_urls(text, "reader-owner/reader-repo", 7);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].repo, "source-owner/source-repo");
+        assert_eq!(candidates[0].repo_rank, 7);
     }
 
     #[test]
