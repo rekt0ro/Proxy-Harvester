@@ -502,13 +502,6 @@ jobs:
         run: |
           set +e
 
-          status_icon="✅"
-          status_text="Complete"
-          case "$JOB_STATUS" in
-            failure) status_icon="❌"; status_text="Failed" ;;
-            cancelled) status_icon="⏹️"; status_text="Cancelled" ;;
-          esac
-
           stage_status() {
             local outcome="$1"
             case "$outcome" in
@@ -537,6 +530,7 @@ jobs:
           fi
 
           publish_status="$(stage_status "$PUBLISH_OUTCOME")"
+          overall_status="$(stage_status "$JOB_STATUS")"
 
           count_configs() {
             if [ -s "$1" ]; then
@@ -721,6 +715,7 @@ jobs:
             echo
             echo "| Stage | Status |"
             echo "|---|---|"
+            echo "| Workflow | $overall_status |"
             echo "| Collection & validation | $collection_status |"
             echo "| Subscription generation | $generation_status |"
             echo "| Publish | $publish_status |"
