@@ -3006,6 +3006,7 @@ pub async fn validate_candidates_with_targets_once(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_candidates_with_targets_once_with_minimum_body(
     binary: &str,
     candidates: &[String],
