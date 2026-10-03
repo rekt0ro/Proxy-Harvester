@@ -2678,40 +2678,35 @@ async fn probe_request_sustained(
     max_idle_gap: Duration,
 ) -> Result<ProbeSample, ProbeError> {
     let started = Instant::now();
-    let mut total_bytes = 0usize;
+    let required_bytes = segments.max(1).saturating_mul(minimum_body_bytes);
 
-    for _ in 0..segments.max(1) {
-        wait_for_rate_limit().await;
-        let mut request = client.get(url.as_str());
-        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
-        let response = request.send().await.map_err(|_| ProbeError::Failed)?;
+    wait_for_rate_limit().await;
+    let mut request = client.get(url.as_str());
+    request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    let response = request.send().await.map_err(|_| ProbeError::Failed)?;
 
-        if response.status().as_u16() == 429 {
-            let wait = rate_limit_wait(response.headers());
-            let event = RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
-            let jitter_ms = RATE_LIMIT_JITTER_BASE_MS + (event % 8) * RATE_LIMIT_JITTER_STEP_MS;
-            let delay = wait
-                .min(Duration::from_secs(2))
-                .max(Duration::from_millis(jitter_ms));
-            sleep(delay).await;
-            return Err(ProbeError::Failed);
-        }
-
-        if !response.status().is_success() || !valid_probe_status(&url, response.status().as_u16())
-        {
-            return Err(ProbeError::Failed);
-        }
-
-        let body =
-            read_response_body_at_least_with_max_idle(response, minimum_body_bytes, max_idle_gap)
-                .await
-                .map_err(|_| ProbeError::Failed)?;
-        total_bytes = total_bytes.saturating_add(body.len());
+    if response.status().as_u16() == 429 {
+        let wait = rate_limit_wait(response.headers());
+        let event = RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
+        let jitter_ms = RATE_LIMIT_JITTER_BASE_MS + (event % 8) * RATE_LIMIT_JITTER_STEP_MS;
+        let delay = wait
+            .min(Duration::from_secs(2))
+            .max(Duration::from_millis(jitter_ms));
+        sleep(delay).await;
+        return Err(ProbeError::Failed);
     }
+
+    if !response.status().is_success() || !valid_probe_status(&url, response.status().as_u16()) {
+        return Err(ProbeError::Failed);
+    }
+
+    let body = read_response_body_at_least_with_max_idle(response, required_bytes, max_idle_gap)
+        .await
+        .map_err(|_| ProbeError::Failed)?;
 
     Ok(ProbeSample {
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
-        bytes: total_bytes,
+        bytes: body.len(),
     })
 }
 
