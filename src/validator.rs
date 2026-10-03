@@ -3785,6 +3785,38 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
 
+    #[tokio::test]
+    async fn sustained_stream_reader_rejects_long_idle_gap() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n";
+            socket.write_all(response).await.unwrap();
+            socket.write_all(b"abcd").await.unwrap();
+            sleep(Duration::from_millis(100)).await;
+            socket.write_all(b"efgh").await.unwrap();
+        });
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+
+        let result = read_response_body_at_least_with_max_idle(
+            response,
+            8,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(result.is_err());
+        server.await.unwrap();
+    }
+
     #[test]
     fn sustained_stream_policy_is_bounded() {
         let policy = ValidationPolicy::new(15_000.0, 1, 1, 2).with_sustained_stream(
