@@ -5,7 +5,8 @@ use crate::validator::{
     ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
     PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, SUSTAINED_THROUGHPUT_TIMEOUT,
+    STRICT_SECONDARY_ATTEMPTS, STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
+    SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1479,38 +1480,56 @@ async fn check_batch_targets(
         let mut secondary_success = vec![false; count];
         if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
-                let eligible = (0..count)
-                    .filter(|&entry_index| {
-                        !secondary_success[entry_index]
-                            && successes[entry_index] >= policy.min_successful_attempts
-                            && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
-                                || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
-                    })
-                    .collect::<Vec<_>>();
+                let mut secondary_attempts = vec![0usize; count];
+                let mut secondary_successes = vec![0usize; count];
 
-                if eligible.is_empty() {
-                    break;
+                for attempt in 0..STRICT_SECONDARY_ATTEMPTS {
+                    let eligible = (0..count)
+                        .filter(|&entry_index| {
+                            secondary_attempts[entry_index] < STRICT_SECONDARY_ATTEMPTS
+                                && successes[entry_index] >= policy.min_successful_attempts
+                                && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
+                                    || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if eligible.is_empty() {
+                        break;
+                    }
+
+                    let results = stream::iter(eligible)
+                        .map(|entry_index| {
+                            let client = &clients[entry_index];
+                            let target = target.clone();
+                            async move { (entry_index, request_url(client, &target).await) }
+                        })
+                        .buffer_unordered(workers.max(1))
+                        .collect::<Vec<_>>()
+                        .await;
+
+                    for (entry_index, result) in results {
+                        secondary_attempts[entry_index] += 1;
+                        if let Ok(sample) = result {
+                            if sample.latency_ms <= policy.max_latency_ms {
+                                secondary_successes[entry_index] += 1;
+                            }
+                            if is_throughput_target(target) && sample.latency_ms > 0.0 {
+                                throughputs[entry_index]
+                                    .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                            }
+                        }
+                    }
+
+                    if attempt + 1 < STRICT_SECONDARY_ATTEMPTS {
+                        tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
+                    }
                 }
 
-                let results = stream::iter(eligible)
-                    .map(|entry_index| {
-                        let client = &clients[entry_index];
-                        let target = target.clone();
-                        async move { (entry_index, request_url(client, &target).await) }
-                    })
-                    .buffer_unordered(workers.max(1))
-                    .collect::<Vec<_>>()
-                    .await;
-
-                for (entry_index, result) in results {
-                    if let Ok(sample) = result {
-                        if sample.latency_ms <= policy.max_latency_ms {
-                            secondary_success[entry_index] = true;
-                        }
-                        if is_throughput_target(target) && sample.latency_ms > 0.0 {
-                            throughputs[entry_index]
-                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
-                        }
+                for entry_index in 0..count {
+                    if secondary_successes[entry_index]
+                        >= STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS
+                    {
+                        secondary_success[entry_index] = true;
                     }
                 }
             }
