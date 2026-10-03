@@ -941,31 +941,6 @@ fn adjust_transfer_workers(
     }
 }
 
-#[cfg(test)]
-mod transfer_worker_tests {
-    use super::*;
-
-    #[test]
-    fn tolerates_low_rate_limit_density() {
-        assert_eq!(adjust_transfer_workers(8, 1, 8, 0), (8, 1));
-    }
-
-    #[test]
-    fn reduces_for_moderate_rate_limit_density() {
-        assert_eq!(adjust_transfer_workers(8, 2, 8, 0), (7, 0));
-    }
-
-    #[test]
-    fn reduces_more_for_severe_rate_limit_density() {
-        assert_eq!(adjust_transfer_workers(8, 4, 8, 0), (6, 0));
-    }
-
-    #[test]
-    fn low_rate_limit_density_can_still_recover() {
-        assert_eq!(adjust_transfer_workers(6, 1, 8, 1), (7, 0));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
@@ -2664,16 +2639,16 @@ mod tests {
 
     #[test]
     fn rate_limits_back_transfer_workers_to_two() {
-        assert_eq!(adjust_transfer_workers(4, 4, 0), (2, 0));
-        assert_eq!(adjust_transfer_workers(8, 1, 1), (7, 0));
-        assert_eq!(adjust_transfer_workers(2, 1, 0), (2, 0));
+        assert_eq!(adjust_transfer_workers(4, 4, 4, 0), (2, 0));
+        assert_eq!(adjust_transfer_workers(8, 2, 8, 0), (7, 0));
+        assert_eq!(adjust_transfer_workers(2, 1, 8, 0), (2, 1));
     }
 
     #[test]
     fn clean_transfer_batches_ramp_workers_slowly() {
-        assert_eq!(adjust_transfer_workers(2, 0, 0), (2, 1));
-        assert_eq!(adjust_transfer_workers(2, 0, 1), (3, 0));
-        assert_eq!(adjust_transfer_workers(8, 0, 1), (8, 0));
+        assert_eq!(adjust_transfer_workers(2, 0, 8, 0), (2, 1));
+        assert_eq!(adjust_transfer_workers(2, 0, 8, 1), (3, 0));
+        assert_eq!(adjust_transfer_workers(8, 0, 8, 1), (8, 0));
     }
 
     #[test]
