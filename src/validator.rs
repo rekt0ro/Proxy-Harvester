@@ -16,6 +16,12 @@ use url::{Host, Url};
 
 pub const PRIMARY_TARGET: &str = "https://www.google.com/generate_204";
 pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?bytes=10485760";
+pub const STRICT_THROUGHPUT_TARGETS: &[&str] = &[
+    STRICT_THROUGHPUT_TARGET,
+    "https://bom.proof.ovh.net/files/10Mb.dat",
+    "https://fsn1-speed.hetzner.com/10MB.bin",
+    "https://speedtest.tele2.net/10MB.zip",
+];
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
 pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -2188,20 +2194,24 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
 }
 
 pub(crate) fn response_limit_for_target(url: &str) -> usize {
-    match url {
-        STRICT_THROUGHPUT_TARGET => STRICT_THROUGHPUT_BYTES,
-        _ => MAX_RESPONSE_BYTES,
+    if is_throughput_target(url) {
+        STRICT_THROUGHPUT_BYTES
+    } else {
+        MAX_RESPONSE_BYTES
     }
 }
 
 pub(crate) fn is_throughput_target(url: &str) -> bool {
-    url == STRICT_THROUGHPUT_TARGET
+    STRICT_THROUGHPUT_TARGETS.contains(&url)
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
+    if is_throughput_target(url.as_str()) {
+        return body.len() == STRICT_THROUGHPUT_BYTES;
+    }
+
     match url.as_str() {
         PRIMARY_TARGET => body.is_empty(),
-        STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
     }
