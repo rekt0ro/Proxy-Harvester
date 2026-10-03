@@ -1,6 +1,7 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
-    rate_limit_wait, read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
+    rate_limit_wait, read_response_body_at_least, read_response_body_limited_to,
+    response_limit_for_target, uses_udp_transport,
     wait_for_rate_limit, ProxyMetrics, ValidationPolicy, MIN_RESPONSE_BYTES,
     MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
     STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
@@ -1147,7 +1148,7 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     if is_throughput_target(url) {
-        return body.len() == STRICT_THROUGHPUT_BYTES;
+        return body.len() >= STRICT_THROUGHPUT_BYTES;
     }
 
     match url {
@@ -1176,17 +1177,25 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
         return Err(format!("target returned HTTP {}", response.status()));
     }
 
-    if response
-        .content_length()
-        .is_some_and(|length| length as usize > response_limit)
+    let throughput_target = is_throughput_target(url);
+    if !throughput_target
+        && response
+            .content_length()
+            .is_some_and(|length| length as usize > response_limit)
     {
         return Err("response body exceeds validation limit".to_string());
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = read_response_body_limited_to(response, response_limit)
-        .await
-        .map_err(|_| "response body exceeds validation limit".to_string())?;
+    let body = if throughput_target {
+        read_response_body_at_least(response, STRICT_THROUGHPUT_BYTES)
+            .await
+            .map_err(|_| "response body is shorter than the required 10 MiB".to_string())?
+    } else {
+        read_response_body_limited_to(response, response_limit)
+            .await
+            .map_err(|_| "response body exceeds validation limit".to_string())?
+    };
     if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(url, &body)
@@ -2060,6 +2069,10 @@ mod tests {
             crate::validator::STRICT_THROUGHPUT_TARGET,
             &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
         ));
+        assert!(valid_probe_body(
+            crate::validator::STRICT_THROUGHPUT_TARGET,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES + 1]
+        ));
         for target in crate::validator::STRICT_THROUGHPUT_TARGETS {
             assert!(valid_probe_body(
                 target,
@@ -2068,6 +2081,10 @@ mod tests {
             assert!(!valid_probe_body(
                 target,
                 &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
+            ));
+            assert!(valid_probe_body(
+                target,
+                &vec![0_u8; STRICT_THROUGHPUT_BYTES + 1]
             ));
         }
         assert!(valid_probe_body("https://example.com/", b"<html>"));
