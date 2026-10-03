@@ -2061,7 +2061,10 @@ mod tests {
             &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
         ));
         for target in crate::validator::STRICT_THROUGHPUT_TARGETS {
-            assert!(valid_probe_body(target, &vec![0_u8; STRICT_THROUGHPUT_BYTES]));
+            assert!(valid_probe_body(
+                target,
+                &vec![0_u8; STRICT_THROUGHPUT_BYTES]
+            ));
             assert!(!valid_probe_body(
                 target,
                 &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
