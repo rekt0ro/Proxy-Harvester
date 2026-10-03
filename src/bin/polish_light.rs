@@ -927,25 +927,13 @@ fn adjust_transfer_workers(
     let rate_limit_percent = if batch_size == 0 {
         0
     } else {
-        rate_limits
-            .saturating_mul(100)
-            .div_ceil(batch_size as u64)
+        rate_limits.saturating_mul(100).div_ceil(batch_size as u64)
     };
 
     if rate_limit_percent >= FINAL_TRANSFER_RATE_LIMIT_SEVERE_PERCENT {
-        (
-            current
-                .saturating_sub(2)
-                .max(FINAL_TRANSFER_MIN_WORKERS),
-            0,
-        )
+        (current.saturating_sub(2).max(FINAL_TRANSFER_MIN_WORKERS), 0)
     } else if rate_limit_percent >= FINAL_TRANSFER_RATE_LIMIT_TOLERANCE_PERCENT {
-        (
-            current
-                .saturating_sub(1)
-                .max(FINAL_TRANSFER_MIN_WORKERS),
-            0,
-        )
+        (current.saturating_sub(1).max(FINAL_TRANSFER_MIN_WORKERS), 0)
     } else if clean_batches.saturating_add(1) >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
         ((current + 1).min(FINAL_TRANSFER_WORKERS), 0)
     } else {
@@ -1110,7 +1098,8 @@ async fn fill_transfer_gate(
         transfer_tested.extend(batch.iter().cloned());
 
         let target_count = proxyrift::validator::STRICT_THROUGHPUT_TARGETS.len();
-        let target = proxyrift::validator::STRICT_THROUGHPUT_TARGETS[transfer_batch_index % target_count];
+        let target =
+            proxyrift::validator::STRICT_THROUGHPUT_TARGETS[transfer_batch_index % target_count];
         transfer_batch_index = transfer_batch_index.wrapping_add(1);
 
         println!(
@@ -1139,9 +1128,7 @@ async fn fill_transfer_gate(
             let rate_limit_percent = if batch.is_empty() {
                 0
             } else {
-                rate_limits
-                    .saturating_mul(100)
-                    .div_ceil(batch.len() as u64)
+                rate_limits.saturating_mul(100).div_ceil(batch.len() as u64)
             };
 
             if transfer_workers < previous_workers {
