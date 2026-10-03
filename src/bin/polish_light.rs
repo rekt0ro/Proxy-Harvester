@@ -4,14 +4,15 @@ use proxyrift::intelligence::IntelligenceModel;
 use proxyrift::light_training::{persist as persist_light_training, DatasetStats, TrainingRow};
 use proxyrift::singbox::{
     validate_candidates_with_target_once as validate_singbox_target_once,
-    validate_candidates_with_targets_once as validate_singbox_targets_once,
+    validate_candidates_with_targets_once_with_minimum_body as validate_singbox_targets_once_with_minimum_body,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxyrift::validator::{
     endpoint, is_light_consumer_compatible, rate_limit_events, read_lines,
-    validate_candidates_with_target_once, validate_candidates_with_targets_once,
+    validate_candidates_with_target_once,
+    validate_candidates_with_targets_once_with_minimum_body,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics,
-    LIGHT_TRANSFER_STABILITY_TARGETS, PRIMARY_TARGET,
+    LIGHT_TRANSFER_STABILITY_BYTES, LIGHT_TRANSFER_STABILITY_TARGETS, PRIMARY_TARGET,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -962,13 +963,14 @@ async fn validate_light_transfer_stability_batch(
         if singbox_validation_candidates.is_empty() {
             Ok(HashMap::new())
         } else {
-            validate_singbox_targets_once(
+            validate_singbox_targets_once_with_minimum_body(
                 singbox,
                 &singbox_validation_candidates,
                 LIGHT_TRANSFER_STABILITY_TARGETS,
                 workers.clamp(1, 40),
                 request_timeout,
                 STABILITY_TRANSFER_MAX_LATENCY_MS,
+                LIGHT_TRANSFER_STABILITY_BYTES,
             )
             .await
         }
@@ -978,7 +980,7 @@ async fn validate_light_transfer_stability_batch(
         if xray_candidates.is_empty() {
             Ok(HashMap::new())
         } else {
-            validate_candidates_with_targets_once(
+            validate_candidates_with_targets_once_with_minimum_body(
                 xray,
                 &xray_candidates,
                 LIGHT_TRANSFER_STABILITY_TARGETS,
@@ -986,6 +988,7 @@ async fn validate_light_transfer_stability_batch(
                 STABILITY_TRANSFER_BATCH_SIZE,
                 FINAL_TRANSFER_TIMEOUT_SECS,
                 STABILITY_TRANSFER_MAX_LATENCY_MS,
+                LIGHT_TRANSFER_STABILITY_BYTES,
             )
             .await
         }
