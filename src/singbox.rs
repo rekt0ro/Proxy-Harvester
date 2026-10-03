@@ -5,7 +5,7 @@ use crate::validator::{
     ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
     PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, SUSTAINED_THROUGHPUT_TIMEOUT,
+    STRICT_STABILITY_ATTEMPTS, SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1147,7 +1147,7 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     if is_throughput_target(url) {
-        return body.len() >= STRICT_THROUGHPUT_BYTES;
+        return body.len() >= response_limit_for_target(url);
     }
 
     match url {
@@ -1187,9 +1187,9 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     let status_is_empty_success = response.status().as_u16() == 204;
     let body = if throughput_target {
-        read_response_body_at_least(response, STRICT_THROUGHPUT_BYTES)
+        read_response_body_at_least(response, response_limit)
             .await
-            .map_err(|_| "response body is shorter than the required 10 MiB".to_string())?
+            .map_err(|_| "response body is shorter than the required transfer payload".to_string())?
     } else {
         read_response_body_limited_to(response, response_limit)
             .await
@@ -1764,6 +1764,26 @@ pub async fn validate_candidates_with_target_once(
         workers,
         request_timeout,
         ValidationPolicy::new(max_latency_ms, 1, 1, 1),
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_targets_once(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets),
     )
     .await
 }
