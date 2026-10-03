@@ -1293,7 +1293,7 @@ async fn fill_stream_continuity_gate(
         }
 
         let remaining_budget = test_limit.saturating_sub(stream_tested.len());
-        let batch_limit = remaining_budget.min(STREAM_CONTINUITY_BATCH_SIZE).max(1);
+        let batch_limit = remaining_budget.clamp(1, STREAM_CONTINUITY_BATCH_SIZE);
         let batch = diversify_recheck_candidates(&untested, batch_limit, RECHECK_FAMILY_DIVERSITY);
         if batch.is_empty() {
             return Ok(stream_verified.len());
@@ -2535,12 +2535,6 @@ async fn main() -> Result<(), String> {
                 transfer_selected, selection_limit
             );
 
-            let selected = select_verified_configs(
-                &transfer_ranked,
-                selection_limit,
-                max_per_endpoint,
-                max_per_family,
-            );
             println!(
                 "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | STOPPING DISCOVERY FOR STREAM CONTINUITY",
                 transfer_selected, selection_limit
@@ -2579,13 +2573,6 @@ async fn main() -> Result<(), String> {
                     &global_positions,
                     &history,
                 );
-                let selected = select_verified_configs(
-                    &transfer_ranked,
-                    selection_limit,
-                    max_per_endpoint,
-                    max_per_family,
-                );
-
                 println!(
                     "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | STOPPING DISCOVERY FOR STREAM CONTINUITY",
                     transfer_selected, selection_limit
