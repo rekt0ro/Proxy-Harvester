@@ -23,8 +23,8 @@ pub const STRICT_THROUGHPUT_TARGETS: &[&str] = &[
     "http://speedtest.tele2.net/10MB.zip",
 ];
 pub const LIGHT_TRANSFER_STABILITY_TARGETS: &[&str] = &[
-    "https://bom.proof.ovh.net/files/1Mb.dat",
-    "https://cdn.truefilesize.com/test/test-1mb.bin",
+    STRICT_THROUGHPUT_TARGET,
+    "https://cdn.truefilesize.com/test/test-10mb.bin",
 ];
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
@@ -74,6 +74,7 @@ pub(crate) struct ValidationPolicy {
     pub(crate) stability_attempts: usize,
     pub(crate) min_successful_attempts: usize,
     pub(crate) min_successful_targets: usize,
+    pub(crate) minimum_body_bytes: Option<usize>,
 }
 
 impl ValidationPolicy {
@@ -88,7 +89,13 @@ impl ValidationPolicy {
             stability_attempts,
             min_successful_attempts,
             min_successful_targets,
+            minimum_body_bytes: None,
         }
+    }
+
+    pub(crate) const fn with_minimum_body_bytes(mut self, minimum_body_bytes: usize) -> Self {
+        self.minimum_body_bytes = Some(minimum_body_bytes);
+        self
     }
 }
 
@@ -2547,11 +2554,20 @@ pub(crate) async fn read_response_body_at_least(
 }
 
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
+    probe_request_with_minimum(client, url, None).await
+}
+
+async fn probe_request_with_minimum(
+    client: &Client,
+    url: Url,
+    minimum_body_bytes: Option<usize>,
+) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
-    let response_limit = response_limit_for_target(url.as_str());
+    let response_limit =
+        minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url.as_str()));
     let mut request = client.get(url.as_str());
-    if is_throughput_target(url.as_str()) {
+    if is_throughput_target(url.as_str()) || minimum_body_bytes.is_some() {
         request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
     }
     let response = request.send().await.map_err(|_| ProbeError::Failed)?;
@@ -2573,6 +2589,7 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
 
     let throughput_target = is_throughput_target(url.as_str());
     if !throughput_target
+        && minimum_body_bytes.is_none()
         && response
             .content_length()
             .is_some_and(|length| length as usize > response_limit)
@@ -2581,10 +2598,8 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = if throughput_target {
-        let minimum_bytes = throughput_bytes_for_target(url.as_str())
-            .expect("throughput target should have a configured minimum");
-        read_response_body_at_least(response, minimum_bytes)
+    let body = if throughput_target || minimum_body_bytes.is_some() {
+        read_response_body_at_least(response, response_limit)
             .await
             .map_err(|_| ProbeError::Failed)?
     } else {
@@ -2592,10 +2607,15 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
             .await
             .map_err(|_| ProbeError::Failed)?
     };
-    if body.len() > response_limit
-        || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
-        || !valid_probe_body(&url, &body)
-    {
+    let body_valid = minimum_body_bytes
+        .map(|minimum| body.len() >= minimum)
+        .unwrap_or_else(|| {
+            body.len() <= response_limit
+                && (body.len() >= MIN_RESPONSE_BYTES || status_is_empty_success)
+                && valid_probe_body(&url, &body)
+        });
+
+    if !body_valid {
         return Err(ProbeError::Failed);
     }
 
@@ -2986,6 +3006,31 @@ pub async fn validate_candidates_with_targets_once(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_candidates_with_targets_once_with_minimum_body(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    max_latency_ms: f64,
+    minimum_body_bytes: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        targets,
+        workers,
+        batch_size,
+        timeout_seconds,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets)
+            .with_minimum_body_bytes(minimum_body_bytes),
+    )
+    .await
+}
+
 pub async fn validate_candidates_with_targets_strict(
     binary: &str,
     candidates: &[String],
@@ -3313,7 +3358,13 @@ async fn check_batch_targets(
                 .map(|entry_index| {
                     let client = &clients[entry_index];
                     let target = targets[0].clone();
-                    async move { (entry_index, probe_request(client, target).await) }
+                    async move {
+                        (
+                            entry_index,
+                            probe_request_with_minimum(client, target, policy.minimum_body_bytes)
+                                .await,
+                        )
+                    }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
@@ -3355,6 +3406,7 @@ async fn check_batch_targets(
         }
 
         let mut secondary_success = vec![false; count];
+        let mut secondary_response_count = 0usize;
         if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
                 let mut secondary_attempts = vec![0usize; count];
@@ -3378,7 +3430,17 @@ async fn check_batch_targets(
                         .map(|entry_index| {
                             let client = &clients[entry_index];
                             let target = target.clone();
-                            async move { (entry_index, probe_request(client, target).await) }
+                            async move {
+                                (
+                                    entry_index,
+                                    probe_request_with_minimum(
+                                        client,
+                                        target,
+                                        policy.minimum_body_bytes,
+                                    )
+                                    .await,
+                                )
+                            }
                         })
                         .buffer_unordered(workers.max(1))
                         .collect::<Vec<_>>()
@@ -3408,7 +3470,22 @@ async fn check_batch_targets(
                         secondary_success[entry_index] = true;
                     }
                 }
+                secondary_response_count = secondary_successes
+                    .iter()
+                    .filter(|&&count| count > 0)
+                    .count();
             }
+        }
+
+        if let Some(minimum) = policy.minimum_body_bytes {
+            let primary_successes = successes.iter().filter(|&&count| count > 0).count();
+            let secondary_successes_count = secondary_response_count;
+            println!(
+                "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+            );
+            println!(
+                "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+            );
         }
 
         for index in 0..count {
