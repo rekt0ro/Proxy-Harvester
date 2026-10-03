@@ -3807,12 +3807,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = read_response_body_at_least_with_max_idle(
-            response,
-            8,
-            Duration::from_millis(50),
-        )
-        .await;
+        let result =
+            read_response_body_at_least_with_max_idle(response, 8, Duration::from_millis(50)).await;
 
         assert!(result.is_err());
         server.await.unwrap();
