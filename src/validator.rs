@@ -1834,11 +1834,8 @@ pub fn is_light_consumer_compatible(config: &str) -> bool {
                 return false;
             }
 
-            let transport = normalize_transport(&first_query(
-                &url,
-                &["type", "network"],
-                Some("tcp"),
-            ));
+            let transport =
+                normalize_transport(&first_query(&url, &["type", "network"], Some("tcp")));
             if !matches!(transport.as_str(), "raw" | "ws" | "grpc") {
                 return false;
             }
@@ -1995,9 +1992,11 @@ pub fn is_light_consumer_compatible(config: &str) -> bool {
                 }
             }
 
-            if value.get("mode").and_then(Value::as_str).is_some_and(|mode| {
-                !mode.trim().is_empty() && !mode.eq_ignore_ascii_case("gun")
-            }) {
+            if value
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| !mode.trim().is_empty() && !mode.eq_ignore_ascii_case("gun"))
+            {
                 return false;
             }
 
@@ -2010,8 +2009,7 @@ pub fn is_light_consumer_compatible(config: &str) -> bool {
             if !ss_has_nonempty_password(cleaned) {
                 return false;
             }
-            !url
-                .query_pairs()
+            !url.query_pairs()
                 .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
         }
         "hysteria2" | "hy2" => {
