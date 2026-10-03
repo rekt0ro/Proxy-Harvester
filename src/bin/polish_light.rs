@@ -4,11 +4,14 @@ use proxyrift::intelligence::IntelligenceModel;
 use proxyrift::light_training::{persist as persist_light_training, DatasetStats, TrainingRow};
 use proxyrift::singbox::{
     validate_candidates_with_target_once as validate_singbox_target_once,
+    validate_candidates_with_targets_once as validate_singbox_targets_once,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxyrift::validator::{
-    endpoint, rate_limit_events, read_lines, validate_candidates_with_target_once,
+    endpoint, is_light_consumer_compatible, rate_limit_events, read_lines,
+    validate_candidates_with_target_once, validate_candidates_with_targets_once,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics, PRIMARY_TARGET,
+    LIGHT_TRANSFER_STABILITY_TARGETS,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -36,6 +39,10 @@ const FINAL_TRANSFER_MIN_WORKERS: usize = 2;
 const FINAL_TRANSFER_QUEUE_MULTIPLIER: usize = 3;
 const FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP: usize = 2;
 const FINAL_TRANSFER_TEST_LIMIT: usize = 320;
+const STABILITY_TRANSFER_TEST_LIMIT: usize = 450;
+const STABILITY_TRANSFER_BATCH_SIZE: usize = 32;
+const STABILITY_TRANSFER_WORKERS: usize = 8;
+const STABILITY_TRANSFER_MAX_LATENCY_MS: f64 = 15000.0;
 const FINAL_TRANSFER_MAX_ELAPSED_SECS: u64 = 8 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_SECS: u64 = 3 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_REMAINING: usize = 32;
@@ -341,7 +348,10 @@ fn write_light_stats(
     path: &str,
     input_candidates: usize,
     security_rejected: usize,
+    consumer_rejected: usize,
     strict_verified: usize,
+    transfer_stability_tested: usize,
+    transfer_stability_passed: usize,
     transfer_tested: usize,
     transfer_passed: usize,
     published: usize,
@@ -353,7 +363,10 @@ fn write_light_stats(
     let stats = serde_json::json!({
         "input_candidates": input_candidates,
         "security_rejected": security_rejected,
+        "consumer_rejected": consumer_rejected,
         "strict_verified": strict_verified,
+        "transfer_stability_tested": transfer_stability_tested,
+        "transfer_stability_passed": transfer_stability_passed,
         "transfer_tested": transfer_tested,
         "transfer_passed": transfer_passed,
         "published": published,
@@ -915,6 +928,93 @@ async fn validate_light_transfer_batch(
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn validate_light_transfer_stability_batch(
+    xray: &str,
+    singbox: &str,
+    candidates: &[String],
+    workers: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    if candidates.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut singbox_candidates = Vec::new();
+    let mut xray_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for config in candidates {
+        match light_backend(config) {
+            LightBackend::SingBox => singbox_candidates.push(config.clone()),
+            LightBackend::Xray => xray_candidates.push(config.clone()),
+            LightBackend::Fallback => fallback_candidates.push(config.clone()),
+        }
+    }
+
+    let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS);
+
+    let mut singbox_validation_candidates = singbox_candidates;
+    singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
+
+    let singbox_future = async {
+        if singbox_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            validate_singbox_targets_once(
+                singbox,
+                &singbox_validation_candidates,
+                LIGHT_TRANSFER_STABILITY_TARGETS,
+                workers.clamp(1, 40),
+                request_timeout,
+                STABILITY_TRANSFER_MAX_LATENCY_MS,
+            )
+            .await
+        }
+    };
+
+    let xray_future = async {
+        if xray_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            validate_candidates_with_targets_once(
+                xray,
+                &xray_candidates,
+                LIGHT_TRANSFER_STABILITY_TARGETS,
+                workers.max(1),
+                STABILITY_TRANSFER_BATCH_SIZE,
+                FINAL_TRANSFER_TIMEOUT_SECS,
+                STABILITY_TRANSFER_MAX_LATENCY_MS,
+            )
+            .await
+        }
+    };
+
+    let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+    let singbox_metadata = singbox_result?;
+    let mut xray_metadata = xray_result?;
+
+    let fallback_retry = fallback_candidates
+        .into_iter()
+        .filter(|config| !singbox_metadata.contains_key(config))
+        .collect::<Vec<_>>();
+
+    if !fallback_retry.is_empty() {
+        let fallback_xray = validate_candidates_with_targets_once(
+            xray,
+            &fallback_retry,
+            LIGHT_TRANSFER_STABILITY_TARGETS,
+            workers.max(1),
+            STABILITY_TRANSFER_BATCH_SIZE,
+            FINAL_TRANSFER_TIMEOUT_SECS,
+            STABILITY_TRANSFER_MAX_LATENCY_MS,
+        )
+        .await?;
+        xray_metadata.extend(fallback_xray);
+    }
+
+    Ok(merge_light_metadata(xray_metadata, singbox_metadata))
+}
+
 const FINAL_TRANSFER_RATE_LIMIT_TOLERANCE_PERCENT: u64 = 25;
 const FINAL_TRANSFER_RATE_LIMIT_SEVERE_PERCENT: u64 = 50;
 
@@ -942,10 +1042,94 @@ fn adjust_transfer_workers(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn fill_transfer_stability_gate(
+    xray: &str,
+    singbox: &str,
+    final_verified: &[String],
+    final_metadata: &HashMap<String, ProxyMetrics>,
+    stability_verified: &mut HashMap<String, ProxyMetrics>,
+    stability_tested: &mut HashSet<String>,
+    global_positions: &HashMap<String, usize>,
+    history: &HashMap<String, HistoryEntry>,
+    selection_limit: usize,
+    max_per_endpoint: usize,
+    max_per_family: usize,
+) -> Result<usize, String> {
+    let stability_target = selection_limit
+        .saturating_mul(2)
+        .min(STABILITY_TRANSFER_TEST_LIMIT);
+
+    loop {
+        if stability_verified.len() >= stability_target
+            || stability_tested.len() >= STABILITY_TRANSFER_TEST_LIMIT
+        {
+            return Ok(stability_verified.len());
+        }
+
+        let mut ranked = final_verified.to_vec();
+        sort_ranked(&mut ranked, final_metadata, global_positions, history);
+
+        let untested = ranked
+            .into_iter()
+            .filter(|config| !stability_tested.contains(config))
+            .collect::<Vec<_>>();
+
+        if untested.is_empty() {
+            return Ok(stability_verified.len());
+        }
+
+        let remaining_budget =
+            STABILITY_TRANSFER_TEST_LIMIT.saturating_sub(stability_tested.len());
+        let batch_limit = remaining_budget.min(STABILITY_TRANSFER_BATCH_SIZE).max(1);
+        let batch = select_verified_configs(
+            &untested,
+            batch_limit,
+            max_per_endpoint,
+            max_per_family,
+        );
+
+        if batch.is_empty() {
+            return Ok(stability_verified.len());
+        }
+
+        stability_tested.extend(batch.iter().cloned());
+
+        println!(
+            "[INFO] 📥 [1 MiB] STABLE POOL: {}/{} | TESTING {} CANDIDATES | TESTED: {}/{}",
+            stability_verified.len(),
+            stability_target,
+            batch.len(),
+            stability_tested.len(),
+            STABILITY_TRANSFER_TEST_LIMIT
+        );
+
+        let metadata = validate_light_transfer_stability_batch(
+            xray,
+            singbox,
+            &batch,
+            STABILITY_TRANSFER_WORKERS,
+        )
+        .await?;
+        let batch_passed = metadata.len();
+        stability_verified.extend(metadata);
+
+        println!(
+            "[INFO] ✅ [1 MiB] {}/{} PASSED BOTH TRANSFER DESTINATIONS | STABLE POOL: {}",
+            batch_passed,
+            batch.len(),
+            stability_verified.len()
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
     singbox: &str,
     final_verified: &[String],
+    final_metadata: &HashMap<String, ProxyMetrics>,
+    stability_verified: &mut HashMap<String, ProxyMetrics>,
+    stability_tested: &mut HashSet<String>,
     transfer_verified: &mut HashMap<String, ProxyMetrics>,
     transfer_tested: &mut HashSet<String>,
     global_positions: &HashMap<String, usize>,
@@ -955,6 +1139,29 @@ async fn fill_transfer_gate(
     max_per_family: usize,
 ) -> Result<usize, String> {
     let gate_started = Instant::now();
+
+    let stability_target = fill_transfer_stability_gate(
+        xray,
+        singbox,
+        final_verified,
+        final_metadata,
+        stability_verified,
+        stability_tested,
+        global_positions,
+        history,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    )
+    .await?;
+
+    if stability_target < selection_limit {
+        println!(
+            "[INFO] ⏭️ [1 MiB] STABLE POOL BELOW PUBLISH TARGET | STABLE: {} | TARGET: {}",
+            stability_target, selection_limit
+        );
+    }
+
     let mut transfer_workers = FINAL_TRANSFER_INITIAL_WORKERS;
     let mut clean_batches = 0usize;
     let mut transfer_batch_index = 0usize;
@@ -978,8 +1185,8 @@ async fn fill_transfer_gate(
             return Ok(selected.len());
         }
 
-        let untested = final_verified
-            .iter()
+        let untested = stability_verified
+            .keys()
             .filter(|config| !transfer_tested.contains(*config))
             .cloned()
             .collect::<Vec<_>>();
@@ -1945,6 +2152,21 @@ async fn main() -> Result<(), String> {
         .filter(|config| !has_disabled_tls_verification(config))
         .collect::<Vec<_>>();
     let security_rejected = input_candidate_count.saturating_sub(candidates.len());
+
+    let before_consumer_compatibility = candidates.len();
+    let candidates = candidates
+        .into_iter()
+        .filter(|config| is_light_consumer_compatible(config))
+        .collect::<Vec<_>>();
+    let consumer_rejected = before_consumer_compatibility.saturating_sub(candidates.len());
+
+    if consumer_rejected > 0 {
+        println!(
+            "[INFO] 🧹 [LIGHT COMPATIBILITY] REJECTED {} CANDIDATES BY CONSERVATIVE CONSUMER CONTRACT",
+            consumer_rejected
+        );
+    }
+
     let history_path = "subscriptions/light-history.json";
     let history = load_history(history_path)?;
     let intelligence_path = "subscriptions/light-ai.json";
@@ -1960,6 +2182,8 @@ async fn main() -> Result<(), String> {
     let mut final_verified = Vec::<String>::new();
     let mut final_attempts = HashMap::<String, usize>::new();
     let mut final_metadata = HashMap::<String, ProxyMetrics>::new();
+    let mut stability_verified = HashMap::<String, ProxyMetrics>::new();
+    let mut stability_tested = HashSet::<String>::new();
     let mut transfer_verified = HashMap::<String, ProxyMetrics>::new();
     let mut transfer_tested = HashSet::<String>::new();
 
@@ -2109,7 +2333,10 @@ async fn main() -> Result<(), String> {
                 &stats_path,
                 input_candidate_count,
                 security_rejected,
+                consumer_rejected,
                 final_metadata.len(),
+                stability_tested.len(),
+                stability_verified.len(),
                 transfer_tested.len(),
                 transfer_verified.len(),
                 selected.len(),
@@ -2131,6 +2358,9 @@ async fn main() -> Result<(), String> {
                 &xray,
                 &singbox,
                 &final_verified,
+                &final_metadata,
+                &mut stability_verified,
+                &mut stability_tested,
                 &mut transfer_verified,
                 &mut transfer_tested,
                 &global_positions,
@@ -2382,6 +2612,9 @@ async fn main() -> Result<(), String> {
         &xray,
         &singbox,
         &final_verified,
+        &final_metadata,
+        &mut stability_verified,
+        &mut stability_tested,
         &mut transfer_verified,
         &mut transfer_tested,
         &global_positions,
@@ -2436,7 +2669,10 @@ async fn main() -> Result<(), String> {
         &stats_path,
         input_candidate_count,
         security_rejected,
+        consumer_rejected,
         final_metadata.len(),
+        stability_tested.len(),
+        stability_verified.len(),
         transfer_tested.len(),
         transfer_verified.len(),
         selected.len(),
