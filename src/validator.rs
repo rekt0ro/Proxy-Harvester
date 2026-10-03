@@ -29,6 +29,9 @@ pub const LIGHT_TRANSFER_STABILITY_TARGETS: &[&str] = &[
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
 pub const LIGHT_TRANSFER_STABILITY_BYTES: usize = 1_048_576;
+pub const SUSTAINED_STREAM_SEGMENTS: usize = 3;
+pub const SUSTAINED_STREAM_SEGMENT_BYTES: usize = 1_048_576;
+pub const SUSTAINED_STREAM_MAX_IDLE: Duration = Duration::from_secs(4);
 pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
@@ -75,6 +78,8 @@ pub(crate) struct ValidationPolicy {
     pub(crate) min_successful_attempts: usize,
     pub(crate) min_successful_targets: usize,
     pub(crate) minimum_body_bytes: Option<usize>,
+    pub(crate) sustained_stream_segments: Option<usize>,
+    pub(crate) sustained_stream_max_idle: Option<Duration>,
 }
 
 impl ValidationPolicy {
@@ -90,11 +95,25 @@ impl ValidationPolicy {
             min_successful_attempts,
             min_successful_targets,
             minimum_body_bytes: None,
+            sustained_stream_segments: None,
+            sustained_stream_max_idle: None,
         }
     }
 
     pub(crate) const fn with_minimum_body_bytes(mut self, minimum_body_bytes: usize) -> Self {
         self.minimum_body_bytes = Some(minimum_body_bytes);
+        self
+    }
+
+    pub(crate) const fn with_sustained_stream(
+        mut self,
+        segments: usize,
+        minimum_body_bytes: usize,
+        max_idle_gap: Duration,
+    ) -> Self {
+        self.minimum_body_bytes = Some(minimum_body_bytes);
+        self.sustained_stream_segments = Some(if segments == 0 { 1 } else { segments });
+        self.sustained_stream_max_idle = Some(max_idle_gap);
         self
     }
 }
@@ -2553,6 +2572,32 @@ pub(crate) async fn read_response_body_at_least(
     Ok(body)
 }
 
+pub(crate) async fn read_response_body_at_least_with_max_idle(
+    mut response: reqwest::Response,
+    minimum: usize,
+    max_idle_gap: Duration,
+) -> Result<Vec<u8>, ()> {
+    let mut body = Vec::with_capacity(minimum.min(16_384));
+    let mut last_chunk = Instant::now();
+
+    while body.len() < minimum {
+        let chunk = response.chunk().await.map_err(|_| ())?.ok_or(())?;
+        if last_chunk.elapsed() > max_idle_gap {
+            return Err(());
+        }
+
+        let needed = minimum - body.len();
+        if chunk.len() >= needed {
+            body.extend_from_slice(&chunk[..needed]);
+            return Ok(body);
+        }
+        body.extend_from_slice(&chunk);
+        last_chunk = Instant::now();
+    }
+
+    Ok(body)
+}
+
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     probe_request_with_minimum(client, url, None).await
 }
@@ -2623,6 +2668,79 @@ async fn probe_request_with_minimum(
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
         bytes: body.len(),
     })
+}
+
+async fn probe_request_sustained(
+    client: &Client,
+    url: Url,
+    segments: usize,
+    minimum_body_bytes: usize,
+    max_idle_gap: Duration,
+) -> Result<ProbeSample, ProbeError> {
+    let started = Instant::now();
+    let mut total_bytes = 0usize;
+
+    for _ in 0..segments.max(1) {
+        wait_for_rate_limit().await;
+        let mut request = client.get(url.as_str());
+        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+        let response = request.send().await.map_err(|_| ProbeError::Failed)?;
+
+        if response.status().as_u16() == 429 {
+            let wait = rate_limit_wait(response.headers());
+            let event = RATE_LIMIT_EVENTS.fetch_add(1, Ordering::AcqRel);
+            let jitter_ms = RATE_LIMIT_JITTER_BASE_MS + (event % 8) * RATE_LIMIT_JITTER_STEP_MS;
+            let delay = wait
+                .min(Duration::from_secs(2))
+                .max(Duration::from_millis(jitter_ms));
+            sleep(delay).await;
+            return Err(ProbeError::Failed);
+        }
+
+        if !response.status().is_success()
+            || !valid_probe_status(&url, response.status().as_u16())
+        {
+            return Err(ProbeError::Failed);
+        }
+
+        let body = read_response_body_at_least_with_max_idle(
+            response,
+            minimum_body_bytes,
+            max_idle_gap,
+        )
+        .await
+        .map_err(|_| ProbeError::Failed)?;
+        total_bytes = total_bytes.saturating_add(body.len());
+    }
+
+    Ok(ProbeSample {
+        latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+        bytes: total_bytes,
+    })
+}
+
+async fn probe_request_with_validation_policy(
+    client: &Client,
+    url: Url,
+    policy: ValidationPolicy,
+) -> Result<ProbeSample, ProbeError> {
+    match (
+        policy.sustained_stream_segments,
+        policy.sustained_stream_max_idle,
+        policy.minimum_body_bytes,
+    ) {
+        (Some(segments), Some(max_idle_gap), Some(minimum_body_bytes)) if segments > 1 => {
+            probe_request_sustained(
+                client,
+                url,
+                segments,
+                minimum_body_bytes,
+                max_idle_gap,
+            )
+            .await
+        }
+        _ => probe_request_with_minimum(client, url, policy.minimum_body_bytes).await,
+    }
 }
 
 async fn functional_attempt(
@@ -3031,6 +3149,33 @@ pub async fn validate_candidates_with_targets_once_with_minimum_body(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_candidates_with_targets_once_with_sustained_stream(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    max_latency_ms: f64,
+    segments: usize,
+    minimum_body_bytes: usize,
+    max_idle_gap: Duration,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        targets,
+        workers,
+        batch_size,
+        timeout_seconds,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets)
+            .with_sustained_stream(segments, minimum_body_bytes, max_idle_gap),
+    )
+    .await
+}
+
 pub async fn validate_candidates_with_targets_strict(
     binary: &str,
     candidates: &[String],
@@ -3361,8 +3506,7 @@ async fn check_batch_targets(
                     async move {
                         (
                             entry_index,
-                            probe_request_with_minimum(client, target, policy.minimum_body_bytes)
-                                .await,
+                            probe_request_with_validation_policy(client, target, policy).await,
                         )
                     }
                 })
@@ -3433,12 +3577,7 @@ async fn check_batch_targets(
                             async move {
                                 (
                                     entry_index,
-                                    probe_request_with_minimum(
-                                        client,
-                                        target,
-                                        policy.minimum_body_bytes,
-                                    )
-                                    .await,
+                                    probe_request_with_validation_policy(client, target, policy).await,
                                 )
                             }
                         })
@@ -3480,12 +3619,26 @@ async fn check_batch_targets(
         if let Some(minimum) = policy.minimum_body_bytes {
             let primary_successes = successes.iter().filter(|&&count| count > 0).count();
             let secondary_successes_count = secondary_response_count;
-            println!(
-                "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
-            );
-            println!(
-                "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
-            );
+            if let (Some(segments), Some(max_idle_gap)) = (
+                policy.sustained_stream_segments,
+                policy.sustained_stream_max_idle,
+            ) {
+                println!(
+                    "[INFO] 🔎 [STREAM] TARGET 1 | {primary_successes}/{count} RESPONDED | SEGMENTS: {segments} | MIN BODY: {minimum} BYTES | MAX IDLE: {}ms",
+                    max_idle_gap.as_millis()
+                );
+                println!(
+                    "[INFO] 🔎 [STREAM] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | SEGMENTS: {segments} | MIN BODY: {minimum} BYTES | MAX IDLE: {}ms",
+                    max_idle_gap.as_millis()
+                );
+            } else {
+                println!(
+                    "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+                );
+                println!(
+                    "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+                );
+            }
         }
 
         for index in 0..count {
@@ -3643,6 +3796,22 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn sustained_stream_policy_is_bounded() {
+        let policy = ValidationPolicy::new(15_000.0, 1, 1, 2).with_sustained_stream(
+            SUSTAINED_STREAM_SEGMENTS,
+            SUSTAINED_STREAM_SEGMENT_BYTES,
+            SUSTAINED_STREAM_MAX_IDLE,
+        );
+
+        assert_eq!(policy.sustained_stream_segments, Some(3));
+        assert_eq!(
+            policy.minimum_body_bytes,
+            Some(SUSTAINED_STREAM_SEGMENT_BYTES)
+        );
+        assert_eq!(policy.sustained_stream_max_idle, Some(SUSTAINED_STREAM_MAX_IDLE));
+    }
 
     #[test]
     fn hysteria2_conflict_batches_keep_endpoints_unique() {
