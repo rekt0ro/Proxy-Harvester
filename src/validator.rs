@@ -3405,6 +3405,7 @@ async fn check_batch_targets(
         }
 
         let mut secondary_success = vec![false; count];
+        let mut secondary_response_count = 0usize;
         if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
                 let mut secondary_attempts = vec![0usize; count];
@@ -3468,15 +3469,16 @@ async fn check_batch_targets(
                         secondary_success[entry_index] = true;
                     }
                 }
+                secondary_response_count = secondary_successes
+                    .iter()
+                    .filter(|&&count| count > 0)
+                    .count();
             }
         }
 
         if let Some(minimum) = policy.minimum_body_bytes {
             let primary_successes = successes.iter().filter(|&&count| count > 0).count();
-            let secondary_successes_count = secondary_successes
-                .iter()
-                .filter(|&&count| count > 0)
-                .count();
+            let secondary_successes_count = secondary_response_count;
             println!(
                 "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
             );
