@@ -322,6 +322,19 @@ fn json_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn vmess_tls_security(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::Bool(true)) => "tls".to_string(),
+        Some(Value::Bool(false)) | None => String::new(),
+        Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" => "tls".to_string(),
+            "false" => String::new(),
+            _ => value.clone(),
+        },
+        Some(value) => json_text(Some(value)).unwrap_or_default(),
+    }
+}
+
 fn json_u64(value: Option<&Value>) -> u64 {
     match value {
         Some(Value::Number(value)) => value.as_u64().unwrap_or(0),
@@ -1162,11 +1175,7 @@ fn parse_vmess(config: &str) -> Result<Value, String> {
     let network =
         normalize_transport(&json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()));
 
-    let vmess_tls = match value.get("tls") {
-        Some(Value::Bool(true)) => "tls".to_string(),
-        Some(Value::Bool(false)) | None => String::new(),
-        Some(value) => json_text(Some(value)).unwrap_or_default(),
-    };
+    let vmess_tls = vmess_tls_security(value.get("tls"));
 
     let mut q = vec![
         ("type".to_string(), network.clone()),
@@ -1796,6 +1805,13 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
             let Ok(value) = serde_json::from_slice::<Value>(&decoded) else {
                 return false;
             };
+
+            let tls = json_text(value.get("tls")).unwrap_or_default();
+            let tls = tls.trim().to_ascii_lowercase();
+            if !matches!(tls.as_str(), "" | "tls" | "t" | "tl" | "true" | "false") {
+                return false;
+            }
+
             let network = normalize_transport(
                 &json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()),
             );
@@ -4066,6 +4082,41 @@ mod tests {
 
             assert_eq!(parsed["streamSettings"]["security"], expected);
         }
+    }
+
+    #[test]
+    fn maps_vmess_string_boolean_tls_to_transport_security() {
+        for (tls, expected) in [("true", "tls"), ("false", "none"), (" tls ", "tls")] {
+            let payload = json!({
+                "add": "example.com",
+                "port": 443,
+                "id": "00000000-0000-0000-0000-000000000001",
+                "aid": 0,
+                "scy": "auto",
+                "net": "tcp",
+                "tls": tls,
+            });
+            let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+            let parsed = parse_config(&config).expect("VMess string TLS boolean should parse");
+
+            assert_eq!(parsed["streamSettings"]["security"], expected);
+        }
+    }
+
+    #[test]
+    fn cheaply_rejects_unknown_vmess_tls_values_before_core_validation() {
+        let payload = json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "aid": 0,
+            "scy": "auto",
+            "net": "tcp",
+            "tls": "definitely-not-a-tls-mode",
+        });
+        let config = format!("vmess://{}", STANDARD.encode(payload.to_string()));
+
+        assert!(!is_cheaply_supported_config(&config));
     }
 
     #[test]
