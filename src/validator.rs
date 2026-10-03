@@ -2564,7 +2564,8 @@ async fn probe_request_with_minimum(
 ) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
-    let response_limit = minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url.as_str()));
+    let response_limit =
+        minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url.as_str()));
     let mut request = client.get(url.as_str());
     if is_throughput_target(url.as_str()) || minimum_body_bytes.is_some() {
         request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
@@ -2608,9 +2609,11 @@ async fn probe_request_with_minimum(
     };
     let body_valid = minimum_body_bytes
         .map(|minimum| body.len() >= minimum)
-        .unwrap_or_else(|| body.len() <= response_limit
-            && (body.len() >= MIN_RESPONSE_BYTES || status_is_empty_success)
-            && valid_probe_body(&url, &body));
+        .unwrap_or_else(|| {
+            body.len() <= response_limit
+                && (body.len() >= MIN_RESPONSE_BYTES || status_is_empty_success)
+                && valid_probe_body(&url, &body)
+        });
 
     if !body_valid {
         return Err(ProbeError::Failed);
