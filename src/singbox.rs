@@ -1158,12 +1158,17 @@ fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     }
 }
 
-async fn request_url(client: &Client, url: &str) -> Result<crate::validator::ProbeSample, String> {
+async fn request_url(
+    client: &Client,
+    url: &str,
+    minimum_body_bytes: Option<usize>,
+) -> Result<crate::validator::ProbeSample, String> {
     wait_for_rate_limit().await;
     let started = std::time::Instant::now();
-    let response_limit = response_limit_for_target(url);
+    let response_limit =
+        minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url));
     let mut request = client.get(url);
-    if is_throughput_target(url) {
+    if is_throughput_target(url) || minimum_body_bytes.is_some() {
         request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
     }
     let response = request.send().await.map_err(|error| error.to_string())?;
@@ -1179,6 +1184,7 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     let throughput_target = is_throughput_target(url);
     if !throughput_target
+        && minimum_body_bytes.is_none()
         && response
             .content_length()
             .is_some_and(|length| length as usize > response_limit)
@@ -1187,7 +1193,7 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = if throughput_target {
+    let body = if throughput_target || minimum_body_bytes.is_some() {
         read_response_body_at_least(response, response_limit)
             .await
             .map_err(|_| {
@@ -1198,10 +1204,15 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
             .await
             .map_err(|_| "response body exceeds validation limit".to_string())?
     };
-    if body.len() > response_limit
-        || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
-        || !valid_probe_body(url, &body)
-    {
+    let body_valid = minimum_body_bytes
+        .map(|minimum| body.len() >= minimum)
+        .unwrap_or_else(|| {
+            body.len() <= response_limit
+                && (body.len() >= MIN_RESPONSE_BYTES || status_is_empty_success)
+                && valid_probe_body(url, &body)
+        });
+
+    if !body_valid {
         return Err(
             "response body is empty, exceeds validation limit, or is not the expected probe payload"
                 .to_string(),
@@ -1408,7 +1419,7 @@ async fn check_batch_targets(
                 .map(|entry_index| {
                     let client = &clients[entry_index];
                     let target = targets[0].clone();
-                    async move { (entry_index, request_url(client, &target).await) }
+                    async move { (entry_index, request_url(client, &target, policy.minimum_body_bytes).await) }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
@@ -1501,7 +1512,7 @@ async fn check_batch_targets(
                         .map(|entry_index| {
                             let client = &clients[entry_index];
                             let target = target.clone();
-                            async move { (entry_index, request_url(client, &target).await) }
+                            async move { (entry_index, request_url(client, &target, policy.minimum_body_bytes).await) }
                         })
                         .buffer_unordered(workers.max(1))
                         .collect::<Vec<_>>()
@@ -1532,6 +1543,20 @@ async fn check_batch_targets(
                     }
                 }
             }
+        }
+
+        if let Some(minimum) = policy.minimum_body_bytes {
+            let primary_successes = successes.iter().filter(|&&count| count > 0).count();
+            let secondary_successes_count = secondary_successes
+                .iter()
+                .filter(|&&count| count > 0)
+                .count();
+            println!(
+                "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+            );
+            println!(
+                "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+            );
         }
 
         for index in 0..count {
@@ -1690,7 +1715,7 @@ async fn check_batch(
         for _ in 0..STABILITY_ATTEMPTS {
             let results = stream::iter(active.clone())
                 .map(|(config, client)| async move {
-                    let result = request_url(&client, target).await;
+                    let result = request_url(&client, target, None).await;
                     (config, result)
                 })
                 .buffer_unordered(workers.max(1))
@@ -1804,6 +1829,28 @@ pub async fn validate_candidates_with_targets_once(
         workers,
         request_timeout,
         ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets),
+    )
+    .await
+}
+
+pub async fn validate_candidates_with_targets_once_with_minimum_body(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+    minimum_body_bytes: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets)
+            .with_minimum_body_bytes(minimum_body_bytes),
     )
     .await
 }
