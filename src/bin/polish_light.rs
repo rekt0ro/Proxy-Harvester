@@ -811,6 +811,7 @@ async fn validate_light_transfer_batch(
     singbox: &str,
     candidates: &[String],
     workers: usize,
+    target: &str,
 ) -> Result<HashMap<String, ProxyMetrics>, String> {
     let mut singbox_candidates = Vec::new();
     let mut xray_candidates = Vec::new();
@@ -837,7 +838,7 @@ async fn validate_light_transfer_batch(
             proxyrift::singbox::validate_candidates_with_target_once(
                 singbox,
                 &singbox_validation_candidates,
-                proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+                target,
                 workers,
                 request_timeout,
                 FINAL_TRANSFER_LATENCY_LIMIT_MS,
@@ -853,7 +854,7 @@ async fn validate_light_transfer_batch(
             proxyrift::validator::validate_candidates_with_target_once(
                 xray,
                 &xray_validation_candidates,
-                proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+                target,
                 workers,
                 1000,
                 FINAL_TRANSFER_TIMEOUT_SECS,
@@ -895,7 +896,7 @@ async fn validate_light_transfer_batch(
         match proxyrift::validator::validate_candidates_with_target_once(
             xray,
             &fallback_retry,
-            proxyrift::validator::STRICT_THROUGHPUT_TARGET,
+            target,
             workers,
             1000,
             FINAL_TRANSFER_TIMEOUT_SECS,
@@ -914,14 +915,24 @@ async fn validate_light_transfer_batch(
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
+const FINAL_TRANSFER_RATE_LIMIT_TOLERANCE_PERCENT: u64 = 25;
+const FINAL_TRANSFER_RATE_LIMIT_SEVERE_PERCENT: u64 = 50;
+
 fn adjust_transfer_workers(
     current: usize,
     rate_limits: u64,
+    batch_size: usize,
     clean_batches: usize,
 ) -> (usize, usize) {
-    if rate_limits >= 4 {
+    let rate_limit_percent = if batch_size == 0 {
+        0
+    } else {
+        rate_limits.saturating_mul(100).div_ceil(batch_size as u64)
+    };
+
+    if rate_limit_percent >= FINAL_TRANSFER_RATE_LIMIT_SEVERE_PERCENT {
         (current.saturating_sub(2).max(FINAL_TRANSFER_MIN_WORKERS), 0)
-    } else if rate_limits > 0 {
+    } else if rate_limit_percent >= FINAL_TRANSFER_RATE_LIMIT_TOLERANCE_PERCENT {
         (current.saturating_sub(1).max(FINAL_TRANSFER_MIN_WORKERS), 0)
     } else if clean_batches.saturating_add(1) >= FINAL_TRANSFER_CLEAN_BATCHES_TO_RAMP {
         ((current + 1).min(FINAL_TRANSFER_WORKERS), 0)
@@ -946,6 +957,7 @@ async fn fill_transfer_gate(
     let gate_started = Instant::now();
     let mut transfer_workers = FINAL_TRANSFER_INITIAL_WORKERS;
     let mut clean_batches = 0usize;
+    let mut transfer_batch_index = 0usize;
     loop {
         let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
         sort_ranked(
@@ -1060,17 +1072,23 @@ async fn fill_transfer_gate(
 
         transfer_tested.extend(batch.iter().cloned());
 
+        let target_count = proxyrift::validator::STRICT_THROUGHPUT_TARGETS.len();
+        let target =
+            proxyrift::validator::STRICT_THROUGHPUT_TARGETS[transfer_batch_index % target_count];
+        transfer_batch_index = transfer_batch_index.wrapping_add(1);
+
         println!(
-            "[INFO] 📥 [10 MiB] {} SLOTS REMAINING | TESTING {} CANDIDATES | ADAPTIVE MAX TESTS: {}",
+            "[INFO] 📥 [10 MiB] {} SLOTS REMAINING | TESTING {} CANDIDATES | ADAPTIVE MAX TESTS: {} | DESTINATION: {}",
             remaining,
             batch.len(),
-            dynamic_test_limit
+            dynamic_test_limit,
+            target
         );
 
         let rate_limits_before = rate_limit_events();
         let batch_started = Instant::now();
         let metadata =
-            validate_light_transfer_batch(xray, singbox, &batch, transfer_workers).await?;
+            validate_light_transfer_batch(xray, singbox, &batch, transfer_workers, target).await?;
         let batch_elapsed = batch_started.elapsed().as_secs();
         let batch_passed = metadata.len();
         transfer_verified.extend(metadata);
@@ -1080,12 +1098,30 @@ async fn fill_transfer_gate(
         let previous_workers = transfer_workers;
         let previous_clean_batches = clean_batches;
         (transfer_workers, clean_batches) =
-            adjust_transfer_workers(transfer_workers, rate_limits, clean_batches);
+            adjust_transfer_workers(transfer_workers, rate_limits, batch.len(), clean_batches);
         if rate_limits > 0 {
-            println!(
-                "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses; reducing workers {} -> {}",
-                rate_limits, previous_workers, transfer_workers
-            );
+            let rate_limit_percent = if batch.is_empty() {
+                0
+            } else {
+                rate_limits.saturating_mul(100).div_ceil(batch.len() as u64)
+            };
+
+            if transfer_workers < previous_workers {
+                println!(
+                    "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses ({rate_limit_percent}%) at {} | reducing workers {} -> {}",
+                    rate_limits,
+                    target,
+                    previous_workers,
+                    transfer_workers
+                );
+            } else {
+                println!(
+                    "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses ({rate_limit_percent}%) at {} | within tolerance, keeping workers at {}",
+                    rate_limits,
+                    target,
+                    transfer_workers
+                );
+            }
         } else if transfer_workers > previous_workers {
             println!(
                 "[INFO] 📈 LIGHT TRANSFER: {} clean batches; increasing workers {} -> {}",
@@ -2603,16 +2639,16 @@ mod tests {
 
     #[test]
     fn rate_limits_back_transfer_workers_to_two() {
-        assert_eq!(adjust_transfer_workers(4, 4, 0), (2, 0));
-        assert_eq!(adjust_transfer_workers(8, 1, 1), (7, 0));
-        assert_eq!(adjust_transfer_workers(2, 1, 0), (2, 0));
+        assert_eq!(adjust_transfer_workers(4, 4, 4, 0), (2, 0));
+        assert_eq!(adjust_transfer_workers(8, 2, 8, 0), (7, 0));
+        assert_eq!(adjust_transfer_workers(2, 1, 8, 0), (2, 1));
     }
 
     #[test]
     fn clean_transfer_batches_ramp_workers_slowly() {
-        assert_eq!(adjust_transfer_workers(2, 0, 0), (2, 1));
-        assert_eq!(adjust_transfer_workers(2, 0, 1), (3, 0));
-        assert_eq!(adjust_transfer_workers(8, 0, 1), (8, 0));
+        assert_eq!(adjust_transfer_workers(2, 0, 8, 0), (2, 1));
+        assert_eq!(adjust_transfer_workers(2, 0, 8, 1), (3, 0));
+        assert_eq!(adjust_transfer_workers(8, 0, 8, 1), (8, 0));
     }
 
     #[test]
