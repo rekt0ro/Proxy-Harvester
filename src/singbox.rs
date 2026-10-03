@@ -1165,8 +1165,7 @@ async fn request_url(
 ) -> Result<crate::validator::ProbeSample, String> {
     wait_for_rate_limit().await;
     let started = std::time::Instant::now();
-    let response_limit =
-        minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url));
+    let response_limit = minimum_body_bytes.unwrap_or_else(|| response_limit_for_target(url));
     let mut request = client.get(url);
     if is_throughput_target(url) || minimum_body_bytes.is_some() {
         request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
