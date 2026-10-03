@@ -1282,12 +1282,7 @@ async fn fill_stream_continuity_gate(
         }
 
         let mut ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
-        sort_ranked(
-            &mut ranked,
-            transfer_verified,
-            global_positions,
-            history,
-        );
+        sort_ranked(&mut ranked, transfer_verified, global_positions, history);
 
         let untested = ranked
             .into_iter()
