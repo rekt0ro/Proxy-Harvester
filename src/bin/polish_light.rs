@@ -1148,9 +1148,8 @@ async fn fill_transfer_gate(
                 println!(
                     "[WARN] ⚠️ LIGHT TRANSFER: {} rate-limit responses ({rate_limit_percent}%) at {} | reducing workers {} -> {}",
                     rate_limits,
-                    previous_workers,
                     target,
-                    transfer_workers,
+                    previous_workers,
                     transfer_workers
                 );
             } else {
