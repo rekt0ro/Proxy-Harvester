@@ -528,6 +528,8 @@ jobs:
           strict_verified="unknown"
           transfer_tested="unknown"
           transfer_passed="unknown"
+          stream_tested="unknown"
+          stream_passed="unknown"
           published="unknown"
           ml_rows="0"
           ml_strict_passes="0"
@@ -560,6 +562,8 @@ jobs:
             strict_verified="$(jq -r '.strict_verified // "unknown"' /tmp/proxyrift/light-stats.json)"
             transfer_tested="$(jq -r '.transfer_tested // "unknown"' /tmp/proxyrift/light-stats.json)"
             transfer_passed="$(jq -r '.transfer_passed // "unknown"' /tmp/proxyrift/light-stats.json)"
+            stream_tested="$(jq -r '.stream_continuity_tested // "unknown"' /tmp/proxyrift/light-stats.json)"
+            stream_passed="$(jq -r '.stream_continuity_passed // "unknown"' /tmp/proxyrift/light-stats.json)"
             published="$(jq -r '.published // "unknown"' /tmp/proxyrift/light-stats.json)"
           fi
 
@@ -754,6 +758,8 @@ jobs:
             echo "| Strictly verified | $strict_verified |"
             echo "| 10 MiB tested | $transfer_tested |"
             echo "| 10 MiB passed | $transfer_passed |"
+            echo "| Stream continuity tested | $stream_tested |"
+            echo "| Stream continuity passed | $stream_passed |"
             echo "| Published by validator | $published |"
             echo
             echo "### 🧠 Light ML dataset"
