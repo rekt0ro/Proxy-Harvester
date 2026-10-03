@@ -2043,6 +2043,7 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validator::STRICT_THROUGHPUT_BYTES;
 
     #[tokio::test]
     async fn reuses_cached_singbox_endpoint() {
