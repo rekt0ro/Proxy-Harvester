@@ -3420,6 +3420,23 @@ mod tests {
     }
 
     #[test]
+    fn throughput_probe_accepts_at_least_10_mib() {
+        let target = Url::parse(STRICT_THROUGHPUT_TARGET).expect("throughput target should parse");
+        assert!(!valid_probe_body(
+            &target,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES - 1]
+        ));
+        assert!(valid_probe_body(
+            &target,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES]
+        ));
+        assert!(valid_probe_body(
+            &target,
+            &vec![0_u8; STRICT_THROUGHPUT_BYTES + 1]
+        ));
+    }
+
+    #[test]
     fn bounded_response_chunk_rejects_overflow() {
         let mut body = Vec::new();
         assert!(super::append_limited_response_chunk_to(
