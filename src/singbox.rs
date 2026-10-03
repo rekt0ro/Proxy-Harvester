@@ -1233,36 +1233,31 @@ async fn request_url_sustained(
     max_idle_gap: Duration,
 ) -> Result<crate::validator::ProbeSample, String> {
     let started = std::time::Instant::now();
-    let mut total_bytes = 0usize;
+    let required_bytes = segments.max(1).saturating_mul(minimum_body_bytes);
 
-    for _ in 0..segments.max(1) {
-        wait_for_rate_limit().await;
-        let mut request = client.get(url);
-        request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
-        let response = request.send().await.map_err(|error| error.to_string())?;
+    wait_for_rate_limit().await;
+    let mut request = client.get(url);
+    request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    let response = request.send().await.map_err(|error| error.to_string())?;
 
-        if response.status().as_u16() == 429 {
-            extend_rate_limit(rate_limit_wait(response.headers()));
-            return Err("target returned HTTP 429".to_string());
-        }
-
-        if !response.status().is_success() || !valid_probe_status(url, response.status().as_u16()) {
-            return Err(format!("target returned HTTP {}", response.status()));
-        }
-
-        let body =
-            read_response_body_at_least_with_max_idle(response, minimum_body_bytes, max_idle_gap)
-                .await
-                .map_err(|_| {
-                    "response body stalled or was shorter than the required stream segment"
-                        .to_string()
-                })?;
-        total_bytes = total_bytes.saturating_add(body.len());
+    if response.status().as_u16() == 429 {
+        extend_rate_limit(rate_limit_wait(response.headers()));
+        return Err("target returned HTTP 429".to_string());
     }
+
+    if !response.status().is_success() || !valid_probe_status(url, response.status().as_u16()) {
+        return Err(format!("target returned HTTP {}", response.status()));
+    }
+
+    let body = read_response_body_at_least_with_max_idle(response, required_bytes, max_idle_gap)
+        .await
+        .map_err(|_| {
+            "response body stalled or was shorter than the required continuous stream".to_string()
+        })?;
 
     Ok(crate::validator::ProbeSample {
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
-        bytes: total_bytes,
+        bytes: body.len(),
     })
 }
 
