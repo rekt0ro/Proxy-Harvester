@@ -22,8 +22,13 @@ pub const STRICT_THROUGHPUT_TARGETS: &[&str] = &[
     "https://cdn.truefilesize.com/test/test-10mb.bin",
     "http://speedtest.tele2.net/10MB.zip",
 ];
+pub const LIGHT_TRANSFER_STABILITY_TARGETS: &[&str] = &[
+    "https://bom.proof.ovh.net/files/1Mb.dat",
+    "https://cdn.truefilesize.com/test/test-1mb.bin",
+];
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
+pub const LIGHT_TRANSFER_STABILITY_BYTES: usize = 1_048_576;
 pub const SUSTAINED_THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESPONSE_BYTES: usize = 65536;
 pub const MIN_RESPONSE_BYTES: usize = 1;
@@ -36,6 +41,8 @@ pub const STRICT_MIN_SUCCESSFUL_TARGETS: usize = 2;
 pub const STRICT_INTER_ATTEMPT_DELAY: Duration = Duration::from_secs(1);
 pub const STRICT_LATE_SUCCESS_STREAK: usize = 2;
 pub const STRICT_RECONNECT_AFTER_ATTEMPTS: &[usize] = &[3];
+pub const STRICT_SECONDARY_ATTEMPTS: usize = 2;
+pub const STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS: usize = 1;
 pub const MAX_LATENCY_MS: f64 = 800.0;
 const PUBLIC_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CORE_START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1802,6 +1809,264 @@ pub fn is_cheaply_supported_config(config: &str) -> bool {
     }
 }
 
+pub fn is_light_consumer_compatible(config: &str) -> bool {
+    let cleaned = clean(config);
+    let scheme = scheme_of(cleaned);
+
+    match scheme.as_str() {
+        "vless" | "trojan" => {
+            let Ok(url) = Url::parse(cleaned) else {
+                return false;
+            };
+            if url.host().is_none() || url.port().is_none() || url.port() == Some(0) {
+                return false;
+            }
+
+            if scheme == "vless" && url.username().is_empty() {
+                return false;
+            }
+
+            if scheme == "trojan"
+                && url
+                    .password()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(url.username())
+                    .is_empty()
+            {
+                return false;
+            }
+
+            let transport =
+                normalize_transport(&first_query(&url, &["type", "network"], Some("tcp")));
+            if !matches!(transport.as_str(), "raw" | "ws" | "grpc") {
+                return false;
+            }
+
+            let security = first_query(&url, &["security"], Some(""))
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            let valid_security = if scheme == "trojan" {
+                matches!(security.as_str(), "" | "tls" | "reality")
+            } else {
+                matches!(security.as_str(), "" | "none" | "tls" | "reality")
+            };
+            if !valid_security {
+                return false;
+            }
+            if scheme == "trojan" && security == "none" {
+                return false;
+            }
+
+            let flow = first_query(&url, &["flow"], Some(""));
+            if scheme == "vless"
+                && !matches!(
+                    flow.as_str(),
+                    "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"
+                )
+            {
+                return false;
+            }
+
+            let encryption = first_query(&url, &["encryption"], Some(""))
+                .trim()
+                .to_ascii_lowercase();
+            if scheme == "vless" && !matches!(encryption.as_str(), "" | "none") {
+                return false;
+            }
+
+            for key in [
+                "fm",
+                "finalmask",
+                "extra",
+                "ech",
+                "pcs",
+                "pinnedPeerCertSha256",
+                "vcn",
+                "verifyPeerCertByName",
+                "packetEncoding",
+                "spx",
+                "spiderX",
+            ] {
+                if url
+                    .query_pairs()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(key))
+                {
+                    return false;
+                }
+            }
+
+            let header_type = first_query(&url, &["headerType", "header_type"], Some(""));
+            if !header_type.is_empty() && !header_type.eq_ignore_ascii_case("none") {
+                return false;
+            }
+
+            if transport == "grpc" {
+                let mode = first_query(&url, &["mode"], Some("gun"))
+                    .trim()
+                    .to_ascii_lowercase();
+                if mode != "gun" {
+                    return false;
+                }
+            }
+
+            if transport == "ws"
+                && url.query_pairs().any(|(key, _)| {
+                    [
+                        "ed",
+                        "maxEarlyData",
+                        "max_early_data",
+                        "eh",
+                        "earlyDataHeaderName",
+                        "early_data_header_name",
+                    ]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                })
+            {
+                return false;
+            }
+
+            if security == "reality" {
+                let pbk = first_query(&url, &["pbk", "publicKey"], Some(""));
+                let sni = first_query(&url, &["sni", "serverName"], Some(""));
+                if pbk.trim().is_empty() || sni.trim().is_empty() {
+                    return false;
+                }
+            }
+
+            true
+        }
+        "vmess" => {
+            let Some(value) = cleaned
+                .split_once("://")
+                .and_then(|(_, payload)| b64decode(payload))
+                .and_then(|decoded| serde_json::from_slice::<Value>(&decoded).ok())
+            else {
+                return false;
+            };
+
+            let host = value
+                .get("add")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let port = match value.get("port") {
+                Some(Value::String(value)) => value.trim().parse::<u16>().ok(),
+                Some(Value::Number(value)) => {
+                    value.as_u64().and_then(|value| u16::try_from(value).ok())
+                }
+                _ => None,
+            };
+            if host.is_none() || port.is_none() || port == Some(0) {
+                return false;
+            }
+
+            let network = normalize_transport(
+                &json_text(value.get("net")).unwrap_or_else(|| "tcp".to_string()),
+            );
+            if !matches!(network.as_str(), "raw" | "ws" | "grpc") {
+                return false;
+            }
+
+            let vmess_type = json_text(value.get("type"))
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            if network == "raw" && !matches!(vmess_type.as_str(), "" | "none") {
+                return false;
+            }
+            if network == "grpc" && !matches!(vmess_type.as_str(), "" | "none" | "gun") {
+                return false;
+            }
+
+            if boolish_value(value.get("allowInsecure")) {
+                return false;
+            }
+
+            for key in ["ech", "pcs", "vcn"] {
+                if value
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|item| !item.trim().is_empty())
+                {
+                    return false;
+                }
+            }
+
+            if value
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| !mode.trim().is_empty() && !mode.eq_ignore_ascii_case("gun"))
+            {
+                return false;
+            }
+
+            true
+        }
+        "ss" => {
+            let Ok(url) = Url::parse(cleaned) else {
+                return false;
+            };
+            if !ss_has_nonempty_password(cleaned) {
+                return false;
+            }
+            !url.query_pairs()
+                .any(|(key, _)| key.eq_ignore_ascii_case("plugin"))
+        }
+        "hysteria2" | "hy2" => {
+            let Some((host, port_spec, auth_raw)) = hysteria2_parts(cleaned) else {
+                return false;
+            };
+            if host.trim().is_empty()
+                || percent_decode_str(&auth_raw)
+                    .decode_utf8()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                return false;
+            }
+
+            if port_spec.contains(',') || port_spec.contains('-') {
+                return false;
+            }
+
+            let Ok(url) = Url::parse(cleaned) else {
+                return false;
+            };
+            if url.query_pairs().any(|(key, value)| {
+                key.eq_ignore_ascii_case("pinSHA256")
+                    || key.eq_ignore_ascii_case("ech")
+                    || (key.eq_ignore_ascii_case("insecure")
+                        && matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        ))
+            }) {
+                return false;
+            }
+
+            true
+        }
+        "http" | "socks" | "socks5" | "socks5h" => Url::parse(cleaned)
+            .ok()
+            .is_some_and(|url| endpoint_from_url(&url, None).is_ok()),
+        _ => false,
+    }
+}
+
+fn boolish_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_u64().unwrap_or(0) != 0,
+        Some(Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        _ => false,
+    }
+}
+
 pub fn is_locally_supported_config(config: &str) -> bool {
     let scheme = scheme_of(clean(config));
 
@@ -2193,21 +2458,27 @@ fn valid_probe_status(url: &Url, status: u16) -> bool {
     url.as_str() != PRIMARY_TARGET || status == 204
 }
 
-pub(crate) fn response_limit_for_target(url: &str) -> usize {
-    if is_throughput_target(url) {
-        STRICT_THROUGHPUT_BYTES
+pub(crate) fn throughput_bytes_for_target(url: &str) -> Option<usize> {
+    if STRICT_THROUGHPUT_TARGETS.contains(&url) {
+        Some(STRICT_THROUGHPUT_BYTES)
+    } else if LIGHT_TRANSFER_STABILITY_TARGETS.contains(&url) {
+        Some(LIGHT_TRANSFER_STABILITY_BYTES)
     } else {
-        MAX_RESPONSE_BYTES
+        None
     }
 }
 
+pub(crate) fn response_limit_for_target(url: &str) -> usize {
+    throughput_bytes_for_target(url).unwrap_or(MAX_RESPONSE_BYTES)
+}
+
 pub(crate) fn is_throughput_target(url: &str) -> bool {
-    STRICT_THROUGHPUT_TARGETS.contains(&url)
+    throughput_bytes_for_target(url).is_some()
 }
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
-    if is_throughput_target(url.as_str()) {
-        return body.len() >= STRICT_THROUGHPUT_BYTES;
+    if let Some(minimum_bytes) = throughput_bytes_for_target(url.as_str()) {
+        return body.len() >= minimum_bytes;
     }
 
     match url.as_str() {
@@ -2295,7 +2566,9 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
 
     let status_is_empty_success = response.status().as_u16() == 204;
     let body = if throughput_target {
-        read_response_body_at_least(response, STRICT_THROUGHPUT_BYTES)
+        let minimum_bytes = throughput_bytes_for_target(url.as_str())
+            .expect("throughput target should have a configured minimum");
+        read_response_body_at_least(response, minimum_bytes)
             .await
             .map_err(|_| ProbeError::Failed)?
     } else {
@@ -2675,6 +2948,28 @@ pub async fn validate_candidates_with_target_once(
     .await
 }
 
+pub async fn validate_candidates_with_targets_once(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    batch_size: usize,
+    timeout_seconds: f64,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_targets_inner(
+        binary,
+        candidates,
+        targets,
+        workers,
+        batch_size,
+        timeout_seconds,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets),
+    )
+    .await
+}
+
 pub async fn validate_candidates_with_targets_strict(
     binary: &str,
     candidates: &[String],
@@ -3046,38 +3341,55 @@ async fn check_batch_targets(
         let mut secondary_success = vec![false; count];
         if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
-                let eligible = (0..count)
-                    .filter(|&entry_index| {
-                        !secondary_success[entry_index]
-                            && successes[entry_index] >= policy.min_successful_attempts
-                            && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
-                                || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
-                    })
-                    .collect::<Vec<_>>();
+                let mut secondary_attempts = vec![0usize; count];
+                let mut secondary_successes = vec![0usize; count];
 
-                if eligible.is_empty() {
-                    break;
+                for attempt in 0..STRICT_SECONDARY_ATTEMPTS {
+                    let eligible = (0..count)
+                        .filter(|&entry_index| {
+                            secondary_attempts[entry_index] < STRICT_SECONDARY_ATTEMPTS
+                                && successes[entry_index] >= policy.min_successful_attempts
+                                && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
+                                    || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if eligible.is_empty() {
+                        break;
+                    }
+
+                    let results = stream::iter(eligible)
+                        .map(|entry_index| {
+                            let client = &clients[entry_index];
+                            let target = target.clone();
+                            async move { (entry_index, probe_request(client, target).await) }
+                        })
+                        .buffer_unordered(workers.max(1))
+                        .collect::<Vec<_>>()
+                        .await;
+
+                    for (entry_index, result) in results {
+                        secondary_attempts[entry_index] += 1;
+                        if let Ok(sample) = result {
+                            if sample.latency_ms <= policy.max_latency_ms {
+                                secondary_successes[entry_index] += 1;
+                            }
+                            if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
+                                throughputs[entry_index]
+                                    .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                            }
+                        }
+                    }
+
+                    if attempt + 1 < STRICT_SECONDARY_ATTEMPTS {
+                        sleep(STRICT_INTER_ATTEMPT_DELAY).await;
+                    }
                 }
 
-                let results = stream::iter(eligible)
-                    .map(|entry_index| {
-                        let client = &clients[entry_index];
-                        let target = target.clone();
-                        async move { (entry_index, probe_request(client, target).await) }
-                    })
-                    .buffer_unordered(workers.max(1))
-                    .collect::<Vec<_>>()
-                    .await;
-
-                for (entry_index, result) in results {
-                    if let Ok(sample) = result {
-                        if sample.latency_ms <= policy.max_latency_ms {
-                            secondary_success[entry_index] = true;
-                        }
-                        if is_throughput_target(target.as_str()) && sample.latency_ms > 0.0 {
-                            throughputs[entry_index]
-                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
-                        }
+                for entry_index in 0..count {
+                    if secondary_successes[entry_index] >= STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS
+                    {
+                        secondary_success[entry_index] = true;
                     }
                 }
             }
@@ -4082,6 +4394,86 @@ mod tests {
     }
 
     #[test]
+    fn light_consumer_accepts_plain_vless_tcp() {
+        assert!(is_light_consumer_compatible(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_accepts_common_vless_reality() {
+        assert!(is_light_consumer_compatible(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&pbk=public-key&sni=www.example.com&fp=chrome"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_rejects_vless_xhttp() {
+        assert!(!is_light_consumer_compatible(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&security=tls&type=xhttp"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_rejects_vless_websocket_early_data() {
+        assert!(!is_light_consumer_compatible(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=ws&path=/proxy&ed=2560"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_rejects_vmess_legacy_http_transport() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "tcp",
+            "type": "http",
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(!is_light_consumer_compatible(&format!("vmess://{encoded}")));
+    }
+
+    #[test]
+    fn light_consumer_accepts_vmess_websocket() {
+        let payload = serde_json::json!({
+            "add": "example.com",
+            "port": 443,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "net": "ws",
+            "path": "/proxy",
+            "tls": "tls",
+            "type": "none",
+        });
+        let encoded = STANDARD.encode(payload.to_string());
+        assert!(is_light_consumer_compatible(&format!("vmess://{encoded}")));
+    }
+
+    #[test]
+    fn light_consumer_rejects_shadowsocks_plugins() {
+        assert!(!is_light_consumer_compatible(
+            "ss://aes-256-gcm:password@example.com:8388?plugin=obfs-local;obfs=http"
+        ));
+        assert!(is_light_consumer_compatible(
+            "ss://aes-256-gcm:password@example.com:8388"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_rejects_hysteria2_port_hopping() {
+        assert!(!is_light_consumer_compatible(
+            "hy2://password@example.com:443,5000-5002?sni=example.com"
+        ));
+    }
+
+    #[test]
+    fn light_consumer_rejects_advanced_vless_extensions() {
+        assert!(!is_light_consumer_compatible(
+            "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&type=tcp&ech=YWJj"
+        ));
+    }
+
+    #[test]
     fn local_compatibility_accepts_plain_vless_tcp() {
         assert!(is_locally_supported_config(
             "vless://00000000-0000-0000-0000-000000000001@example.com:443?encryption=none&type=tcp"
@@ -4244,6 +4636,8 @@ mod tests {
         assert_eq!(STRICT_INTER_ATTEMPT_DELAY, Duration::from_secs(1));
         assert_eq!(STRICT_LATE_SUCCESS_STREAK, 2);
         assert_eq!(STRICT_RECONNECT_AFTER_ATTEMPTS, &[3]);
+        assert_eq!(STRICT_SECONDARY_ATTEMPTS, 2);
+        assert_eq!(STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS, 1);
     }
 
     #[test]

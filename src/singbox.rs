@@ -5,7 +5,8 @@ use crate::validator::{
     ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
     PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
     STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_STABILITY_ATTEMPTS, STRICT_THROUGHPUT_BYTES, SUSTAINED_THROUGHPUT_TIMEOUT,
+    STRICT_SECONDARY_ATTEMPTS, STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
+    SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -1147,7 +1148,7 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
     if is_throughput_target(url) {
-        return body.len() >= STRICT_THROUGHPUT_BYTES;
+        return body.len() >= response_limit_for_target(url);
     }
 
     match url {
@@ -1187,9 +1188,11 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
 
     let status_is_empty_success = response.status().as_u16() == 204;
     let body = if throughput_target {
-        read_response_body_at_least(response, STRICT_THROUGHPUT_BYTES)
+        read_response_body_at_least(response, response_limit)
             .await
-            .map_err(|_| "response body is shorter than the required 10 MiB".to_string())?
+            .map_err(|_| {
+                "response body is shorter than the required transfer payload".to_string()
+            })?
     } else {
         read_response_body_limited_to(response, response_limit)
             .await
@@ -1477,38 +1480,55 @@ async fn check_batch_targets(
         let mut secondary_success = vec![false; count];
         if policy.min_successful_targets > 1 {
             for target in targets.iter().skip(1) {
-                let eligible = (0..count)
-                    .filter(|&entry_index| {
-                        !secondary_success[entry_index]
-                            && successes[entry_index] >= policy.min_successful_attempts
-                            && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
-                                || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
-                    })
-                    .collect::<Vec<_>>();
+                let mut secondary_attempts = vec![0usize; count];
+                let mut secondary_successes = vec![0usize; count];
 
-                if eligible.is_empty() {
-                    break;
+                for attempt in 0..STRICT_SECONDARY_ATTEMPTS {
+                    let eligible = (0..count)
+                        .filter(|&entry_index| {
+                            secondary_attempts[entry_index] < STRICT_SECONDARY_ATTEMPTS
+                                && successes[entry_index] >= policy.min_successful_attempts
+                                && (policy.stability_attempts < STRICT_STABILITY_ATTEMPTS
+                                    || late_streak[entry_index] >= STRICT_LATE_SUCCESS_STREAK)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if eligible.is_empty() {
+                        break;
+                    }
+
+                    let results = stream::iter(eligible)
+                        .map(|entry_index| {
+                            let client = &clients[entry_index];
+                            let target = target.clone();
+                            async move { (entry_index, request_url(client, &target).await) }
+                        })
+                        .buffer_unordered(workers.max(1))
+                        .collect::<Vec<_>>()
+                        .await;
+
+                    for (entry_index, result) in results {
+                        secondary_attempts[entry_index] += 1;
+                        if let Ok(sample) = result {
+                            if sample.latency_ms <= policy.max_latency_ms {
+                                secondary_successes[entry_index] += 1;
+                            }
+                            if is_throughput_target(target) && sample.latency_ms > 0.0 {
+                                throughputs[entry_index]
+                                    .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
+                            }
+                        }
+                    }
+
+                    if attempt + 1 < STRICT_SECONDARY_ATTEMPTS {
+                        tokio::time::sleep(STRICT_INTER_ATTEMPT_DELAY).await;
+                    }
                 }
 
-                let results = stream::iter(eligible)
-                    .map(|entry_index| {
-                        let client = &clients[entry_index];
-                        let target = target.clone();
-                        async move { (entry_index, request_url(client, &target).await) }
-                    })
-                    .buffer_unordered(workers.max(1))
-                    .collect::<Vec<_>>()
-                    .await;
-
-                for (entry_index, result) in results {
-                    if let Ok(sample) = result {
-                        if sample.latency_ms <= policy.max_latency_ms {
-                            secondary_success[entry_index] = true;
-                        }
-                        if is_throughput_target(target) && sample.latency_ms > 0.0 {
-                            throughputs[entry_index]
-                                .push(sample.bytes as f64 * 8.0 / sample.latency_ms);
-                        }
+                for entry_index in 0..count {
+                    if secondary_successes[entry_index] >= STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS
+                    {
+                        secondary_success[entry_index] = true;
                     }
                 }
             }
@@ -1768,6 +1788,26 @@ pub async fn validate_candidates_with_target_once(
     .await
 }
 
+pub async fn validate_candidates_with_targets_once(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets),
+    )
+    .await
+}
+
 pub async fn validate_candidates_with_targets_strict(
     binary: &str,
     candidates: &[String],
@@ -2021,6 +2061,7 @@ pub async fn validate_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validator::STRICT_THROUGHPUT_BYTES;
 
     #[tokio::test]
     async fn reuses_cached_singbox_endpoint() {
