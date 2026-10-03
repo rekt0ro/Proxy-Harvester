@@ -9,8 +9,7 @@ use proxyrift::singbox::{
 };
 use proxyrift::validator::{
     endpoint, is_light_consumer_compatible, rate_limit_events, read_lines,
-    validate_candidates_with_target_once,
-    validate_candidates_with_targets_once_with_minimum_body,
+    validate_candidates_with_target_once, validate_candidates_with_targets_once_with_minimum_body,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics,
     LIGHT_TRANSFER_STABILITY_BYTES, LIGHT_TRANSFER_STABILITY_TARGETS, PRIMARY_TARGET,
 };
