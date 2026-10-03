@@ -1,8 +1,8 @@
 {
   "features": {
     "http|latency:0": {
-      "attempts": 16,
-      "successes": 11
+      "attempts": 19,
+      "successes": 12
     },
     "http|latency:1": {
       "attempts": 16,
@@ -13,11 +13,11 @@
       "successes": 1
     },
     "http|latency:11": {
-      "attempts": 8,
+      "attempts": 9,
       "successes": 0
     },
     "http|latency:12": {
-      "attempts": 117,
+      "attempts": 122,
       "successes": 17
     },
     "http|latency:2": {
@@ -25,12 +25,12 @@
       "successes": 14
     },
     "http|latency:3": {
-      "attempts": 12,
-      "successes": 4
+      "attempts": 16,
+      "successes": 5
     },
     "http|latency:4": {
-      "attempts": 18,
-      "successes": 7
+      "attempts": 19,
+      "successes": 8
     },
     "http|latency:5": {
       "attempts": 6,
@@ -45,11 +45,11 @@
       "successes": 2
     },
     "http|latency:8": {
-      "attempts": 11,
+      "attempts": 12,
       "successes": 0
     },
     "http|latency:9": {
-      "attempts": 14,
+      "attempts": 15,
       "successes": 0
     },
     "hy2|latency:0": {
@@ -69,40 +69,40 @@
       "successes": 3
     },
     "hy2|latency:12": {
-      "attempts": 17,
-      "successes": 15
+      "attempts": 18,
+      "successes": 16
     },
     "hy2|latency:2": {
-      "attempts": 4,
-      "successes": 4
+      "attempts": 7,
+      "successes": 7
     },
     "hy2|latency:3": {
       "attempts": 11,
       "successes": 11
     },
     "hy2|latency:4": {
-      "attempts": 55,
-      "successes": 55
+      "attempts": 57,
+      "successes": 57
     },
     "hy2|latency:5": {
-      "attempts": 47,
-      "successes": 46
+      "attempts": 48,
+      "successes": 47
     },
     "hy2|latency:6": {
-      "attempts": 136,
-      "successes": 134
+      "attempts": 138,
+      "successes": 136
     },
     "hy2|latency:7": {
-      "attempts": 102,
-      "successes": 102
+      "attempts": 104,
+      "successes": 104
     },
     "hy2|latency:8": {
-      "attempts": 33,
-      "successes": 32
+      "attempts": 49,
+      "successes": 48
     },
     "hy2|latency:9": {
-      "attempts": 15,
-      "successes": 14
+      "attempts": 25,
+      "successes": 23
     },
     "hysteria2|latency:0": {
       "attempts": 25,
@@ -125,44 +125,44 @@
       "successes": 24
     },
     "hysteria2|latency:2": {
-      "attempts": 14,
-      "successes": 14
+      "attempts": 15,
+      "successes": 15
     },
     "hysteria2|latency:3": {
-      "attempts": 19,
-      "successes": 18
+      "attempts": 23,
+      "successes": 22
     },
     "hysteria2|latency:4": {
-      "attempts": 70,
-      "successes": 68
+      "attempts": 90,
+      "successes": 88
     },
     "hysteria2|latency:5": {
-      "attempts": 87,
-      "successes": 83
+      "attempts": 90,
+      "successes": 86
     },
     "hysteria2|latency:6": {
-      "attempts": 163,
-      "successes": 157
+      "attempts": 164,
+      "successes": 158
     },
     "hysteria2|latency:7": {
       "attempts": 42,
       "successes": 40
     },
     "hysteria2|latency:8": {
-      "attempts": 15,
-      "successes": 13
+      "attempts": 16,
+      "successes": 14
     },
     "hysteria2|latency:9": {
       "attempts": 11,
       "successes": 7
     },
     "socks5|latency:0": {
-      "attempts": 7,
-      "successes": 6
+      "attempts": 8,
+      "successes": 7
     },
     "socks5|latency:1": {
-      "attempts": 10,
-      "successes": 5
+      "attempts": 12,
+      "successes": 7
     },
     "socks5|latency:10": {
       "attempts": 9,
@@ -173,7 +173,7 @@
       "successes": 1
     },
     "socks5|latency:12": {
-      "attempts": 142,
+      "attempts": 147,
       "successes": 2
     },
     "socks5|latency:2": {
@@ -181,15 +181,15 @@
       "successes": 5
     },
     "socks5|latency:3": {
-      "attempts": 6,
-      "successes": 6
+      "attempts": 7,
+      "successes": 7
     },
     "socks5|latency:4": {
       "attempts": 5,
       "successes": 3
     },
     "socks5|latency:5": {
-      "attempts": 7,
+      "attempts": 8,
       "successes": 1
     },
     "socks5|latency:6": {
@@ -201,11 +201,11 @@
       "successes": 2
     },
     "socks5|latency:8": {
-      "attempts": 9,
+      "attempts": 10,
       "successes": 1
     },
     "socks5|latency:9": {
-      "attempts": 10,
+      "attempts": 11,
       "successes": 1
     },
     "socks|latency:12": {
@@ -213,12 +213,12 @@
       "successes": 0
     },
     "ss|latency:0": {
-      "attempts": 123,
-      "successes": 121
+      "attempts": 133,
+      "successes": 130
     },
     "ss|latency:1": {
-      "attempts": 146,
-      "successes": 138
+      "attempts": 164,
+      "successes": 156
     },
     "ss|latency:10": {
       "attempts": 9,
@@ -229,40 +229,40 @@
       "successes": 10
     },
     "ss|latency:12": {
-      "attempts": 99,
-      "successes": 59
+      "attempts": 103,
+      "successes": 61
     },
     "ss|latency:2": {
-      "attempts": 107,
-      "successes": 103
+      "attempts": 129,
+      "successes": 124
     },
     "ss|latency:3": {
-      "attempts": 245,
-      "successes": 227
+      "attempts": 297,
+      "successes": 275
     },
     "ss|latency:4": {
-      "attempts": 323,
-      "successes": 292
+      "attempts": 339,
+      "successes": 306
     },
     "ss|latency:5": {
-      "attempts": 124,
-      "successes": 114
+      "attempts": 128,
+      "successes": 118
     },
     "ss|latency:6": {
-      "attempts": 60,
-      "successes": 56
+      "attempts": 66,
+      "successes": 62
     },
     "ss|latency:7": {
-      "attempts": 56,
-      "successes": 46
+      "attempts": 58,
+      "successes": 47
     },
     "ss|latency:8": {
-      "attempts": 37,
-      "successes": 35
+      "attempts": 39,
+      "successes": 36
     },
     "ss|latency:9": {
-      "attempts": 13,
-      "successes": 11
+      "attempts": 16,
+      "successes": 13
     },
     "trojan|latency:0": {
       "attempts": 6,
@@ -277,32 +277,32 @@
       "successes": 7
     },
     "trojan|latency:12": {
-      "attempts": 48,
-      "successes": 24
+      "attempts": 51,
+      "successes": 27
     },
     "trojan|latency:2": {
       "attempts": 2,
       "successes": 1
     },
     "trojan|latency:3": {
-      "attempts": 15,
-      "successes": 7
+      "attempts": 17,
+      "successes": 9
     },
     "trojan|latency:4": {
-      "attempts": 1,
-      "successes": 1
-    },
-    "trojan|latency:5": {
       "attempts": 2,
       "successes": 2
     },
+    "trojan|latency:5": {
+      "attempts": 4,
+      "successes": 4
+    },
     "trojan|latency:6": {
-      "attempts": 1,
+      "attempts": 2,
       "successes": 1
     },
     "trojan|latency:7": {
-      "attempts": 1,
-      "successes": 1
+      "attempts": 2,
+      "successes": 2
     },
     "trojan|latency:8": {
       "attempts": 1,
@@ -313,111 +313,111 @@
       "successes": 3
     },
     "vless|latency:0": {
-      "attempts": 36,
-      "successes": 30
+      "attempts": 40,
+      "successes": 34
     },
     "vless|latency:1": {
-      "attempts": 87,
-      "successes": 84
+      "attempts": 98,
+      "successes": 94
     },
     "vless|latency:10": {
-      "attempts": 67,
-      "successes": 51
+      "attempts": 79,
+      "successes": 60
     },
     "vless|latency:11": {
-      "attempts": 28,
-      "successes": 19
+      "attempts": 30,
+      "successes": 20
     },
     "vless|latency:12": {
-      "attempts": 175,
-      "successes": 111
+      "attempts": 200,
+      "successes": 132
     },
     "vless|latency:2": {
-      "attempts": 96,
-      "successes": 93
+      "attempts": 107,
+      "successes": 104
     },
     "vless|latency:3": {
-      "attempts": 66,
-      "successes": 59
-    },
-    "vless|latency:4": {
-      "attempts": 84,
+      "attempts": 86,
       "successes": 76
     },
+    "vless|latency:4": {
+      "attempts": 109,
+      "successes": 96
+    },
     "vless|latency:5": {
-      "attempts": 125,
-      "successes": 106
+      "attempts": 138,
+      "successes": 115
     },
     "vless|latency:6": {
-      "attempts": 202,
-      "successes": 181
+      "attempts": 211,
+      "successes": 188
     },
     "vless|latency:7": {
-      "attempts": 124,
-      "successes": 110
+      "attempts": 126,
+      "successes": 112
     },
     "vless|latency:8": {
-      "attempts": 102,
-      "successes": 79
+      "attempts": 112,
+      "successes": 87
     },
     "vless|latency:9": {
-      "attempts": 90,
-      "successes": 73
+      "attempts": 94,
+      "successes": 77
     },
     "vmess|latency:0": {
-      "attempts": 131,
-      "successes": 127
+      "attempts": 145,
+      "successes": 141
     },
     "vmess|latency:1": {
-      "attempts": 284,
-      "successes": 273
+      "attempts": 308,
+      "successes": 297
     },
     "vmess|latency:10": {
-      "attempts": 36,
-      "successes": 22
+      "attempts": 44,
+      "successes": 26
     },
     "vmess|latency:11": {
-      "attempts": 48,
-      "successes": 35
+      "attempts": 49,
+      "successes": 36
     },
     "vmess|latency:12": {
-      "attempts": 268,
-      "successes": 168
+      "attempts": 286,
+      "successes": 180
     },
     "vmess|latency:2": {
-      "attempts": 175,
-      "successes": 169
+      "attempts": 193,
+      "successes": 184
     },
     "vmess|latency:3": {
-      "attempts": 172,
-      "successes": 156
+      "attempts": 183,
+      "successes": 166
     },
     "vmess|latency:4": {
-      "attempts": 213,
-      "successes": 190
+      "attempts": 220,
+      "successes": 197
     },
     "vmess|latency:5": {
-      "attempts": 161,
-      "successes": 152
+      "attempts": 168,
+      "successes": 159
     },
     "vmess|latency:6": {
-      "attempts": 123,
-      "successes": 105
+      "attempts": 136,
+      "successes": 115
     },
     "vmess|latency:7": {
-      "attempts": 70,
-      "successes": 66
+      "attempts": 77,
+      "successes": 67
     },
     "vmess|latency:8": {
-      "attempts": 45,
+      "attempts": 47,
       "successes": 40
     },
     "vmess|latency:9": {
-      "attempts": 47,
-      "successes": 32
+      "attempts": 49,
+      "successes": 33
     }
   },
-  "total_attempts": 5991,
-  "total_successes": 4897,
+  "total_attempts": 6515,
+  "total_successes": 5334,
   "version": 1
 }
