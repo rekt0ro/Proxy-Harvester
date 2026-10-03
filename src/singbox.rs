@@ -1526,8 +1526,7 @@ async fn check_batch_targets(
                 }
 
                 for entry_index in 0..count {
-                    if secondary_successes[entry_index]
-                        >= STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS
+                    if secondary_successes[entry_index] >= STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS
                     {
                         secondary_success[entry_index] = true;
                     }
