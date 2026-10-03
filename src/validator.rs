@@ -3784,6 +3784,7 @@ mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
     use reqwest::header::{HeaderMap, HeaderValue};
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn sustained_stream_reader_rejects_long_idle_gap() {
