@@ -1146,9 +1146,12 @@ fn valid_probe_status(url: &str, status: u16) -> bool {
 }
 
 fn valid_probe_body(url: &str, body: &[u8]) -> bool {
+    if is_throughput_target(url) {
+        return body.len() == STRICT_THROUGHPUT_BYTES;
+    }
+
     match url {
         PRIMARY_TARGET => body.is_empty(),
-        STRICT_THROUGHPUT_TARGET => body.len() == STRICT_THROUGHPUT_BYTES,
         "https://example.com/" => !body.is_empty(),
         _ => true,
     }
