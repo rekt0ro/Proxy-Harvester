@@ -2697,19 +2697,15 @@ async fn probe_request_sustained(
             return Err(ProbeError::Failed);
         }
 
-        if !response.status().is_success()
-            || !valid_probe_status(&url, response.status().as_u16())
+        if !response.status().is_success() || !valid_probe_status(&url, response.status().as_u16())
         {
             return Err(ProbeError::Failed);
         }
 
-        let body = read_response_body_at_least_with_max_idle(
-            response,
-            minimum_body_bytes,
-            max_idle_gap,
-        )
-        .await
-        .map_err(|_| ProbeError::Failed)?;
+        let body =
+            read_response_body_at_least_with_max_idle(response, minimum_body_bytes, max_idle_gap)
+                .await
+                .map_err(|_| ProbeError::Failed)?;
         total_bytes = total_bytes.saturating_add(body.len());
     }
 
@@ -2730,14 +2726,7 @@ async fn probe_request_with_validation_policy(
         policy.minimum_body_bytes,
     ) {
         (Some(segments), Some(max_idle_gap), Some(minimum_body_bytes)) if segments > 1 => {
-            probe_request_sustained(
-                client,
-                url,
-                segments,
-                minimum_body_bytes,
-                max_idle_gap,
-            )
-            .await
+            probe_request_sustained(client, url, segments, minimum_body_bytes, max_idle_gap).await
         }
         _ => probe_request_with_minimum(client, url, policy.minimum_body_bytes).await,
     }
@@ -3170,8 +3159,11 @@ pub async fn validate_candidates_with_targets_once_with_sustained_stream(
         workers,
         batch_size,
         timeout_seconds,
-        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets)
-            .with_sustained_stream(segments, minimum_body_bytes, max_idle_gap),
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets).with_sustained_stream(
+            segments,
+            minimum_body_bytes,
+            max_idle_gap,
+        ),
     )
     .await
 }
@@ -3577,7 +3569,8 @@ async fn check_batch_targets(
                             async move {
                                 (
                                     entry_index,
-                                    probe_request_with_validation_policy(client, target, policy).await,
+                                    probe_request_with_validation_policy(client, target, policy)
+                                        .await,
                                 )
                             }
                         })
@@ -3810,7 +3803,10 @@ mod tests {
             policy.minimum_body_bytes,
             Some(SUSTAINED_STREAM_SEGMENT_BYTES)
         );
-        assert_eq!(policy.sustained_stream_max_idle, Some(SUSTAINED_STREAM_MAX_IDLE));
+        assert_eq!(
+            policy.sustained_stream_max_idle,
+            Some(SUSTAINED_STREAM_MAX_IDLE)
+        );
     }
 
     #[test]
