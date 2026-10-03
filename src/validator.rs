@@ -2207,7 +2207,7 @@ pub(crate) fn is_throughput_target(url: &str) -> bool {
 
 fn valid_probe_body(url: &Url, body: &[u8]) -> bool {
     if is_throughput_target(url.as_str()) {
-        return body.len() == STRICT_THROUGHPUT_BYTES;
+        return body.len() >= STRICT_THROUGHPUT_BYTES;
     }
 
     match url.as_str() {
@@ -2240,6 +2240,25 @@ pub(crate) async fn read_response_body_limited_to(
     Ok(body)
 }
 
+pub(crate) async fn read_response_body_at_least(
+    mut response: reqwest::Response,
+    minimum: usize,
+) -> Result<Vec<u8>, ()> {
+    let mut body = Vec::with_capacity(minimum.min(16_384));
+
+    while body.len() < minimum {
+        let chunk = response.chunk().await.map_err(|_| ())?.ok_or(())?;
+        let needed = minimum - body.len();
+        if chunk.len() >= needed {
+            body.extend_from_slice(&chunk[..needed]);
+            return Ok(body);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeError> {
     wait_for_rate_limit().await;
     let started = Instant::now();
@@ -2265,17 +2284,25 @@ async fn probe_request(client: &Client, url: Url) -> Result<ProbeSample, ProbeEr
         return Err(ProbeError::Failed);
     }
 
-    if response
-        .content_length()
-        .is_some_and(|length| length as usize > response_limit)
+    let throughput_target = is_throughput_target(url.as_str());
+    if !throughput_target
+        && response
+            .content_length()
+            .is_some_and(|length| length as usize > response_limit)
     {
         return Err(ProbeError::Failed);
     }
 
     let status_is_empty_success = response.status().as_u16() == 204;
-    let body = read_response_body_limited_to(response, response_limit)
-        .await
-        .map_err(|_| ProbeError::Failed)?;
+    let body = if throughput_target {
+        read_response_body_at_least(response, STRICT_THROUGHPUT_BYTES)
+            .await
+            .map_err(|_| ProbeError::Failed)?
+    } else {
+        read_response_body_limited_to(response, response_limit)
+            .await
+            .map_err(|_| ProbeError::Failed)?
+    };
     if body.len() > response_limit
         || (body.len() < MIN_RESPONSE_BYTES && !status_is_empty_success)
         || !valid_probe_body(&url, &body)
