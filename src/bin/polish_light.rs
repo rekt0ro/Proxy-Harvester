@@ -10,8 +10,8 @@ use proxyrift::singbox::{
 use proxyrift::validator::{
     endpoint, is_light_consumer_compatible, rate_limit_events, read_lines,
     validate_candidates_with_target_once, validate_candidates_with_targets_once,
-    validate_candidates_with_targets_strict, write_lines, ProxyMetrics, PRIMARY_TARGET,
-    LIGHT_TRANSFER_STABILITY_TARGETS,
+    validate_candidates_with_targets_strict, write_lines, ProxyMetrics,
+    LIGHT_TRANSFER_STABILITY_TARGETS, PRIMARY_TARGET,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1078,15 +1078,10 @@ async fn fill_transfer_stability_gate(
             return Ok(stability_verified.len());
         }
 
-        let remaining_budget =
-            STABILITY_TRANSFER_TEST_LIMIT.saturating_sub(stability_tested.len());
+        let remaining_budget = STABILITY_TRANSFER_TEST_LIMIT.saturating_sub(stability_tested.len());
         let batch_limit = remaining_budget.min(STABILITY_TRANSFER_BATCH_SIZE).max(1);
-        let batch = select_verified_configs(
-            &untested,
-            batch_limit,
-            max_per_endpoint,
-            max_per_family,
-        );
+        let batch =
+            select_verified_configs(&untested, batch_limit, max_per_endpoint, max_per_family);
 
         if batch.is_empty() {
             return Ok(stability_verified.len());
