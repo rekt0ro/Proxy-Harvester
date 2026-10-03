@@ -3354,7 +3354,13 @@ async fn check_batch_targets(
                 .map(|entry_index| {
                     let client = &clients[entry_index];
                     let target = targets[0].clone();
-                    async move { (entry_index, probe_request_with_minimum(client, target, policy.minimum_body_bytes).await) }
+                    async move {
+                        (
+                            entry_index,
+                            probe_request_with_minimum(client, target, policy.minimum_body_bytes)
+                                .await,
+                        )
+                    }
                 })
                 .buffer_unordered(workers.max(1))
                 .collect::<Vec<_>>()
@@ -3419,7 +3425,17 @@ async fn check_batch_targets(
                         .map(|entry_index| {
                             let client = &clients[entry_index];
                             let target = target.clone();
-                            async move { (entry_index, probe_request_with_minimum(client, target, policy.minimum_body_bytes).await) }
+                            async move {
+                                (
+                                    entry_index,
+                                    probe_request_with_minimum(
+                                        client,
+                                        target,
+                                        policy.minimum_body_bytes,
+                                    )
+                                    .await,
+                                )
+                            }
                         })
                         .buffer_unordered(workers.max(1))
                         .collect::<Vec<_>>()
