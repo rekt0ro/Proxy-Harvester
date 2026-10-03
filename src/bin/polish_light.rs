@@ -43,6 +43,7 @@ const STABILITY_TRANSFER_TEST_LIMIT: usize = 450;
 const STABILITY_TRANSFER_BATCH_SIZE: usize = 32;
 const STABILITY_TRANSFER_WORKERS: usize = 8;
 const STABILITY_TRANSFER_MAX_LATENCY_MS: f64 = 15000.0;
+const STABILITY_TRANSFER_MAX_ELAPSED_SECS: u64 = 5 * 60;
 const FINAL_TRANSFER_MAX_ELAPSED_SECS: u64 = 8 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_SECS: u64 = 3 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_REMAINING: usize = 32;
@@ -1056,11 +1057,22 @@ async fn fill_transfer_stability_gate(
     max_per_endpoint: usize,
     max_per_family: usize,
 ) -> Result<usize, String> {
+    let stability_started = Instant::now();
     let stability_target = selection_limit
         .saturating_mul(2)
         .min(STABILITY_TRANSFER_TEST_LIMIT);
 
     loop {
+        if stability_started.elapsed().as_secs() >= STABILITY_TRANSFER_MAX_ELAPSED_SECS {
+            println!(
+                "[INFO] ⏱️ [1 MiB] STABILITY TIME BUDGET REACHED | STABLE: {} | TARGET: {} | TESTED: {}",
+                stability_verified.len(),
+                stability_target,
+                stability_tested.len()
+            );
+            return Ok(stability_verified.len());
+        }
+
         if stability_verified.len() >= stability_target
             || stability_tested.len() >= STABILITY_TRANSFER_TEST_LIMIT
         {
