@@ -19,8 +19,8 @@ pub const STRICT_THROUGHPUT_TARGET: &str = "https://speed.cloudflare.com/__down?
 pub const STRICT_THROUGHPUT_TARGETS: &[&str] = &[
     STRICT_THROUGHPUT_TARGET,
     "https://bom.proof.ovh.net/files/10Mb.dat",
-    "https://fsn1-speed.hetzner.com/10MB.bin",
-    "https://speedtest.tele2.net/10MB.zip",
+    "https://cdn.truefilesize.com/test/test-10mb.bin",
+    "http://speedtest.tele2.net/10MB.zip",
 ];
 pub const COMPATIBILITY_TARGET: &str = PRIMARY_TARGET;
 pub const STRICT_THROUGHPUT_BYTES: usize = 10_485_760;
