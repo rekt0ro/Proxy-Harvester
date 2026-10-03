@@ -1189,7 +1189,9 @@ async fn request_url(client: &Client, url: &str) -> Result<crate::validator::Pro
     let body = if throughput_target {
         read_response_body_at_least(response, response_limit)
             .await
-            .map_err(|_| "response body is shorter than the required transfer payload".to_string())?
+            .map_err(|_| {
+            "response body is shorter than the required transfer payload".to_string()
+        })?
     } else {
         read_response_body_limited_to(response, response_limit)
             .await
