@@ -5,12 +5,14 @@ use proxyrift::light_training::{persist as persist_light_training, DatasetStats,
 use proxyrift::singbox::{
     validate_candidates_with_target_once as validate_singbox_target_once,
     validate_candidates_with_targets_once_with_minimum_body as validate_singbox_targets_once_with_minimum_body,
+    validate_candidates_with_targets_once_with_sustained_stream as validate_singbox_targets_once_with_sustained_stream,
     validate_candidates_with_targets_strict as validate_singbox_targets_strict,
 };
 use proxyrift::validator::{
     endpoint, is_light_consumer_compatible, rate_limit_events, read_lines,
     validate_candidates_with_target_once, validate_candidates_with_targets_once,
     validate_candidates_with_targets_once_with_minimum_body,
+    validate_candidates_with_targets_once_with_sustained_stream,
     validate_candidates_with_targets_strict, write_lines, ProxyMetrics,
     LIGHT_TRANSFER_STABILITY_BYTES, LIGHT_TRANSFER_STABILITY_TARGETS, PRIMARY_TARGET,
 };
@@ -48,6 +50,13 @@ const STABILITY_TRANSFER_MAX_ELAPSED_SECS: u64 = 5 * 60;
 const FINAL_TRANSFER_MAX_ELAPSED_SECS: u64 = 8 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_SECS: u64 = 3 * 60;
 const FINAL_TRANSFER_COMPLETION_GRACE_REMAINING: usize = 32;
+const STREAM_CONTINUITY_TEST_LIMIT: usize = 160;
+const STREAM_CONTINUITY_BATCH_SIZE: usize = 16;
+const STREAM_CONTINUITY_WORKERS: usize = 8;
+const STREAM_CONTINUITY_SEGMENTS: usize = 3;
+const STREAM_CONTINUITY_SEGMENT_BYTES: usize = 1_048_576;
+const STREAM_CONTINUITY_MAX_IDLE_SECS: u64 = 4;
+const STREAM_CONTINUITY_MAX_ELAPSED_SECS: u64 = 4 * 60;
 const FINAL_TRANSFER_TIMEOUT_SECS: f64 = 15.0;
 const FINAL_TRANSFER_LATENCY_LIMIT_MS: f64 = 15000.0;
 const HISTORY_MAX_ENTRIES: usize = 10000;
@@ -357,6 +366,8 @@ fn write_light_stats(
     transfer_stability_passed: usize,
     transfer_tested: usize,
     transfer_passed: usize,
+    stream_continuity_tested: usize,
+    stream_continuity_passed: usize,
     published: usize,
 ) -> Result<(), String> {
     if path.is_empty() {
@@ -372,6 +383,8 @@ fn write_light_stats(
         "transfer_stability_passed": transfer_stability_passed,
         "transfer_tested": transfer_tested,
         "transfer_passed": transfer_passed,
+        "stream_continuity_tested": stream_continuity_tested,
+        "stream_continuity_passed": stream_continuity_passed,
         "published": published,
     });
     let body = serde_json::to_vec_pretty(&stats).map_err(|error| error.to_string())?;
@@ -1020,6 +1033,103 @@ async fn validate_light_transfer_stability_batch(
     Ok(merge_light_metadata(xray_metadata, singbox_metadata))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn validate_light_stream_continuity_batch(
+    xray: &str,
+    singbox: &str,
+    candidates: &[String],
+    workers: usize,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    if candidates.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut singbox_candidates = Vec::new();
+    let mut xray_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for config in candidates {
+        match light_backend(config) {
+            LightBackend::SingBox => singbox_candidates.push(config.clone()),
+            LightBackend::Xray => xray_candidates.push(config.clone()),
+            LightBackend::Fallback => fallback_candidates.push(config.clone()),
+        }
+    }
+
+    let request_timeout = std::time::Duration::from_secs_f64(FINAL_TRANSFER_TIMEOUT_SECS);
+    let max_idle_gap = std::time::Duration::from_secs(STREAM_CONTINUITY_MAX_IDLE_SECS);
+
+    let mut singbox_validation_candidates = singbox_candidates;
+    singbox_validation_candidates.extend(fallback_candidates.iter().cloned());
+
+    let singbox_future = async {
+        if singbox_validation_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            validate_singbox_targets_once_with_sustained_stream(
+                singbox,
+                &singbox_validation_candidates,
+                LIGHT_TRANSFER_STABILITY_TARGETS,
+                workers.clamp(1, STREAM_CONTINUITY_WORKERS),
+                request_timeout,
+                FINAL_TRANSFER_LATENCY_LIMIT_MS,
+                STREAM_CONTINUITY_SEGMENTS,
+                STREAM_CONTINUITY_SEGMENT_BYTES,
+                max_idle_gap,
+            )
+            .await
+        }
+    };
+
+    let xray_future = async {
+        if xray_candidates.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            validate_candidates_with_targets_once_with_sustained_stream(
+                xray,
+                &xray_candidates,
+                LIGHT_TRANSFER_STABILITY_TARGETS,
+                workers.clamp(1, STREAM_CONTINUITY_WORKERS),
+                STREAM_CONTINUITY_BATCH_SIZE,
+                FINAL_TRANSFER_TIMEOUT_SECS,
+                FINAL_TRANSFER_LATENCY_LIMIT_MS,
+                STREAM_CONTINUITY_SEGMENTS,
+                STREAM_CONTINUITY_SEGMENT_BYTES,
+                max_idle_gap,
+            )
+            .await
+        }
+    };
+
+    let (singbox_result, xray_result) = tokio::join!(singbox_future, xray_future);
+    let singbox_metadata = singbox_result?;
+    let mut xray_metadata = xray_result?;
+
+    let fallback_retry = fallback_candidates
+        .into_iter()
+        .filter(|config| !singbox_metadata.contains_key(config))
+        .collect::<Vec<_>>();
+
+    if !fallback_retry.is_empty() {
+        let fallback_xray = validate_candidates_with_targets_once_with_sustained_stream(
+            xray,
+            &fallback_retry,
+            LIGHT_TRANSFER_STABILITY_TARGETS,
+            workers.clamp(1, STREAM_CONTINUITY_WORKERS),
+            STREAM_CONTINUITY_BATCH_SIZE,
+            FINAL_TRANSFER_TIMEOUT_SECS,
+            FINAL_TRANSFER_LATENCY_LIMIT_MS,
+            STREAM_CONTINUITY_SEGMENTS,
+            STREAM_CONTINUITY_SEGMENT_BYTES,
+            max_idle_gap,
+        )
+        .await?;
+        xray_metadata.extend(fallback_xray);
+    }
+
+    Ok(merge_light_metadata(xray_metadata, singbox_metadata))
+}
+
 const FINAL_TRANSFER_RATE_LIMIT_TOLERANCE_PERCENT: u64 = 25;
 const FINAL_TRANSFER_RATE_LIMIT_SEVERE_PERCENT: u64 = 50;
 
@@ -1134,6 +1244,98 @@ async fn fill_transfer_stability_gate(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn fill_stream_continuity_gate(
+    xray: &str,
+    singbox: &str,
+    transfer_verified: &HashMap<String, ProxyMetrics>,
+    stream_verified: &mut HashMap<String, ProxyMetrics>,
+    stream_tested: &mut HashSet<String>,
+    global_positions: &HashMap<String, usize>,
+    history: &HashMap<String, HistoryEntry>,
+) -> Result<usize, String> {
+    if transfer_verified.is_empty() {
+        return Ok(0);
+    }
+
+    let started = Instant::now();
+    let test_limit = STREAM_CONTINUITY_TEST_LIMIT.min(transfer_verified.len());
+
+    loop {
+        if started.elapsed().as_secs() >= STREAM_CONTINUITY_MAX_ELAPSED_SECS {
+            println!(
+                "[INFO] ⏱️ [STREAM] CONTINUITY TIME BUDGET REACHED | PASSED: {} | TESTED: {} | LIMIT: {}",
+                stream_verified.len(),
+                stream_tested.len(),
+                test_limit
+            );
+            return Ok(stream_verified.len());
+        }
+
+        if stream_tested.len() >= test_limit {
+            println!(
+                "[INFO] 🎯 [STREAM] CONTINUITY TEST LIMIT REACHED | PASSED: {} | TESTED: {} | LIMIT: {}",
+                stream_verified.len(),
+                stream_tested.len(),
+                test_limit
+            );
+            return Ok(stream_verified.len());
+        }
+
+        let mut ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+        sort_ranked(
+            &mut ranked,
+            transfer_verified,
+            global_positions,
+            history,
+        );
+
+        let untested = ranked
+            .into_iter()
+            .filter(|config| !stream_tested.contains(config))
+            .collect::<Vec<_>>();
+        if untested.is_empty() {
+            return Ok(stream_verified.len());
+        }
+
+        let remaining_budget = test_limit.saturating_sub(stream_tested.len());
+        let batch_limit = remaining_budget.min(STREAM_CONTINUITY_BATCH_SIZE).max(1);
+        let batch = diversify_recheck_candidates(&untested, batch_limit, RECHECK_FAMILY_DIVERSITY);
+        if batch.is_empty() {
+            return Ok(stream_verified.len());
+        }
+
+        stream_tested.extend(batch.iter().cloned());
+        println!(
+            "[INFO] 📥 [STREAM] CONTINUITY POOL: {}/{} | TESTING {} | TESTED: {}/{}",
+            stream_verified.len(),
+            test_limit,
+            batch.len(),
+            stream_tested.len(),
+            test_limit
+        );
+
+        let batch_started = Instant::now();
+        let metadata = validate_light_stream_continuity_batch(
+            xray,
+            singbox,
+            &batch,
+            STREAM_CONTINUITY_WORKERS,
+        )
+        .await?;
+        let batch_passed = metadata.len();
+        stream_verified.extend(metadata);
+
+        println!(
+            "[INFO] ✅ [STREAM] {}/{} PASSED CONTINUITY | STREAM POOL: {} | BATCH: {}s",
+            batch_passed,
+            batch.len(),
+            stream_verified.len(),
+            batch_started.elapsed().as_secs()
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn fill_transfer_gate(
     xray: &str,
     singbox: &str,
@@ -1150,6 +1352,23 @@ async fn fill_transfer_gate(
     max_per_family: usize,
 ) -> Result<usize, String> {
     let gate_started = Instant::now();
+
+    let mut existing_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+    sort_ranked(
+        &mut existing_ranked,
+        transfer_verified,
+        global_positions,
+        history,
+    );
+    let existing_selected = select_verified_configs(
+        &existing_ranked,
+        selection_limit,
+        max_per_endpoint,
+        max_per_family,
+    );
+    if existing_selected.len() >= selection_limit {
+        return Ok(existing_selected.len());
+    }
 
     let stability_target = fill_transfer_stability_gate(
         xray,
@@ -2327,36 +2546,11 @@ async fn main() -> Result<(), String> {
                 max_per_endpoint,
                 max_per_family,
             );
-            persist_light_result(
-                &output,
-                &selected,
-                history_path,
-                &history,
-                &final_attempts,
-                &final_metadata,
-                &intelligence,
-                &global_metadata,
-                intelligence_path,
-                &transfer_tested,
-                &transfer_verified,
-            )?;
-            write_light_stats(
-                &stats_path,
-                input_candidate_count,
-                security_rejected,
-                consumer_rejected,
-                final_metadata.len(),
-                stability_tested.len(),
-                stability_verified.len(),
-                transfer_tested.len(),
-                transfer_verified.len(),
-                selected.len(),
-            )?;
             println!(
-                "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
-                selected.len()
+                "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | STOPPING DISCOVERY FOR STREAM CONTINUITY",
+                transfer_selected, selection_limit
             );
-            return Ok(());
+            break;
         }
 
         if strict_untested_additional_potential >= reserve_target {
@@ -2397,36 +2591,11 @@ async fn main() -> Result<(), String> {
                     max_per_family,
                 );
 
-                persist_light_result(
-                    &output,
-                    &selected,
-                    history_path,
-                    &history,
-                    &final_attempts,
-                    &final_metadata,
-                    &intelligence,
-                    &global_metadata,
-                    intelligence_path,
-                    &transfer_tested,
-                    &transfer_verified,
-                )?;
-                write_light_stats(
-                    &stats_path,
-                    input_candidate_count,
-                    security_rejected,
-                    consumer_rejected,
-                    final_metadata.len(),
-                    stability_tested.len(),
-                    stability_verified.len(),
-                    transfer_tested.len(),
-                    transfer_verified.len(),
-                    selected.len(),
-                )?;
                 println!(
-                    "[INFO] ✅ [LIGHT] PUBLISHED {} CONFIGS | 10 MiB GATE PASSED",
-                    selected.len()
+                    "[INFO] ✅ [LIGHT] TRANSFER-QUALIFIED {}/{} | STOPPING DISCOVERY FOR STREAM CONTINUITY",
+                    transfer_selected, selection_limit
                 );
-                return Ok(());
+                break;
             }
 
             let mut transfer_ranked_after = transfer_verified.keys().cloned().collect::<Vec<_>>();
@@ -2622,7 +2791,7 @@ async fn main() -> Result<(), String> {
         &global_positions,
         &history,
     );
-    let _ = fill_transfer_gate(
+    let transfer_selected = fill_transfer_gate(
         &xray,
         &singbox,
         &final_verified,
@@ -2639,21 +2808,34 @@ async fn main() -> Result<(), String> {
     )
     .await?;
 
-    let mut transfer_ranked = transfer_verified.keys().cloned().collect::<Vec<_>>();
+    let mut stream_verified = HashMap::<String, ProxyMetrics>::new();
+    let mut stream_tested = HashSet::<String>::new();
+    let stream_selected = fill_stream_continuity_gate(
+        &xray,
+        &singbox,
+        &transfer_verified,
+        &mut stream_verified,
+        &mut stream_tested,
+        &global_positions,
+        &history,
+    )
+    .await?;
+
+    let mut stream_ranked = stream_verified.keys().cloned().collect::<Vec<_>>();
     sort_ranked(
-        &mut transfer_ranked,
+        &mut stream_ranked,
         &transfer_verified,
         &global_positions,
         &history,
     );
     let selected = select_verified_configs(
-        &transfer_ranked,
+        &stream_ranked,
         selection_limit,
         max_per_endpoint,
         max_per_family,
     );
     let (_, endpoint_rejected, family_rejected) = selection_rejection_counts(
-        &transfer_ranked,
+        &stream_ranked,
         selection_limit,
         max_per_endpoint,
         max_per_family,
@@ -2661,19 +2843,19 @@ async fn main() -> Result<(), String> {
 
     if selected.is_empty() {
         println!(
-            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED 10 MiB GATE | PUBLISHING 0 CONFIGS | PRESERVING PREVIOUS SUBSCRIPTION | STRICT VERIFIED: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {}",
-            final_metadata.len(),
-            transfer_tested.len(),
-            transfer_verified.len()
+            "[WARN] ⚠️ [LIGHT] NO CONFIGS PASSED STREAM CONTINUITY | OUTPUT 0 | WORKFLOW WILL PRESERVE PREVIOUS SUBSCRIPTION | TRANSFER QUALIFIED: {} | STREAM TESTED: {} | STREAM PASSES: {}",
+            transfer_selected,
+            stream_tested.len(),
+            stream_selected
         );
     } else if selected.len() < selection_limit {
         println!(
-            "[WARN] ⚠️ [LIGHT] TARGET NOT REACHED | PUBLISHING {} VALIDATED CONFIGS | TARGET/MAX: {} | STRICT VERIFIED: {} | TRANSFER TESTED: {} | TRANSFER PASSES: {} | ENDPOINT CAP EXCLUSIONS: {} | FAMILY CAP EXCLUSIONS: {}",
+            "[WARN] ⚠️ [LIGHT] STREAM TARGET NOT REACHED | PUBLISHING {} CONTINUITY-QUALIFIED CONFIGS | TARGET/MAX: {} | TRANSFER TARGET/MAX: {} | STREAM TESTED: {} | STREAM PASSES: {} | ENDPOINT CAP EXCLUSIONS: {} | FAMILY CAP EXCLUSIONS: {}",
             selected.len(),
             selection_limit,
-            final_metadata.len(),
-            transfer_tested.len(),
-            transfer_verified.len(),
+            transfer_selected,
+            stream_tested.len(),
+            stream_selected,
             endpoint_rejected,
             family_rejected
         );
@@ -2689,6 +2871,8 @@ async fn main() -> Result<(), String> {
         stability_verified.len(),
         transfer_tested.len(),
         transfer_verified.len(),
+        stream_tested.len(),
+        stream_selected,
         selected.len(),
     )?;
 
