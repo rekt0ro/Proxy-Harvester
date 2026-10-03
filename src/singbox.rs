@@ -1,11 +1,12 @@
 use crate::validator::{
     adaptive_batch_size, config_label, extend_rate_limit, healthy_targets, is_throughput_target,
-    rate_limit_wait, read_response_body_at_least, read_response_body_limited_to,
-    response_limit_for_target, uses_udp_transport, wait_for_rate_limit, ProxyMetrics,
-    ValidationPolicy, MIN_RESPONSE_BYTES, MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS,
-    PRIMARY_TARGET, STABILITY_ATTEMPTS, STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK,
-    STRICT_MIN_SUCCESSFUL_ATTEMPTS, STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS,
-    STRICT_SECONDARY_ATTEMPTS, STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
+    rate_limit_wait, read_response_body_at_least, read_response_body_at_least_with_max_idle,
+    read_response_body_limited_to, response_limit_for_target, uses_udp_transport,
+    wait_for_rate_limit, ProxyMetrics, ValidationPolicy, MIN_RESPONSE_BYTES,
+    MIN_SUCCESSFUL_ATTEMPTS, MIN_SUCCESSFUL_TARGETS, PRIMARY_TARGET, STABILITY_ATTEMPTS,
+    STRICT_INTER_ATTEMPT_DELAY, STRICT_LATE_SUCCESS_STREAK, STRICT_MIN_SUCCESSFUL_ATTEMPTS,
+    STRICT_MIN_SUCCESSFUL_TARGETS, STRICT_RECONNECT_AFTER_ATTEMPTS, STRICT_SECONDARY_ATTEMPTS,
+    STRICT_SECONDARY_MIN_SUCCESSFUL_ATTEMPTS, STRICT_STABILITY_ATTEMPTS,
     SUSTAINED_THROUGHPUT_TIMEOUT,
 };
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -1224,6 +1225,59 @@ async fn request_url(
     })
 }
 
+async fn request_url_sustained(
+    client: &Client,
+    url: &str,
+    segments: usize,
+    minimum_body_bytes: usize,
+    max_idle_gap: Duration,
+) -> Result<crate::validator::ProbeSample, String> {
+    let started = std::time::Instant::now();
+    let required_bytes = segments.max(1).saturating_mul(minimum_body_bytes);
+
+    wait_for_rate_limit().await;
+    let mut request = client.get(url);
+    request = request.timeout(SUSTAINED_THROUGHPUT_TIMEOUT);
+    let response = request.send().await.map_err(|error| error.to_string())?;
+
+    if response.status().as_u16() == 429 {
+        extend_rate_limit(rate_limit_wait(response.headers()));
+        return Err("target returned HTTP 429".to_string());
+    }
+
+    if !response.status().is_success() || !valid_probe_status(url, response.status().as_u16()) {
+        return Err(format!("target returned HTTP {}", response.status()));
+    }
+
+    let body = read_response_body_at_least_with_max_idle(response, required_bytes, max_idle_gap)
+        .await
+        .map_err(|_| {
+            "response body stalled or was shorter than the required continuous stream".to_string()
+        })?;
+
+    Ok(crate::validator::ProbeSample {
+        latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+        bytes: body.len(),
+    })
+}
+
+async fn request_url_with_validation_policy(
+    client: &Client,
+    url: &str,
+    policy: ValidationPolicy,
+) -> Result<crate::validator::ProbeSample, String> {
+    match (
+        policy.sustained_stream_segments,
+        policy.sustained_stream_max_idle,
+        policy.minimum_body_bytes,
+    ) {
+        (Some(segments), Some(max_idle_gap), Some(minimum_body_bytes)) if segments > 1 => {
+            request_url_sustained(client, url, segments, minimum_body_bytes, max_idle_gap).await
+        }
+        _ => request_url(client, url, policy.minimum_body_bytes).await,
+    }
+}
+
 type SingBoxEndpointCache = HashMap<(String, u16, bool), IpAddr>;
 
 fn singbox_endpoint_cache_key(host: &str, port: u16, tcp_preferred: bool) -> (String, u16, bool) {
@@ -1421,7 +1475,7 @@ async fn check_batch_targets(
                     async move {
                         (
                             entry_index,
-                            request_url(client, &target, policy.minimum_body_bytes).await,
+                            request_url_with_validation_policy(client, &target, policy).await,
                         )
                     }
                 })
@@ -1520,7 +1574,8 @@ async fn check_batch_targets(
                             async move {
                                 (
                                     entry_index,
-                                    request_url(client, &target, policy.minimum_body_bytes).await,
+                                    request_url_with_validation_policy(client, &target, policy)
+                                        .await,
                                 )
                             }
                         })
@@ -1562,12 +1617,26 @@ async fn check_batch_targets(
         if let Some(minimum) = policy.minimum_body_bytes {
             let primary_successes = successes.iter().filter(|&&count| count > 0).count();
             let secondary_successes_count = secondary_response_count;
-            println!(
-                "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
-            );
-            println!(
-                "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
-            );
+            if let (Some(segments), Some(max_idle_gap)) = (
+                policy.sustained_stream_segments,
+                policy.sustained_stream_max_idle,
+            ) {
+                println!(
+                    "[INFO] 🔎 [STREAM] TARGET 1 | {primary_successes}/{count} RESPONDED | SEGMENTS: {segments} | MIN BODY: {minimum} BYTES | MAX IDLE: {}ms",
+                    max_idle_gap.as_millis()
+                );
+                println!(
+                    "[INFO] 🔎 [STREAM] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | SEGMENTS: {segments} | MIN BODY: {minimum} BYTES | MAX IDLE: {}ms",
+                    max_idle_gap.as_millis()
+                );
+            } else {
+                println!(
+                    "[INFO] 🔎 [TRANSFER] TARGET 1 | {primary_successes}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+                );
+                println!(
+                    "[INFO] 🔎 [TRANSFER] TARGET 2 | {secondary_successes_count}/{count} RESPONDED | MIN BODY: {minimum} BYTES"
+                );
+            }
         }
 
         for index in 0..count {
@@ -1862,6 +1931,34 @@ pub async fn validate_candidates_with_targets_once_with_minimum_body(
         request_timeout,
         ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets)
             .with_minimum_body_bytes(minimum_body_bytes),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_candidates_with_targets_once_with_sustained_stream(
+    binary: &str,
+    candidates: &[String],
+    targets: &[&str],
+    workers: usize,
+    request_timeout: Duration,
+    max_latency_ms: f64,
+    segments: usize,
+    minimum_body_bytes: usize,
+    max_idle_gap: Duration,
+) -> Result<HashMap<String, ProxyMetrics>, String> {
+    let minimum_targets = targets.len().max(1);
+    validate_candidates_with_targets_policy(
+        binary,
+        candidates,
+        targets,
+        workers,
+        request_timeout,
+        ValidationPolicy::new(max_latency_ms, 1, 1, minimum_targets).with_sustained_stream(
+            segments,
+            minimum_body_bytes,
+            max_idle_gap,
+        ),
     )
     .await
 }
